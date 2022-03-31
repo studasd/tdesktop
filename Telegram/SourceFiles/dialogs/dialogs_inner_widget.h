@@ -9,11 +9,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "dialogs/dialogs_key.h"
 #include "data/data_messages.h"
+#include "ui/dragging_scroll_manager.h"
 #include "ui/effects/animations.h"
 #include "ui/rp_widget.h"
 #include "base/flags.h"
 #include "base/object_ptr.h"
-#include "mtproto/mtproto_rpc_sender.h"
+
+namespace MTP {
+class Error;
+} // namespace MTP
 
 namespace Main {
 class Session;
@@ -23,15 +27,16 @@ namespace Ui {
 class IconButton;
 class PopupMenu;
 class FlatLabel;
+struct ScrollToRequest;
 } // namespace Ui
 
 namespace Window {
 class SessionController;
 } // namespace Window
 
-namespace Notify {
-struct PeerUpdate;
-} // namespace Notify
+namespace Data {
+class CloudImageView;
+} // namespace Data
 
 namespace Dialogs {
 
@@ -43,6 +48,7 @@ struct ChosenRow {
 	Key key;
 	Data::MessagePosition message;
 	bool filteredRow = false;
+	bool newWindow = false;
 };
 
 enum class SearchRequestType {
@@ -59,11 +65,7 @@ enum class WidgetState {
 	Filtered,
 };
 
-class InnerWidget
-	: public Ui::RpWidget
-	, public RPCSender
-	, private base::Subscriber {
-	Q_OBJECT
+class InnerWidget final : public Ui::RpWidget {
 
 public:
 	InnerWidget(
@@ -88,11 +90,6 @@ public:
 	void selectSkip(int32 direction);
 	void selectSkipPage(int32 pixels, int32 direction);
 
-	void refreshDialog(Key key);
-	void removeDialog(Key key);
-	void repaintDialogRow(FilterId filterId, not_null<Row*> row);
-	void repaintDialogRow(RowDescriptor row);
-
 	void dragLeft();
 
 	void clearFilter();
@@ -100,7 +97,7 @@ public:
 	void refreshEmptyLabel();
 	void resizeEmptyLabel();
 
-	bool chooseRow();
+	bool chooseRow(Qt::KeyboardModifiers modifiers = {});
 
 	void scrollToEntry(const RowDescriptor &entry);
 
@@ -116,33 +113,33 @@ public:
 	}
 	bool hasFilteredResults() const;
 
-	void searchInChat(Key key, UserData *from);
+	void searchInChat(Key key, PeerData *from);
 
 	void applyFilterUpdate(QString newFilter, bool force = false);
-	void onHashtagFilterUpdate(QStringRef newFilter);
+	void onHashtagFilterUpdate(QStringView newFilter);
 
 	PeerData *updateFromParentDrag(QPoint globalPosition);
 
 	void setLoadMoreCallback(Fn<void()> callback);
 	[[nodiscard]] rpl::producer<> listBottomReached() const;
+	[[nodiscard]] rpl::producer<> cancelSearchFromUserRequests() const;
+	[[nodiscard]] rpl::producer<ChosenRow> chosenRow() const;
+	[[nodiscard]] rpl::producer<> updated() const;
 
-	base::Observable<UserData*> searchFromUserChanged;
+	[[nodiscard]] rpl::producer<int> scrollByDeltaRequests() const;
+	[[nodiscard]] rpl::producer<Ui::ScrollToRequest> mustScrollTo() const;
+	[[nodiscard]] rpl::producer<Ui::ScrollToRequest> dialogMoved() const;
+	[[nodiscard]] rpl::producer<> searchMessages() const;
+	[[nodiscard]] rpl::producer<> cancelSearchInChatRequests() const;
+	[[nodiscard]] rpl::producer<QString> completeHashtagRequests() const;
+	[[nodiscard]] rpl::producer<> refreshHashtagsRequests() const;
 
-	rpl::producer<ChosenRow> chosenRow() const;
+	[[nodiscard]] RowDescriptor resolveChatNext(RowDescriptor from = {}) const;
+	[[nodiscard]] RowDescriptor resolveChatPrevious(RowDescriptor from = {}) const;
 
 	~InnerWidget();
 
-public slots:
-	void onParentGeometryChanged();
-
-signals:
-	void draggingScrollDelta(int delta);
-	void mustScrollTo(int scrollToTop, int scrollToBottom);
-	void dialogMoved(int movedFrom, int movedTo);
-	void searchMessages();
-	void cancelSearchInChat();
-	void completeHashtag(QString tag);
-	void refreshHashtags();
+	void parentGeometryChanged();
 
 protected:
 	void visibleTopBottomUpdated(
@@ -154,7 +151,7 @@ protected:
 	void mousePressEvent(QMouseEvent *e) override;
 	void mouseReleaseEvent(QMouseEvent *e) override;
 	void resizeEvent(QResizeEvent *e) override;
-	void enterEventHook(QEvent *e) override;
+	void enterEventHook(QEnterEvent *e) override;
 	void leaveEventHook(QEvent *e) override;
 	void contextMenuEvent(QContextMenuEvent *e) override;
 
@@ -193,8 +190,15 @@ private:
 		not_null<FakeRow*> result,
 		const RowDescriptor &entry) const;
 
+	void repaintDialogRow(FilterId filterId, not_null<Row*> row);
+	void repaintDialogRow(RowDescriptor row);
+	void refreshDialogRow(RowDescriptor row);
+
 	void clearMouseSelection(bool clearSelection = false);
-	void mousePressReleased(QPoint globalPosition, Qt::MouseButton button);
+	void mousePressReleased(
+		QPoint globalPosition,
+		Qt::MouseButton button,
+		Qt::KeyboardModifiers modifiers);
 	void clearIrrelevantState();
 	void selectByMouse(QPoint globalPosition);
 	void loadPeerPhotos();
@@ -225,12 +229,18 @@ private:
 
 	int defaultRowTop(not_null<Row*> row) const;
 	void setupOnlineStatusCheck();
-	void userOnlineUpdated(const Notify::PeerUpdate &update);
+	void userOnlineUpdated(not_null<PeerData*> peer);
+	void groupHasCallUpdated(not_null<PeerData*> peer);
+
+	void updateRowCornerStatusShown(
+		not_null<History*> history,
+		bool shown);
+	void updateDialogRowCornerStatus(not_null<History*> history);
 
 	void setupShortcuts();
 	RowDescriptor computeJump(
 		const RowDescriptor &to,
-		JumpSkip skip);
+		JumpSkip skip) const;
 	bool jumpToDialogRow(RowDescriptor to);
 
 	RowDescriptor chatListEntryBefore(const RowDescriptor &which) const;
@@ -282,17 +292,17 @@ private:
 	void paintSearchInPeer(
 		Painter &p,
 		not_null<PeerData*> peer,
+		std::shared_ptr<Data::CloudImageView> &userpic,
 		int top,
 		const Ui::Text::String &text) const;
 	void paintSearchInSaved(
 		Painter &p,
 		int top,
 		const Ui::Text::String &text) const;
-	//void paintSearchInFeed( // #feed
-	//	Painter &p,
-	//	not_null<Data::Feed*> feed,
-	//	int top,
-	//	const Ui::Text::String &text) const;
+	void paintSearchInReplies(
+		Painter &p,
+		int top,
+		const Ui::Text::String &text) const;
 	template <typename PaintUserpic>
 	void paintSearchInFilter(
 		Painter &p,
@@ -315,7 +325,7 @@ private:
 	int countPinnedIndex(Row *ofRow);
 	void savePinnedOrder();
 	bool pinnedShiftAnimationCallback(crl::time now);
-	void handleChatMigration(not_null<ChatData*> chat);
+	void handleChatListEntryRefreshes();
 
 	not_null<Window::SessionController*> _controller;
 
@@ -390,9 +400,13 @@ private:
 	object_ptr<Ui::IconButton> _cancelSearchInChat;
 	object_ptr<Ui::IconButton> _cancelSearchFromUser;
 
+	Ui::DraggingScrollManager _draggingScroll;
+
 	Key _searchInChat;
 	History *_searchInMigrated = nullptr;
-	UserData *_searchFromUser = nullptr;
+	PeerData *_searchFromPeer = nullptr;
+	mutable std::shared_ptr<Data::CloudImageView> _searchInChatUserpic;
+	mutable std::shared_ptr<Data::CloudImageView> _searchFromUserUserpic;
 	Ui::Text::String _searchInChatText;
 	Ui::Text::String _searchFromUserText;
 	RowDescriptor _menuRow;
@@ -400,6 +414,13 @@ private:
 	Fn<void()> _loadMoreCallback;
 	rpl::event_stream<> _listBottomReached;
 	rpl::event_stream<ChosenRow> _chosenRow;
+	rpl::event_stream<> _updated;
+
+	rpl::event_stream<Ui::ScrollToRequest> _mustScrollTo;
+	rpl::event_stream<Ui::ScrollToRequest> _dialogMoved;
+	rpl::event_stream<> _searchMessages;
+	rpl::event_stream<QString> _completeHashtagRequests;
+	rpl::event_stream<> _refreshHashtagsRequests;
 
 	base::unique_qptr<Ui::PopupMenu> _menu;
 

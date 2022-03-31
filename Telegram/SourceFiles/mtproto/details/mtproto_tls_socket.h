@@ -16,7 +16,8 @@ public:
 	TlsSocket(
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
-		const QNetworkProxy &proxy);
+		const QNetworkProxy &proxy,
+		bool protocolForFiles);
 
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
@@ -27,6 +28,7 @@ public:
 	void write(bytes::const_span prefix, bytes::const_span buffer) override;
 
 	int32 debugState() override;
+	QString debugPostfix() const override;
 
 private:
 	enum class State {

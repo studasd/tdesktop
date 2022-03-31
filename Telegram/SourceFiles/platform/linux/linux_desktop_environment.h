@@ -11,43 +11,33 @@ namespace Platform {
 namespace DesktopEnvironment {
 
 enum class Type {
-	Other,
 	Gnome,
-	KDE3,
-	KDE4,
-	KDE5,
+	Cinnamon,
+	KDE,
 	Unity,
 	MATE,
 };
 
-Type Get();
+std::vector<Type> Get();
 
 inline bool IsGnome() {
-	return Get() == Type::Gnome;
+	return ranges::contains(Get(), Type::Gnome);
 }
 
-inline bool IsKDE3() {
-	return Get() == Type::KDE3;
-}
-
-inline bool IsKDE4() {
-	return Get() == Type::KDE4;
-}
-
-inline bool IsKDE5() {
-	return Get() == Type::KDE5;
+inline bool IsCinnamon() {
+	return ranges::contains(Get(), Type::Cinnamon);
 }
 
 inline bool IsKDE() {
-	return IsKDE3() || IsKDE4() || IsKDE5();
+	return ranges::contains(Get(), Type::KDE);
 }
 
 inline bool IsUnity() {
-	return Get() == Type::Unity;
+	return ranges::contains(Get(), Type::Unity);
 }
 
 inline bool IsMATE() {
-	return Get() == Type::MATE;
+	return ranges::contains(Get(), Type::MATE);
 }
 
 } // namespace DesktopEnvironment

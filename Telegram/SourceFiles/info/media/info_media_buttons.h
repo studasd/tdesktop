@@ -17,19 +17,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/buttons.h"
+#include "settings/settings_common.h"
 #include "window/window_session_controller.h"
 #include "data/data_channel.h"
 #include "data/data_user.h"
 #include "styles/style_info.h"
 
-namespace Info {
-namespace Media {
+namespace Info::Media {
 
 using Type = Storage::SharedMediaType;
 
 inline tr::phrase<lngtag_count> MediaTextPhrase(Type type) {
 	switch (type) {
 	case Type::Photo: return tr::lng_profile_photos;
+	case Type::GIF: return tr::lng_profile_gifs;
 	case Type::Video: return tr::lng_profile_videos;
 	case Type::File: return tr::lng_profile_files;
 	case Type::MusicFile: return tr::lng_profile_songs;
@@ -53,7 +54,7 @@ inline auto AddCountedButton(
 		Ui::MultiSlideTracker &tracker) {
 	using namespace rpl::mappers;
 
-	using Button = Ui::SettingsButton;
+	using namespace ::Settings;
 	auto forked = std::move(count)
 		| start_spawning(parent->lifetime());
 	auto text = rpl::duplicate(
@@ -65,7 +66,7 @@ inline auto AddCountedButton(
 	});
 	auto button = parent->add(object_ptr<Ui::SlideWrap<Button>>(
 		parent,
-		object_ptr<Button>(
+		CreateButton(
 			parent,
 			std::move(text),
 			st::infoSharedMediaButton))
@@ -92,7 +93,7 @@ inline auto AddButton(
 		tracker)->entity();
 	result->addClickHandler([=] {
 		navigation->showSection(
-			Info::Memento(peer->id, Section(type)));
+			std::make_shared<Info::Memento>(peer, Section(type)));
 	});
 	return result;
 };
@@ -111,10 +112,9 @@ inline auto AddCommonGroupsButton(
 		tracker)->entity();
 	result->addClickHandler([=] {
 		navigation->showSection(
-			Info::Memento(user->id, Section::Type::CommonGroups));
+			std::make_shared<Info::Memento>(user, Section::Type::CommonGroups));
 	});
 	return result;
 };
 
-} // namespace Media
-} // namespace Info
+} // namespace Info::Media

@@ -24,6 +24,8 @@ namespace ChatHelpers {
 
 class TabbedSelector;
 
+extern const char kOptionTabbedPanelShowOnClick[];
+
 class TabbedPanel : public Ui::RpWidget {
 public:
 	TabbedPanel(
@@ -58,7 +60,7 @@ public:
 	~TabbedPanel();
 
 protected:
-	void enterEventHook(QEvent *e) override;
+	void enterEventHook(QEnterEvent *e) override;
 	void leaveEventHook(QEvent *e) override;
 	void otherEnter();
 	void otherLeave();
@@ -109,6 +111,8 @@ private:
 
 	std::unique_ptr<Ui::PanelAnimation> _showAnimation;
 	Ui::Animations::Simple _a_show;
+
+	bool _shouldFinishHide = false;
 
 	bool _hiding = false;
 	bool _hideAfterSlide = false;

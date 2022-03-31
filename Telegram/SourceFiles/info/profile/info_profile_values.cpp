@@ -7,59 +7,84 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "info/profile/info_profile_values.h"
 
-#include "observer_peer.h"
 #include "core/application.h"
+#include "core/click_handler_types.h"
 #include "main/main_session.h"
 #include "ui/wrap/slide_wrap.h"
+#include "ui/text/format_values.h" // Ui::FormatPhone
 #include "ui/text/text_utilities.h"
 #include "lang/lang_keys.h"
 #include "data/data_peer_values.h"
 #include "data/data_shared_media.h"
+#include "data/data_message_reactions.h"
 #include "data/data_folder.h"
+#include "data/data_changes.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_user.h"
 #include "data/data_session.h"
 #include "boxes/peers/edit_peer_permissions_box.h"
-#include "app.h"
+#include "base/unixtime.h"
 
 namespace Info {
 namespace Profile {
 namespace {
 
-auto PlainBioValue(not_null<UserData*> user) {
-	return Notify::PeerUpdateValue(
-		user,
-		Notify::PeerUpdate::Flag::AboutChanged
-	) | rpl::map([=] { return user->about(); });
+using UpdateFlag = Data::PeerUpdate::Flag;
+
+auto PlainAboutValue(not_null<PeerData*> peer) {
+	return peer->session().changes().peerFlagsValue(
+		peer,
+		UpdateFlag::About
+	) | rpl::map([=] {
+		return peer->about();
+	});
 }
 
 auto PlainUsernameValue(not_null<PeerData*> peer) {
-	return Notify::PeerUpdateValue(
+	return peer->session().changes().peerFlagsValue(
 		peer,
-		Notify::PeerUpdate::Flag::UsernameChanged
+		UpdateFlag::Username
 	) | rpl::map([=] {
 		return peer->userName();
 	});
 }
 
+void StripExternalLinks(TextWithEntities &text) {
+	const auto local = [](const QString &url) {
+		return !UrlRequiresConfirmation(QUrl::fromUserInput(url));
+	};
+	const auto notLocal = [&](const EntityInText &entity) {
+		if (entity.type() == EntityType::CustomUrl) {
+			return !local(entity.data());
+		} else if (entity.type() == EntityType::Url) {
+			return !local(text.text.mid(entity.offset(), entity.length()));
+		} else {
+			return false;
+		}
+	};
+	text.entities.erase(
+		ranges::remove_if(text.entities, notLocal),
+		text.entities.end());
+}
+
 } // namespace
 
 rpl::producer<TextWithEntities> NameValue(not_null<PeerData*> peer) {
-	return Notify::PeerUpdateValue(
+	return peer->session().changes().peerFlagsValue(
 		peer,
-		Notify::PeerUpdate::Flag::NameChanged
+		UpdateFlag::Name
 	) | rpl::map([=] {
 		return peer->name;
 	}) | Ui::Text::ToWithEntities();
 }
 
 rpl::producer<TextWithEntities> PhoneValue(not_null<UserData*> user) {
-	return Notify::PeerUpdateValue(
-			user,
-			Notify::PeerUpdate::Flag::UserPhoneChanged
-	) | rpl::map([user] {
-		return App::formatPhone(user->phone());
+	return user->session().changes().peerFlagsValue(
+		user,
+		UpdateFlag::PhoneNumber
+	) | rpl::map([=] {
+		return Ui::FormatPhone(user->phone());
 	}) | Ui::Text::ToWithEntities();
 }
 
@@ -67,23 +92,17 @@ rpl::producer<TextWithEntities> PhoneOrHiddenValue(not_null<UserData*> user) {
 	return rpl::combine(
 		PhoneValue(user),
 		PlainUsernameValue(user),
-		PlainBioValue(user),
+		PlainAboutValue(user),
 		tr::lng_info_mobile_hidden()
 	) | rpl::map([](
 			const TextWithEntities &phone,
 			const QString &username,
-			const QString &bio,
+			const QString &about,
 			const QString &hidden) {
-		return (phone.text.isEmpty() && username.isEmpty() && bio.isEmpty())
+		return (phone.text.isEmpty() && username.isEmpty() && about.isEmpty())
 			? Ui::Text::WithEntities(hidden)
 			: phone;
 	});
-}
-
-rpl::producer<TextWithEntities> BioValue(not_null<UserData*> user) {
-	return PlainBioValue(user)
-		| ToSingleLine()
-		| Ui::Text::ToWithEntities();
 }
 
 rpl::producer<TextWithEntities> UsernameValue(not_null<UserData*> user) {
@@ -96,49 +115,51 @@ rpl::producer<TextWithEntities> UsernameValue(not_null<UserData*> user) {
 	}) | Ui::Text::ToWithEntities();
 }
 
-rpl::producer<QString> PlainAboutValue(not_null<PeerData*> peer) {
-	if (const auto user = peer->asUser()) {
-		if (!user->isBot()) {
-			return rpl::single(QString());
-		}
+TextWithEntities AboutWithEntities(
+		not_null<PeerData*> peer,
+		const QString &value) {
+	auto flags = TextParseLinks | TextParseMentions;
+	const auto user = peer->asUser();
+	const auto isBot = user && user->isBot();
+	if (!user) {
+		flags |= TextParseHashtags;
+	} else if (isBot) {
+		flags |= TextParseHashtags | TextParseBotCommands;
 	}
-	return Notify::PeerUpdateValue(
-		peer,
-		Notify::PeerUpdate::Flag::AboutChanged
-	) | rpl::map([=] { return peer->about(); });
+	const auto stripExternal = peer->isChat()
+		|| peer->isMegagroup()
+		|| (user && !isBot);
+	auto result = TextWithEntities{ value };
+	TextUtilities::ParseEntities(result, flags);
+	if (stripExternal) {
+		StripExternalLinks(result);
+	}
+	return result;
 }
 
 rpl::producer<TextWithEntities> AboutValue(not_null<PeerData*> peer) {
-	auto flags = TextParseLinks
-		| TextParseMentions
-		| TextParseHashtags;
-	if (peer->isUser()) {
-		flags |= TextParseBotCommands;
-	}
 	return PlainAboutValue(
 		peer
-	) | Ui::Text::ToWithEntities(
-	) | rpl::map([=](TextWithEntities &&text) {
-		TextUtilities::ParseEntities(text, flags);
-		return std::move(text);
+	) | rpl::map([peer](const QString &value) {
+		return AboutWithEntities(peer, value);
 	});
 }
 
 rpl::producer<QString> LinkValue(not_null<PeerData*> peer) {
 	return PlainUsernameValue(
 		peer
-	) | rpl::map([](QString &&username) {
+	) | rpl::map([=](QString &&username) {
 		return username.isEmpty()
 			? QString()
-			: Core::App().createInternalLinkFull(username);
+			: peer->session().createInternalLinkFull(username);
 	});
 }
 
 rpl::producer<const ChannelLocation*> LocationValue(
 		not_null<ChannelData*> channel) {
-	return Notify::PeerUpdateValue(
+	return channel->session().changes().peerFlagsValue(
 		channel,
-		Notify::PeerUpdate::Flag::ChannelLocation
+		UpdateFlag::ChannelLocation
 	) | rpl::map([=] {
 		return channel->getLocation();
 	});
@@ -146,40 +167,42 @@ rpl::producer<const ChannelLocation*> LocationValue(
 
 rpl::producer<bool> NotificationsEnabledValue(not_null<PeerData*> peer) {
 	return rpl::merge(
-		Notify::PeerUpdateValue(
+		peer->session().changes().peerFlagsValue(
 			peer,
-			Notify::PeerUpdate::Flag::NotificationsEnabled
-		) | rpl::map([] { return rpl::empty_value(); }),
-		Auth().data().defaultNotifyUpdates(peer)
-	) | rpl::map([peer] {
-		return !Auth().data().notifyIsMuted(peer);
+			UpdateFlag::Notifications
+		) | rpl::to_empty,
+		peer->owner().defaultNotifyUpdates(peer)
+	) | rpl::map([=] {
+		return !peer->owner().notifyIsMuted(peer);
 	}) | rpl::distinct_until_changed();
 }
 
 rpl::producer<bool> IsContactValue(not_null<UserData*> user) {
-	return Notify::PeerUpdateValue(
-			user,
-			Notify::PeerUpdate::Flag::UserIsContact
-	) | rpl::map([user] { return user->isContact(); });
+	return user->session().changes().peerFlagsValue(
+		user,
+		UpdateFlag::IsContact
+	) | rpl::map([=] {
+		return user->isContact();
+	});
 }
 
 rpl::producer<bool> CanInviteBotToGroupValue(not_null<UserData*> user) {
 	if (!user->isBot() || user->isSupport()) {
 		return rpl::single(false);
 	}
-	return Notify::PeerUpdateValue(
-			user,
-			Notify::PeerUpdate::Flag::BotCanAddToGroups
-	) | rpl::map([user] {
+	return user->session().changes().peerFlagsValue(
+		user,
+		UpdateFlag::BotCanBeInvited
+	) | rpl::map([=] {
 		return !user->botInfo->cantJoinGroups;
 	});
 }
 
 rpl::producer<bool> CanShareContactValue(not_null<UserData*> user) {
-	return Notify::PeerUpdateValue(
-			user,
-			Notify::PeerUpdate::Flag::UserCanShareContact
-	) | rpl::map([user] {
+	return user->session().changes().peerFlagsValue(
+		user,
+		UpdateFlag::CanShareContact
+	) | rpl::map([=] {
 		return user->canShareThisContact();
 	});
 }
@@ -195,49 +218,68 @@ rpl::producer<bool> CanAddContactValue(not_null<UserData*> user) {
 }
 
 rpl::producer<bool> AmInChannelValue(not_null<ChannelData*> channel) {
-	return Notify::PeerUpdateValue(
+	return channel->session().changes().peerFlagsValue(
 		channel,
-		Notify::PeerUpdate::Flag::ChannelAmIn
-	) | rpl::map([channel] { return channel->amIn(); });
+		UpdateFlag::ChannelAmIn
+	) | rpl::map([=] {
+		return channel->amIn();
+	});
 }
 
 rpl::producer<int> MembersCountValue(not_null<PeerData*> peer) {
-	using Flag = Notify::PeerUpdate::Flag;
 	if (const auto chat = peer->asChat()) {
-		return Notify::PeerUpdateValue(
+		return peer->session().changes().peerFlagsValue(
 			peer,
-			Flag::MembersChanged
-		) | rpl::map([chat] {
+			UpdateFlag::Members
+		) | rpl::map([=] {
 			return chat->amIn()
 				? std::max(chat->count, int(chat->participants.size()))
 				: 0;
 		});
 	} else if (const auto channel = peer->asChannel()) {
-		return Notify::PeerUpdateValue(
-			channel,
-			Flag::MembersChanged
-		) | rpl::map([channel] {
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::Members
+		) | rpl::map([=] {
 			return channel->membersCount();
 		});
 	}
 	Unexpected("User in MembersCountViewer().");
 }
 
-rpl::producer<int> AdminsCountValue(not_null<PeerData*> peer) {
-	using Flag = Notify::PeerUpdate::Flag;
+rpl::producer<int> PendingRequestsCountValue(not_null<PeerData*> peer) {
 	if (const auto chat = peer->asChat()) {
-		return Notify::PeerUpdateValue(
-			chat,
-			Flag::AdminsChanged | Flag::RightsChanged
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::PendingRequests
+		) | rpl::map([=] {
+			return chat->pendingRequestsCount();
+		});
+	} else if (const auto channel = peer->asChannel()) {
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::PendingRequests
+		) | rpl::map([=] {
+			return channel->pendingRequestsCount();
+		});
+	}
+	Unexpected("User in MembersCountViewer().");
+}
+
+rpl::producer<int> AdminsCountValue(not_null<PeerData*> peer) {
+	if (const auto chat = peer->asChat()) {
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::Admins | UpdateFlag::Rights
 		) | rpl::map([=] {
 			return chat->participants.empty()
 				? 0
-				: int(chat->admins.size() + 1); // + creator
+				: int(chat->admins.size() + (chat->creator ? 1 : 0));
 		});
 	} else if (const auto channel = peer->asChannel()) {
-		return Notify::PeerUpdateValue(
-			channel,
-			Flag::AdminsChanged | Flag::RightsChanged
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::Admins | UpdateFlag::Rights
 		) | rpl::map([=] {
 			return channel->canViewAdmins()
 				? channel->adminsCount()
@@ -251,24 +293,23 @@ rpl::producer<int> AdminsCountValue(not_null<PeerData*> peer) {
 rpl::producer<int> RestrictionsCountValue(not_null<PeerData*> peer) {
 	const auto countOfRestrictions = [](ChatRestrictions restrictions) {
 		auto count = 0;
-		for (const auto f : Data::ListOfRestrictions()) {
+		for (const auto &f : Data::ListOfRestrictions()) {
 			if (restrictions & f) count++;
 		}
 		return int(Data::ListOfRestrictions().size()) - count;
 	};
 
-	using Flag = Notify::PeerUpdate::Flag;
 	if (const auto chat = peer->asChat()) {
-		return Notify::PeerUpdateValue(
-			chat,
-			Flag::RightsChanged
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::Rights
 		) | rpl::map([=] {
 			return countOfRestrictions(chat->defaultRestrictions());
 		});
 	} else if (const auto channel = peer->asChannel()) {
-		return Notify::PeerUpdateValue(
-			channel,
-			Flag::RightsChanged
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::Rights
 		) | rpl::map([=] {
 			return countOfRestrictions(channel->defaultRestrictions());
 		});
@@ -278,11 +319,10 @@ rpl::producer<int> RestrictionsCountValue(not_null<PeerData*> peer) {
 
 rpl::producer<not_null<PeerData*>> MigratedOrMeValue(
 		not_null<PeerData*> peer) {
-	using Flag = Notify::PeerUpdate::Flag;
 	if (const auto chat = peer->asChat()) {
-		return Notify::PeerUpdateValue(
-			chat,
-			Flag::MigrationChanged
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::Migration
 		) | rpl::map([=] {
 			return chat->migrateToOrMe();
 		});
@@ -292,10 +332,9 @@ rpl::producer<not_null<PeerData*>> MigratedOrMeValue(
 }
 
 rpl::producer<int> RestrictedCountValue(not_null<ChannelData*> channel) {
-	using Flag = Notify::PeerUpdate::Flag;
-	return Notify::PeerUpdateValue(
+	return channel->session().changes().peerFlagsValue(
 		channel,
-		Flag::BannedUsersChanged | Flag::RightsChanged
+		UpdateFlag::BannedUsers | UpdateFlag::Rights
 	) | rpl::map([=] {
 		return channel->canViewBanned()
 			? channel->restrictedCount()
@@ -304,10 +343,9 @@ rpl::producer<int> RestrictedCountValue(not_null<ChannelData*> channel) {
 }
 
 rpl::producer<int> KickedCountValue(not_null<ChannelData*> channel) {
-	using Flag = Notify::PeerUpdate::Flag;
-	return Notify::PeerUpdateValue(
+	return channel->session().changes().peerFlagsValue(
 		channel,
-		Flag::BannedUsersChanged | Flag::RightsChanged
+		UpdateFlag::BannedUsers | UpdateFlag::Rights
 	) | rpl::map([=] {
 		return channel->canViewBanned()
 			? channel->kickedCount()
@@ -322,6 +360,7 @@ rpl::producer<int> SharedMediaCountValue(
 	auto aroundId = 0;
 	auto limit = 0;
 	auto updated = SharedMediaMergedViewer(
+		&peer->session(),
 		SharedMediaMergedKey(
 			SparseIdsMergedSlice::Key(
 				peer->id,
@@ -337,26 +376,26 @@ rpl::producer<int> SharedMediaCountValue(
 }
 
 rpl::producer<int> CommonGroupsCountValue(not_null<UserData*> user) {
-	return Notify::PeerUpdateValue(
+	return user->session().changes().peerFlagsValue(
 		user,
-		Notify::PeerUpdate::Flag::UserCommonChatsChanged
-	) | rpl::map([user] {
+		UpdateFlag::CommonChats
+	) | rpl::map([=] {
 		return user->commonChatsCount();
 	});
 }
 
 rpl::producer<bool> CanAddMemberValue(not_null<PeerData*> peer) {
 	if (const auto chat = peer->asChat()) {
-		return Notify::PeerUpdateValue(
-			chat,
-			Notify::PeerUpdate::Flag::RightsChanged
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::Rights
 		) | rpl::map([=] {
 			return chat->canAddMembers();
 		});
 	} else if (const auto channel = peer->asChannel()) {
-		return Notify::PeerUpdateValue(
-			channel,
-			Notify::PeerUpdate::Flag::RightsChanged
+		return peer->session().changes().peerFlagsValue(
+			peer,
+			UpdateFlag::Rights
 		) | rpl::map([=] {
 			return channel->canAddMembers();
 		});
@@ -364,42 +403,57 @@ rpl::producer<bool> CanAddMemberValue(not_null<PeerData*> peer) {
 	return rpl::single(false);
 }
 
-rpl::producer<bool> VerifiedValue(not_null<PeerData*> peer) {
-	if (const auto user = peer->asUser()) {
-		return Data::PeerFlagValue(user, MTPDuser::Flag::f_verified);
-	} else if (const auto channel = peer->asChannel()) {
-		return Data::PeerFlagValue(
-			channel,
-			MTPDchannel::Flag::f_verified);
-	}
-	return rpl::single(false);
+rpl::producer<int> FullReactionsCountValue(
+		not_null<Main::Session*> session) {
+	const auto reactions = &session->data().reactions();
+	return rpl::single(rpl::empty) | rpl::then(
+		reactions->updates()
+	) | rpl::map([=] {
+		return int(reactions->list(Data::Reactions::Type::Active).size());
+	}) | rpl::distinct_until_changed();
 }
 
-rpl::producer<bool> ScamValue(not_null<PeerData*> peer) {
-	if (const auto user = peer->asUser()) {
-		return Data::PeerFlagValue(user, MTPDuser::Flag::f_scam);
-	} else if (const auto channel = peer->asChannel()) {
-		return Data::PeerFlagValue(
-			channel,
-			MTPDchannel::Flag::f_scam);
+rpl::producer<int> AllowedReactionsCountValue(not_null<PeerData*> peer) {
+	if (peer->isUser()) {
+		return FullReactionsCountValue(&peer->session());
 	}
-	return rpl::single(false);
+	return peer->session().changes().peerFlagsValue(
+		peer,
+		UpdateFlag::Reactions
+	) | rpl::map([=] {
+		if (const auto chat = peer->asChat()) {
+			return int(chat->allowedReactions().size());
+		} else if (const auto channel = peer->asChannel()) {
+			return int(channel->allowedReactions().size());
+		}
+		Unexpected("Peer type in AllowedReactionsCountValue.");
+	});
 }
-// // #feed
-//rpl::producer<int> FeedChannelsCountValue(not_null<Data::Feed*> feed) {
-//	using Flag = Data::FeedUpdateFlag;
-//	return rpl::single(
-//		Data::FeedUpdate{ feed, Flag::Channels }
-//	) | rpl::then(
-//		Auth().data().feedUpdated()
-//	) | rpl::filter([=](const Data::FeedUpdate &update) {
-//		return (update.feed == feed) && (update.flag == Flag::Channels);
-//	}) | rpl::filter([=] {
-//		return feed->channelsLoaded();
-//	}) | rpl::map([=] {
-//		return int(feed->channels().size());
-//	}) | rpl::distinct_until_changed();
-//}
+
+template <typename Flag, typename Peer>
+rpl::producer<Badge> BadgeValueFromFlags(Peer peer) {
+	return Data::PeerFlagsValue(
+		peer,
+		Flag::Verified | Flag::Scam | Flag::Fake
+	) | rpl::map([=](base::flags<Flag> value) {
+		return (value & Flag::Verified)
+			? Badge::Verified
+			: (value & Flag::Scam)
+			? Badge::Scam
+			: (value & Flag::Fake)
+			? Badge::Fake
+			: Badge::None;
+	});
+}
+
+rpl::producer<Badge> BadgeValue(not_null<PeerData*> peer) {
+	if (const auto user = peer->asUser()) {
+		return BadgeValueFromFlags<UserDataFlag>(user);
+	} else if (const auto channel = peer->asChannel()) {
+		return BadgeValueFromFlags<ChannelDataFlag>(channel);
+	}
+	return rpl::single(Badge::None);
+}
 
 } // namespace Profile
 } // namespace Info

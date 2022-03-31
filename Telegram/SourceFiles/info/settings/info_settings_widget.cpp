@@ -52,8 +52,6 @@ Widget::Widget(
 	) | rpl::start_with_next([=](Type type) {
 		controller->showSettings(type);
 	}, _inner->lifetime());
-
-	controller->setCanSaveChanges(_inner->sectionCanSaveChanges());
 }
 
 Widget::~Widget() = default;
@@ -81,10 +79,6 @@ void Widget::setInternalState(
 	restoreState(memento);
 }
 
-rpl::producer<bool> Widget::canSaveChanges() const {
-	return _inner->sectionCanSaveChanges();
-}
-
 void Widget::saveChanges(FnMut<void()> done) {
 	_inner->sectionSaveChanges(std::move(done));
 }
@@ -95,8 +89,8 @@ rpl::producer<bool> Widget::desiredShadowVisibility() const {
 		: rpl::single(true);
 }
 
-std::unique_ptr<ContentMemento> Widget::doCreateMemento() {
-	auto result = std::make_unique<Memento>(self(), _type);
+std::shared_ptr<ContentMemento> Widget::doCreateMemento() {
+	auto result = std::make_shared<Memento>(self(), _type);
 	saveState(result.get());
 	return result;
 }
@@ -106,7 +100,6 @@ void Widget::saveState(not_null<Memento*> memento) {
 }
 
 void Widget::restoreState(not_null<Memento*> memento) {
-	const auto scrollTop = memento->scrollTop();
 	scrollTopRestore(memento->scrollTop());
 }
 

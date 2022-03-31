@@ -16,10 +16,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <thread>
 
-namespace Data {
-class Session;
-} // namespace Data
-
 namespace Media {
 namespace Streaming {
 
@@ -27,12 +23,15 @@ class FileDelegate;
 
 class File final {
 public:
-	File(not_null<Data::Session*> owner, std::shared_ptr<Reader> reader);
+	explicit File(std::shared_ptr<Reader> reader);
 
 	File(const File &other) = delete;
 	File &operator=(const File &other) = delete;
 
-	void start(not_null<FileDelegate*> delegate, crl::time position);
+	void start(
+		not_null<FileDelegate*> delegate,
+		crl::time position,
+		bool hwAllow);
 	void wake();
 	void stop(bool stillActive = false);
 
@@ -47,7 +46,7 @@ private:
 		Context(not_null<FileDelegate*> delegate, not_null<Reader*> reader);
 		~Context();
 
-		void start(crl::time position);
+		void start(crl::time position, bool hwAllow);
 		void readNextPacket();
 
 		void interrupt();
@@ -76,9 +75,11 @@ private:
 		void logFatal(QLatin1String method, FFmpeg::AvErrorWrap error);
 		void fail(Error error);
 
-		Stream initStream(
+		[[nodiscard]] Stream initStream(
 			not_null<AVFormatContext *> format,
-			AVMediaType type);
+			AVMediaType type,
+			Mode mode,
+			bool hwAllowed);
 		void seekToPosition(
 			not_null<AVFormatContext *> format,
 			const Stream &stream,
@@ -86,7 +87,7 @@ private:
 
 		// TODO base::expected.
 		[[nodiscard]] auto readPacket()
-		-> base::variant<FFmpeg::Packet, FFmpeg::AvErrorWrap>;
+		-> std::variant<FFmpeg::Packet, FFmpeg::AvErrorWrap>;
 		void processQueuedPackets(SleepPolicy policy);
 
 		void handleEndOfFile();

@@ -124,10 +124,11 @@ void InnerWidget::createTypeButtons() {
 	addMediaButton(Type::File, st::infoIconMediaFile);
 	addMediaButton(Type::MusicFile, st::infoIconMediaAudio);
 	addMediaButton(Type::Link, st::infoIconMediaLink);
-	if (auto user = _controller->key().peer()->asUser()) {
-//		addCommonGroupsButton(user, st::infoIconMediaGroup);
-	}
 	addMediaButton(Type::RoundVoiceFile, st::infoIconMediaVoice);
+	addMediaButton(Type::GIF, st::infoIconMediaGif);
+//	if (auto user = _controller->key().peer()->asUser()) {
+//		addCommonGroupsButton(user, st::infoIconMediaGroup);
+//	}
 
 	content->add(object_ptr<Ui::FixedHeightWidget>(
 		content,
@@ -280,8 +281,8 @@ rpl::producer<SelectedItems> InnerWidget::selectedListValue() const {
 	) | rpl::flatten_latest();
 }
 
-void InnerWidget::cancelSelection() {
-	_list->cancelSelection();
+void InnerWidget::selectionAction(SelectionAction action) {
+	_list->selectionAction(action);
 }
 
 InnerWidget::~InnerWidget() = default;

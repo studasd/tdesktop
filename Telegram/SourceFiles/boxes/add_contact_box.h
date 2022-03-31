@@ -8,12 +8,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "boxes/abstract_box.h"
+#include "base/timer.h"
 #include "mtproto/sender.h"
-#include "styles/style_widgets.h"
 
-#include <QtCore/QTimer>
-
-class ConfirmBox;
 class PeerListBox;
 
 namespace Window {
@@ -46,9 +43,11 @@ enum class PeerFloodType {
 	InviteChannel,
 };
 
-style::InputField CreateBioFieldStyle();
+[[nodiscard]] style::InputField CreateBioFieldStyle();
 
-QString PeerFloodErrorText(PeerFloodType type);
+[[nodiscard]] TextWithEntities PeerFloodErrorText(
+	not_null<Main::Session*> session,
+	PeerFloodType type);
 void ShowAddParticipantsError(
 	const QString &error,
 	not_null<PeerData*> chat,
@@ -116,9 +115,14 @@ protected:
 
 private:
 	void createChannel(const QString &title, const QString &description);
-	void createGroup(not_null<PeerListBox*> selectUsersBox, const QString &title, const std::vector<not_null<PeerData*>> &users);
+	void createGroup(
+		not_null<PeerListBox*> selectUsersBox,
+		const QString &title,
+		const std::vector<not_null<PeerData*>> &users);
 	void submitName();
 	void submit();
+	void checkInviteLink();
+	void channelReady();
 
 	void descriptionResized();
 	void updateMaxHeight();
@@ -136,14 +140,12 @@ private:
 
 	// group / channel creation
 	mtpRequestId _creationRequestId = 0;
+	bool _creatingInviteLink = false;
 	ChannelData *_createdChannel = nullptr;
 
 };
 
-class SetupChannelBox
-	: public Ui::BoxContent
-	, public RPCSender
-	, private base::Subscriber {
+class SetupChannelBox final : public Ui::BoxContent {
 public:
 	SetupChannelBox(
 		QWidget*,
@@ -168,18 +170,26 @@ private:
 		Public,
 		Private,
 	};
+	enum class UsernameResult {
+		Ok,
+		Invalid,
+		Occupied,
+		ChatsTooMuch,
+		NA,
+		Unknown,
+	};
+	[[nodiscard]] UsernameResult parseError(const QString &error);
+
 	void privacyChanged(Privacy value);
 	void updateSelected(const QPoint &cursorGlobalPosition);
 	void handleChange();
 	void check();
 	void save();
 
-	void onUpdateDone(const MTPBool &result);
-	bool onUpdateFail(const RPCError &error);
+	void updateFail(UsernameResult result);
 
-	void onCheckDone(const MTPBool &result);
-	bool onCheckFail(const RPCError &error);
-	bool onFirstCheckFail(const RPCError &error);
+	void checkFail(UsernameResult result);
+	void firstCheckFail(UsernameResult result);
 
 	void updateMaxHeight();
 
@@ -187,8 +197,10 @@ private:
 
 	const not_null<Window::SessionNavigation*> _navigation;
 	const not_null<ChannelData*> _channel;
+	MTP::Sender _api;
 
 	bool _existing = false;
+	bool _creatingInviteLink = false;
 
 	std::shared_ptr<Ui::RadioenumGroup<Privacy>> _privacyGroup;
 	object_ptr<Ui::Radioenum<Privacy>> _public;
@@ -206,11 +218,11 @@ private:
 	mtpRequestId _checkRequestId = 0;
 	QString _sentUsername, _checkUsername, _errorText, _goodText;
 
-	QTimer _checkTimer;
+	base::Timer _checkTimer;
 
 };
 
-class EditNameBox : public Ui::BoxContent, public RPCSender {
+class EditNameBox : public Ui::BoxContent {
 public:
 	EditNameBox(QWidget*, not_null<UserData*> user);
 
@@ -223,10 +235,10 @@ protected:
 private:
 	void submit();
 	void save();
-	void saveSelfDone(const MTPUser &user);
-	bool saveSelfFail(const RPCError &error);
+	void saveSelfFail(const QString &error);
 
-	not_null<UserData*> _user;
+	const not_null<UserData*> _user;
+	MTP::Sender _api;
 
 	object_ptr<Ui::InputField> _first;
 	object_ptr<Ui::InputField> _last;
@@ -238,10 +250,7 @@ private:
 
 };
 
-class RevokePublicLinkBox
-	: public Ui::BoxContent
-	, public RPCSender
-	, private base::Subscriber {
+class RevokePublicLinkBox final : public Ui::BoxContent {
 public:
 	RevokePublicLinkBox(
 		QWidget*,

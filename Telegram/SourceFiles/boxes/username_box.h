@@ -8,18 +8,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "boxes/abstract_box.h"
-#include "mtproto/mtproto_rpc_sender.h"
+#include "base/timer.h"
+#include "mtproto/sender.h"
 
 namespace Ui {
 class UsernameInput;
 class LinkButton;
+class FlatLabel;
 } // namespace Ui
 
 namespace Main {
 class Session;
 } // namespace Main
 
-class UsernameBox : public Ui::BoxContent, public RPCSender {
+class UsernameBox : public Ui::BoxContent {
 public:
 	UsernameBox(QWidget*, not_null<Main::Session*> session);
 
@@ -31,11 +33,9 @@ protected:
 	void resizeEvent(QResizeEvent *e) override;
 
 private:
-	void onUpdateDone(const MTPUser &result);
-	bool onUpdateFail(const RPCError &error);
+	void updateFail(const QString &error);
 
-	void onCheckDone(const MTPBool &result);
-	bool onCheckFail(const RPCError &error);
+	void checkFail(const QString &error);
 
 	void save();
 
@@ -48,15 +48,19 @@ private:
 	void updateLinkText();
 
 	const not_null<Main::Session*> _session;
+	const style::font &_font;
+	const style::margins &_padding;
+	const int _textCenterTop;
+	MTP::Sender _api;
 
 	object_ptr<Ui::UsernameInput> _username;
+	object_ptr<Ui::FlatLabel> _about;
 	object_ptr<Ui::LinkButton> _link;
 
 	mtpRequestId _saveRequestId = 0;
 	mtpRequestId _checkRequestId = 0;
 	QString _sentUsername, _checkUsername, _errorText, _goodText;
 
-	Ui::Text::String _about;
-	object_ptr<QTimer> _checkTimer;
+	base::Timer _checkTimer;
 
 };

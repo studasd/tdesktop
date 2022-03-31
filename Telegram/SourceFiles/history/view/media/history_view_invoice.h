@@ -34,7 +34,7 @@ public:
 		return false;
 	}
 
-	void draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const override;
+	void draw(Painter &p, const PaintContext &context) const override;
 	TextState textState(QPoint point, StateRequest request) const override;
 
 	[[nodiscard]] TextSelection adjustSelection(
@@ -70,6 +70,15 @@ public:
 		return _attach.get();
 	}
 
+	bool hasHeavyPart() const override {
+		return _attach ? _attach->hasHeavyPart() : false;
+	}
+	void unloadHeavyPart() override {
+		if (_attach) {
+			_attach->unloadHeavyPart();
+		}
+	}
+
 private:
 	QSize countOptimalSize() override;
 	QSize countCurrentSize(int newWidth) override;
@@ -92,7 +101,5 @@ private:
 	MsgId _receiptMsgId = 0;
 
 };
-
-QString FillAmountAndCurrency(uint64 amount, const QString &currency);
 
 } // namespace HistoryView

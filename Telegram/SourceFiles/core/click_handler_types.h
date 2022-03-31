@@ -9,15 +9,45 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/basic_click_handlers.h"
 
+constexpr auto kPeerLinkPeerIdProperty = 0x01;
+constexpr auto kPhotoLinkMediaProperty = 0x02;
+constexpr auto kDocumentLinkMediaProperty = 0x03;
+constexpr auto kSendReactionEmojiProperty = 0x04;
+constexpr auto kReactionsCountEmojiProperty = 0x05;
+
+namespace Main {
+class Session;
+} // namespace Main
+
+namespace HistoryView {
+class ElementDelegate;
+} // namespace HistoryView
+
+namespace Window {
+class SessionController;
+} // namespace Window
+
+[[nodiscard]] bool UrlRequiresConfirmation(const QUrl &url);
+
+class PeerData;
+struct ClickHandlerContext {
+	FullMsgId itemId;
+	// Is filled from sections.
+	Fn<HistoryView::ElementDelegate*()> elementDelegate;
+	base::weak_ptr<Window::SessionController> sessionWindow;
+	bool skipBotAutoLogin = false;
+	// Is filled from peer info.
+	PeerData *peer = nullptr;
+};
+Q_DECLARE_METATYPE(ClickHandlerContext);
+
 class HiddenUrlClickHandler : public UrlClickHandler {
 public:
 	HiddenUrlClickHandler(QString url) : UrlClickHandler(url, false) {
 	}
-	QString copyToClipboardContextItemText() const override {
-		return (url().isEmpty() || url().startsWith(qstr("internal:")))
-			? QString()
-			: UrlClickHandler::copyToClipboardContextItemText();
-	}
+	QString copyToClipboardText() const override;
+	QString copyToClipboardContextItemText() const override;
+	QString dragText() const override;
 
 	static void Open(QString url, QVariant context = {});
 	void onClick(ClickContext context) const override {
@@ -72,10 +102,15 @@ private:
 
 class MentionNameClickHandler : public ClickHandler {
 public:
-	MentionNameClickHandler(QString text, UserId userId, uint64 accessHash)
-		: _text(text)
-		, _userId(userId)
-		, _accessHash(accessHash) {
+	MentionNameClickHandler(
+		not_null<Main::Session*> session,
+		QString text,
+		UserId userId,
+		uint64 accessHash)
+	: _session(session)
+	, _text(text)
+	, _userId(userId)
+	, _accessHash(accessHash) {
 	}
 
 	void onClick(ClickContext context) const override;
@@ -85,6 +120,7 @@ public:
 	QString tooltip() const override;
 
 private:
+	const not_null<Main::Session*> _session;
 	QString _text;
 	UserId _userId;
 	uint64 _accessHash;
@@ -141,7 +177,6 @@ private:
 
 };
 
-class PeerData;
 class BotCommandClickHandler : public TextClickHandler {
 public:
 	BotCommandClickHandler(const QString &cmd) : _cmd(cmd) {
@@ -153,30 +188,31 @@ public:
 		return _cmd;
 	}
 
-	static void setPeerForCommand(PeerData *peer) {
-		_peer = peer;
-	}
-	static void setBotForCommand(UserData *bot) {
-		_bot = bot;
-	}
-
 	TextEntity getTextEntity() const override;
 
 protected:
 	QString url() const override {
 		return _cmd;
 	}
-	static PeerData *peerForCommand() {
-		return _peer;
-	}
-	static UserData *botForCommand() {
-		return _bot;
-	}
 
 private:
 	QString _cmd;
 
-	static PeerData *_peer;
-	static UserData *_bot;
+};
+
+class MonospaceClickHandler : public TextClickHandler {
+public:
+	MonospaceClickHandler(const QString &text, EntityType type);
+
+	void onClick(ClickContext context) const override;
+
+	TextEntity getTextEntity() const override;
+
+protected:
+	QString url() const override;
+
+private:
+	const QString _text;
+	const TextEntity _entity;
 
 };

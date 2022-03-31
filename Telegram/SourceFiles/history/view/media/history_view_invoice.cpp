@@ -8,15 +8,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/media/history_view_invoice.h"
 
 #include "lang/lang_keys.h"
-#include "layout.h"
 #include "history/view/history_view_element.h"
 #include "history/view/history_view_cursor_state.h"
 #include "history/view/media/history_view_photo.h"
 #include "history/view/media/history_view_media_common.h"
-#include "ui/text_options.h"
+#include "ui/item_text_options.h"
+#include "ui/chat/chat_style.h"
+#include "ui/text/format_values.h"
+#include "ui/cached_round_corners.h"
 #include "data/data_media_types.h"
-#include "app.h"
-#include "styles/style_history.h"
+#include "styles/style_chat.h"
 
 namespace HistoryView {
 
@@ -51,13 +52,13 @@ void Invoice::fillFromData(not_null<Data::Invoice*> invoice) {
 		return tr::lng_payments_invoice_label(tr::now);
 	};
 	auto statusText = TextWithEntities {
-		FillAmountAndCurrency(invoice->amount, invoice->currency),
+		Ui::FillAmountAndCurrency(invoice->amount, invoice->currency),
 		EntitiesInText()
 	};
 	statusText.entities.push_back({
 		EntityType::Bold,
 		0,
-		statusText.text.size() });
+		int(statusText.text.size()) });
 	statusText.text += ' ' + labelText().toUpper();
 	_status.setMarkedText(
 		st::defaultTextStyle,
@@ -69,7 +70,7 @@ void Invoice::fillFromData(not_null<Data::Invoice*> invoice) {
 	// init strings
 	if (!invoice->description.isEmpty()) {
 		auto marked = TextWithEntities { invoice->description };
-		auto parseFlags = TextParseLinks | TextParseMultiline | TextParseRichText;
+		auto parseFlags = TextParseLinks | TextParseMultiline;
 		TextUtilities::ParseEntities(marked, parseFlags);
 		_description.setMarkedText(
 			st::webPageDescriptionStyle,
@@ -98,7 +99,6 @@ QSize Invoice::countOptimalSize() {
 	}
 
 	// init dimensions
-	auto l = st::msgPadding.left(), r = st::msgPadding.right();
 	auto skipBlockWidth = _parent->skipBlockWidth();
 	auto maxWidth = skipBlockWidth;
 	auto minHeight = 0;
@@ -199,43 +199,38 @@ void Invoice::refreshParentId(not_null<HistoryItem*> realParent) {
 	}
 }
 
-void Invoice::draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const {
+void Invoice::draw(Painter &p, const PaintContext &context) const {
 	if (width() < st::msgPadding.left() + st::msgPadding.right() + 1) return;
-	auto paintw = width(), painth = height();
+	auto paintw = width();
 
-	auto outbg = _parent->hasOutLayout();
-	bool selected = (selection == FullSelection);
+	const auto st = context.st;
+	const auto sti = context.imageStyle();
+	const auto stm = context.messageStyle();
 
-	auto &barfg = selected ? (outbg ? st::msgOutReplyBarSelColor : st::msgInReplyBarSelColor) : (outbg ? st::msgOutReplyBarColor : st::msgInReplyBarColor);
-	auto &semibold = selected ? (outbg ? st::msgOutServiceFgSelected : st::msgInServiceFgSelected) : (outbg ? st::msgOutServiceFg : st::msgInServiceFg);
-	auto &regular = selected ? (outbg ? st::msgOutDateFgSelected : st::msgInDateFgSelected) : (outbg ? st::msgOutDateFg : st::msgInDateFg);
+	auto &semibold = stm->msgServiceFg;
 
 	QMargins bubble(_attach ? _attach->bubbleMargins() : QMargins());
 	auto padding = inBubblePadding();
 	auto tshift = padding.top();
-	auto bshift = padding.bottom();
 	paintw -= padding.left() + padding.right();
-	if (isBubbleBottom() && _attach && _attach->customInfoLayout() && _attach->width() + _parent->skipBlockWidth() > paintw + bubble.left() + bubble.right()) {
-		bshift += bottomInfoPadding();
-	}
 
 	auto lineHeight = unitedLineHeight();
 	if (_titleHeight) {
 		p.setPen(semibold);
-		p.setTextPalette(selected ? (outbg ? st::outTextPaletteSelected : st::inTextPaletteSelected) : (outbg ? st::outSemiboldPalette : st::inSemiboldPalette));
+		p.setTextPalette(stm->semiboldPalette);
 
 		auto endskip = 0;
 		if (_title.hasSkipBlock()) {
 			endskip = _parent->skipBlockWidth();
 		}
-		_title.drawLeftElided(p, padding.left(), tshift, paintw, width(), _titleHeight / lineHeight, style::al_left, 0, -1, endskip, false, selection);
+		_title.drawLeftElided(p, padding.left(), tshift, paintw, width(), _titleHeight / lineHeight, style::al_left, 0, -1, endskip, false, context.selection);
 		tshift += _titleHeight;
 
-		p.setTextPalette(selected ? (outbg ? st::outTextPaletteSelected : st::inTextPaletteSelected) : (outbg ? st::outTextPalette : st::inTextPalette));
+		p.setTextPalette(stm->textPalette);
 	}
 	if (_descriptionHeight) {
-		p.setPen(outbg ? st::webPageDescriptionOutFg : st::webPageDescriptionInFg);
-		_description.drawLeft(p, padding.left(), tshift, paintw, width(), style::al_left, 0, -1, toDescriptionSelection(selection));
+		p.setPen(stm->historyTextFg);
+		_description.drawLeft(p, padding.left(), tshift, paintw, width(), style::al_left, 0, -1, toDescriptionSelection(context.selection));
 		tshift += _descriptionHeight;
 	}
 	if (_attach) {
@@ -246,12 +241,14 @@ void Invoice::draw(Painter &p, const QRect &r, TextSelection selection, crl::tim
 		auto attachTop = tshift - bubble.top();
 		if (rtl()) attachLeft = width() - attachLeft - _attach->width();
 
-		auto attachSelection = selected ? FullSelection : TextSelection { 0, 0 };
-
 		p.translate(attachLeft, attachTop);
-		_attach->draw(p, r.translated(-attachLeft, -attachTop), attachSelection, ms);
+		_attach->draw(p, context.translated(
+			-attachLeft,
+			-attachTop
+		).withSelection(context.selected()
+			? FullSelection
+			: TextSelection()));
 		auto pixwidth = _attach->width();
-		auto pixheight = _attach->height();
 
 		auto available = _status.maxWidth();
 		auto statusW = available + 2 * st::msgDateImgPadding.x();
@@ -259,15 +256,15 @@ void Invoice::draw(Painter &p, const QRect &r, TextSelection selection, crl::tim
 		auto statusX = st::msgDateImgDelta;
 		auto statusY = st::msgDateImgDelta;
 
-		App::roundRect(p, style::rtlrect(statusX, statusY, statusW, statusH, pixwidth), selected ? st::msgDateImgBgSelected : st::msgDateImgBg, selected ? DateSelectedCorners : DateCorners);
+		Ui::FillRoundRect(p, style::rtlrect(statusX, statusY, statusW, statusH, pixwidth), sti->msgDateImgBg, sti->msgDateImgBgCorners);
 
 		p.setFont(st::msgDateFont);
-		p.setPen(st::msgDateImgFg);
+		p.setPen(st->msgDateImgFg());
 		_status.drawLeftElided(p, statusX + st::msgDateImgPadding.x(), statusY + st::msgDateImgPadding.y(), available, pixwidth);
 
 		p.translate(-attachLeft, -attachTop);
 	} else {
-		p.setPen(outbg ? st::webPageDescriptionOutFg : st::webPageDescriptionInFg);
+		p.setPen(stm->historyTextFg);
 		_status.drawLeft(p, padding.left(), tshift + st::mediaInBubbleSkip, paintw, width());
 	}
 }
@@ -278,7 +275,7 @@ TextState Invoice::textState(QPoint point, StateRequest request) const {
 	if (width() < st::msgPadding.left() + st::msgPadding.right() + 1) {
 		return result;
 	}
-	auto paintw = width(), painth = height();
+	auto paintw = width();
 
 	QMargins bubble(_attach ? _attach->bubbleMargins() : QMargins());
 	auto padding = inBubblePadding();
@@ -383,61 +380,6 @@ int Invoice::bottomInfoPadding() const {
 
 	auto result = st::msgDateFont->height;
 	return result;
-}
-
-QString FillAmountAndCurrency(uint64 amount, const QString &currency) {
-	static const auto ShortCurrencyNames = QMap<QString, QString> {
-		{ qsl("USD"), QString::fromUtf8("\x24") },
-		{ qsl("GBP"), QString::fromUtf8("\xC2\xA3") },
-		{ qsl("EUR"), QString::fromUtf8("\xE2\x82\xAC") },
-		{ qsl("JPY"), QString::fromUtf8("\xC2\xA5") },
-	};
-	static const auto Denominators = QMap<QString, int> {
-		{ qsl("CLF"), 10000 },
-		{ qsl("BHD"), 1000 },
-		{ qsl("IQD"), 1000 },
-		{ qsl("JOD"), 1000 },
-		{ qsl("KWD"), 1000 },
-		{ qsl("LYD"), 1000 },
-		{ qsl("OMR"), 1000 },
-		{ qsl("TND"), 1000 },
-		{ qsl("BIF"), 1 },
-		{ qsl("BYR"), 1 },
-		{ qsl("CLP"), 1 },
-		{ qsl("CVE"), 1 },
-		{ qsl("DJF"), 1 },
-		{ qsl("GNF"), 1 },
-		{ qsl("ISK"), 1 },
-		{ qsl("JPY"), 1 },
-		{ qsl("KMF"), 1 },
-		{ qsl("KRW"), 1 },
-		{ qsl("MGA"), 1 },
-		{ qsl("PYG"), 1 },
-		{ qsl("RWF"), 1 },
-		{ qsl("UGX"), 1 },
-		{ qsl("UYI"), 1 },
-		{ qsl("VND"), 1 },
-		{ qsl("VUV"), 1 },
-		{ qsl("XAF"), 1 },
-		{ qsl("XOF"), 1 },
-		{ qsl("XPF"), 1 },
-		{ qsl("MRO"), 10 },
-	};
-	const auto currencyText = ShortCurrencyNames.value(currency, currency);
-	const auto denominator = Denominators.value(currency, 100);
-	const auto currencyValue = amount / float64(denominator);
-	const auto digits = [&] {
-		auto result = 0;
-		for (auto test = 1; test < denominator; test *= 10) {
-			++result;
-		}
-		return result;
-	}();
-	return QLocale::system().toCurrencyString(currencyValue, currencyText);
-	//auto amountBucks = amount / 100;
-	//auto amountCents = amount % 100;
-	//auto amountText = qsl("%1,%2").arg(amountBucks).arg(amountCents, 2, 10, QChar('0'));
-	//return currencyText + amountText;
 }
 
 } // namespace HistoryView

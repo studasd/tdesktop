@@ -50,6 +50,10 @@ QRect ContinuousSlider::getSeekRect() const {
 		: QRect(0, decrease.height() / 2, width(), height() - decrease.width());
 }
 
+float64 ContinuousSlider::value() const {
+	return getCurrentValue();
+}
+
 void ContinuousSlider::setValue(float64 value) {
 	setValue(value, -1);
 }
@@ -78,7 +82,7 @@ float64 ContinuousSlider::computeValue(const QPoint &pos) const {
 	const auto result = isHorizontal() ?
 		(pos.x() - seekRect.x()) / float64(seekRect.width()) :
 		(1. - (pos.y() - seekRect.y()) / float64(seekRect.height()));
-	const auto snapped = snap(result, 0., 1.);
+	const auto snapped = std::clamp(result, 0., 1.);
 	return _adjustCallback ? _adjustCallback(snapped) : snapped;
 }
 
@@ -106,11 +110,7 @@ void ContinuousSlider::wheelEvent(QWheelEvent *e) {
 	if (_mouseDown || !moveByWheel()) {
 		return;
 	}
-#ifdef OS_MAC_OLD
-	constexpr auto step = 120;
-#else // OS_MAC_OLD
 	constexpr auto step = static_cast<int>(QWheelEvent::DefaultDeltasPerStep);
-#endif // OS_MAC_OLD
 	constexpr auto coef = 1. / (step * 10.);
 
 	auto deltaX = e->angleDelta().x(), deltaY = e->angleDelta().y();
@@ -120,7 +120,7 @@ void ContinuousSlider::wheelEvent(QWheelEvent *e) {
 		deltaX *= -1;
 	}
 	auto delta = (qAbs(deltaX) > qAbs(deltaY)) ? deltaX : deltaY;
-	auto finalValue = snap(_value + delta * coef, 0., 1.);
+	auto finalValue = std::clamp(_value + delta * coef, 0., 1.);
 	setValue(finalValue);
 	if (_changeProgressCallback) {
 		_changeProgressCallback(finalValue);
@@ -136,7 +136,7 @@ void ContinuousSlider::updateDownValueFromPos(const QPoint &pos) {
 	}
 }
 
-void ContinuousSlider::enterEventHook(QEvent *e) {
+void ContinuousSlider::enterEventHook(QEnterEvent *e) {
 	setOver(true);
 }
 
@@ -174,7 +174,7 @@ void FilledSlider::paintEvent(QPaintEvent *e) {
 	const auto disabled = isDisabled();
 	const auto over = getCurrentOverFactor();
 	const auto lineWidth = _st.lineWidth + ((_st.fullWidth - _st.lineWidth) * over);
-	const auto lineWidthRounded = qFloor(lineWidth);
+	const auto lineWidthRounded = std::floor(lineWidth);
 	const auto lineWidthPartial = lineWidth - lineWidthRounded;
 	const auto seekRect = getSeekRect();
 	const auto value = getCurrentValue();
@@ -215,6 +215,15 @@ void MediaSlider::disablePaint(bool disabled) {
 	_paintDisabled = disabled;
 }
 
+void MediaSlider::addDivider(float64 atValue, const QSize &size) {
+	_dividers.push_back(Divider{ atValue, size });
+}
+
+void MediaSlider::setActiveFgOverride(std::optional<QColor> color) {
+	_activeFgOverride = color;
+	update();
+}
+
 void MediaSlider::paintEvent(QPaintEvent *e) {
 	if (_paintDisabled) {
 		return;
@@ -242,17 +251,36 @@ void MediaSlider::paintEvent(QPaintEvent *e) {
 		: value;
 
 	const auto markerFrom = (horizontal ? seekRect.x() : seekRect.y());
-	const auto markerLength = (horizontal ? seekRect.width() : seekRect.height());
+	const auto markerLength = horizontal
+		? seekRect.width()
+		: seekRect.height();
 	const auto from = 0;
 	const auto length = (horizontal ? width() : height());
-	const auto mid = qRound(from + value * length);
-	const auto till = std::max(mid, qRound(from + receivedTill * length));
+	const auto alwaysSeekSize = horizontal
+		? _st.seekSize.width()
+		: _st.seekSize.height();
+	const auto mid = _alwaysDisplayMarker
+		? qRound(from
+			+ (alwaysSeekSize / 2.)
+			+ value * (length - alwaysSeekSize))
+		: qRound(from + value * length);
+	const auto till = horizontal
+		? std::max(mid, qRound(from + receivedTill * length))
+		: mid;
 	const auto end = from + length;
-	const auto activeFg = disabled ? _st.activeFgDisabled : anim::brush(_st.activeFg, _st.activeFgOver, over);
+	const auto activeFg = disabled
+		? _st.activeFgDisabled
+		: _activeFgOverride
+		? QBrush(*_activeFgOverride)
+		: anim::brush(_st.activeFg, _st.activeFgOver, over);
 	const auto receivedTillFg = _st.receivedTillFg;
-	const auto inactiveFg = disabled ? _st.inactiveFgDisabled : anim::brush(_st.inactiveFg, _st.inactiveFgOver, over);
+	const auto inactiveFg = disabled
+		? _st.inactiveFgDisabled
+		: anim::brush(_st.inactiveFg, _st.inactiveFgOver, over);
 	if (mid > from) {
-		const auto fromClipRect = horizontal ? QRect(0, 0, mid, height()) : QRect(0, 0, width(), mid);
+		const auto fromClipRect = horizontal
+			? QRect(0, 0, mid, height())
+			: QRect(0, 0, width(), mid);
 		const auto till = std::min(mid + radius, end);
 		const auto fromRect = horizontal
 			? QRect(from, (height() - _st.width) / 2, till - from, _st.width)
@@ -266,39 +294,102 @@ void MediaSlider::paintEvent(QPaintEvent *e) {
 		auto clipRect = QRect(mid, 0, till - mid, height());
 		const auto left = std::max(mid - radius, from);
 		const auto right = std::min(till + radius, end);
-		const auto rect = QRect(left, (height() - _st.width) / 2, right - left, _st.width);
+		const auto rect = QRect(
+			left,
+			(height() - _st.width) / 2,
+			right - left,
+			_st.width);
 		p.setClipRect(clipRect);
 		p.setBrush(receivedTillFg);
 		p.drawRoundedRect(rect, radius, radius);
 	}
 	if (end > till) {
-		const auto endClipRect = horizontal ? QRect(till, 0, width() - till, height()) : QRect(0, till, width(), height() - till);
+		const auto endClipRect = horizontal
+			? QRect(till, 0, width() - till, height())
+			: QRect(0, till, width(), height() - till);
 		const auto begin = std::max(till - radius, from);
 		const auto endRect = horizontal
-			? QRect(begin, (height() - _st.width) / 2, end - begin, _st.width)
-			: QRect((width() - _st.width) / 2, begin, _st.width, end - begin);
+			? QRect(
+				begin,
+				(height() - _st.width) / 2,
+				end - begin,
+				_st.width)
+			: QRect(
+				(width() - _st.width) / 2,
+				begin,
+				_st.width,
+				end - begin);
 		p.setClipRect(endClipRect);
 		p.setBrush(horizontal ? inactiveFg : activeFg);
 		p.drawRoundedRect(endRect, radius, radius);
 	}
-	const auto markerSizeRatio = disabled ? 0. : (_alwaysDisplayMarker ? 1. : over);
+	if (!_dividers.empty()) {
+		p.setClipRect(rect());
+		for (const auto &divider : _dividers) {
+			const auto dividerValue = horizontal
+				? divider.atValue
+				: (1. - divider.atValue);
+			const auto dividerMid = base::SafeRound(from
+				+ dividerValue * length);
+			const auto &size = divider.size;
+			const auto rect = horizontal
+				? QRect(
+					dividerMid - size.width() / 2,
+					(height() - size.height()) / 2,
+					size.width(),
+					size.height())
+				: QRect(
+					(width() - size.height()) / 2,
+					dividerMid - size.width() / 2,
+					size.height(),
+					size.width());
+			p.setBrush(((value < dividerValue) == horizontal)
+				? inactiveFg
+				: activeFg);
+			const auto dividerRadius = size.width() / 2.;
+			p.drawRoundedRect(rect, dividerRadius, dividerRadius);
+		}
+	}
+	const auto markerSizeRatio = disabled
+		? 0.
+		: (_alwaysDisplayMarker ? 1. : over);
 	if (markerSizeRatio > 0) {
-		const auto position = qRound(markerFrom + value * markerLength) - (horizontal ? (_st.seekSize.width() / 2) : (_st.seekSize.height() / 2));
+		const auto position = qRound(markerFrom + value * markerLength)
+			- (horizontal
+				? (_st.seekSize.width() / 2)
+				: (_st.seekSize.height() / 2));
 		const auto seekButton = horizontal
-			? QRect(position, (height() - _st.seekSize.height()) / 2, _st.seekSize.width(), _st.seekSize.height())
-			: QRect((width() - _st.seekSize.width()) / 2, position, _st.seekSize.width(), _st.seekSize.height());
-		const auto size = horizontal ? _st.seekSize.width() : _st.seekSize.height();
-		const auto remove = static_cast<int>(((1. - markerSizeRatio) * size) / 2.);
+			? QRect(
+				position,
+				(height() - _st.seekSize.height()) / 2,
+				_st.seekSize.width(),
+				_st.seekSize.height())
+			: QRect(
+				(width() - _st.seekSize.width()) / 2,
+				position,
+				_st.seekSize.width(),
+				_st.seekSize.height());
+		const auto size = horizontal
+			? _st.seekSize.width()
+			: _st.seekSize.height();
+		const auto remove = static_cast<int>(
+			((1. - markerSizeRatio) * size) / 2.);
 		if (remove * 2 < size) {
 			p.setClipRect(rect());
 			p.setBrush(activeFg);
 			const auto xshift = horizontal
-				? std::max(seekButton.x() + seekButton.width() - remove - width(), 0) + std::min(seekButton.x() + remove, 0)
+				? std::max(
+					seekButton.x() + seekButton.width() - remove - width(),
+					0) + std::min(seekButton.x() + remove, 0)
 				: 0;
 			const auto yshift = horizontal
 				? 0
-				: std::max(seekButton.y() + seekButton.height() - remove - height(), 0) + std::min(seekButton.y() + remove, 0);
-			p.drawEllipse(seekButton.marginsRemoved(QMargins(remove, remove, remove, remove)).translated(-xshift, -yshift));
+				: std::max(
+					seekButton.y() + seekButton.height() - remove - height(),
+					0) + std::min(seekButton.y() + remove, 0);
+			p.drawEllipse(seekButton.marginsRemoved(
+				QMargins(remove, remove, remove, remove)
+			).translated(-xshift, -yshift));
 		}
 	}
 }

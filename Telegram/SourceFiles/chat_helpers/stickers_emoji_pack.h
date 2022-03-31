@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "ui/text/text_isolated_emoji.h"
+#include "ui/image/image.h"
 #include "base/timer.h"
 
 #include <crl/crl_object_on_queue.h>
@@ -33,11 +34,15 @@ class UniversalImages;
 } // namespace Ui
 
 namespace Stickers {
-namespace details {
-class EmojiImageLoader;
-} // namespace details
 
 using IsolatedEmoji = Ui::Text::IsolatedEmoji;
+
+struct LargeEmojiImage {
+	std::optional<Image> image;
+	FnMut<void()> load;
+
+	[[nodiscard]] static QSize Size();
+};
 
 class EmojiPack final {
 public:
@@ -60,35 +65,43 @@ public:
 	void remove(not_null<const HistoryItem*> item);
 
 	[[nodiscard]] Sticker stickerForEmoji(const IsolatedEmoji &emoji);
-	[[nodiscard]] std::shared_ptr<Image> image(EmojiPtr emoji);
+	[[nodiscard]] std::shared_ptr<LargeEmojiImage> image(EmojiPtr emoji);
+
+	[[nodiscard]] auto animationsForEmoji(EmojiPtr emoji) const
+		-> const base::flat_map<int, not_null<DocumentData*>> &;
 
 private:
 	class ImageLoader;
 
 	void refresh();
 	void refreshDelayed();
+	void refreshAnimations();
 	void applySet(const MTPDmessages_stickerSet &data);
 	void applyPack(
 		const MTPDstickerPack &data,
 		const base::flat_map<uint64, not_null<DocumentData*>> &map);
-	base::flat_map<uint64, not_null<DocumentData*>> collectStickers(
-		const QVector<MTPDocument> &list) const;
+	void applyAnimationsSet(const MTPDmessages_stickerSet &data);
+	[[nodiscard]] auto collectStickers(const QVector<MTPDocument> &list) const
+		-> base::flat_map<uint64, not_null<DocumentData*>>;
+	[[nodiscard]] auto collectAnimationsIndices(
+		const QVector<MTPStickerPack> &packs) const
+		-> base::flat_map<uint64, base::flat_set<int>>;
 	void refreshAll();
 	void refreshItems(EmojiPtr emoji);
 	void refreshItems(const base::flat_set<not_null<HistoryItem*>> &list);
-	std::shared_ptr<Ui::Emoji::UniversalImages> prepareSourceImages();
-	void clearSourceImages();
 
 	not_null<Main::Session*> _session;
 	base::flat_map<EmojiPtr, not_null<DocumentData*>> _map;
 	base::flat_map<
 		IsolatedEmoji,
 		base::flat_set<not_null<HistoryItem*>>> _items;
-	base::flat_map<EmojiPtr, std::weak_ptr<Image>> _images;
+	base::flat_map<EmojiPtr, std::weak_ptr<LargeEmojiImage>> _images;
 	mtpRequestId _requestId = 0;
 
-	crl::object_on_queue<details::EmojiImageLoader> _imageLoader;
-	base::Timer _clearTimer;
+	base::flat_map<
+		EmojiPtr,
+		base::flat_map<int, not_null<DocumentData*>>> _animations;
+	mtpRequestId _animationsRequestId = 0;
 
 	rpl::lifetime _lifetime;
 

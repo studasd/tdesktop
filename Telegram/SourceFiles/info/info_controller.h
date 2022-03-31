@@ -28,16 +28,23 @@ struct Tag {
 
 } // namespace Settings
 
+namespace Downloads {
+
+struct Tag {
+};
+
+} // namespace Downloads
+
 class Key {
 public:
 	Key(not_null<PeerData*> peer);
-	//Key(not_null<Data::Feed*> feed); // #feed
 	Key(Settings::Tag settings);
+	Key(Downloads::Tag downloads);
 	Key(not_null<PollData*> poll, FullMsgId contextId);
 
 	PeerData *peer() const;
-	//Data::Feed *feed() const; // #feed
 	UserData *settingsSelf() const;
+	bool isDownloads() const;
 	PollData *poll() const;
 	FullMsgId pollContextId() const;
 
@@ -46,10 +53,10 @@ private:
 		not_null<PollData*> poll;
 		FullMsgId contextId;
 	};
-	base::variant<
+	std::variant<
 		not_null<PeerData*>,
-		//not_null<Data::Feed*>, // #feed
 		Settings::Tag,
+		Downloads::Tag,
 		PollKey> _value;
 
 };
@@ -66,8 +73,8 @@ public:
 		Media,
 		CommonGroups,
 		Members,
-		//Channels, // #feed
 		Settings,
+		Downloads,
 		PollResults,
 	};
 	using SettingsType = ::Settings::Type;
@@ -114,13 +121,13 @@ public:
 	virtual PeerData *migrated() const = 0;
 	virtual Section section() const = 0;
 
-	PeerId peerId() const;
+	PeerData *peer() const;
 	PeerId migratedPeerId() const;
-	//Data::Feed *feed() const { // #feed
-	//	return key().feed();
-	//}
 	UserData *settingsSelf() const {
 		return key().settingsSelf();
+	}
+	bool isDownloads() const {
+		return key().isDownloads();
 	}
 	PollData *poll() const;
 	FullMsgId pollContextId() const {
@@ -134,12 +141,19 @@ public:
 		int limitBefore,
 		int limitAfter) const;
 	virtual rpl::producer<QString> mediaSourceQueryValue() const;
+	virtual rpl::producer<QString> searchQueryValue() const;
 
 	void showSection(
-		Window::SectionMemento &&memento,
+		std::shared_ptr<Window::SectionMemento> memento,
 		const Window::SectionShow &params = Window::SectionShow()) override;
 	void showBackFromStack(
 		const Window::SectionShow &params = Window::SectionShow()) override;
+
+	void showPeerHistory(
+		PeerId peerId,
+		const Window::SectionShow &params = Window::SectionShow::Way::ClearStack,
+		MsgId msgId = ShowAtUnreadMsgId) override;
+
 	not_null<Window::SessionController*> parentController() override {
 		return _parent;
 	}
@@ -185,18 +199,15 @@ public:
 		int limitBefore,
 		int limitAfter) const override;
 	rpl::producer<QString> mediaSourceQueryValue() const override;
+	rpl::producer<QString> searchQueryValue() const override;
 	bool takeSearchStartsFocused() {
 		return base::take(_searchStartsFocused);
 	}
 
-	void setCanSaveChanges(rpl::producer<bool> can);
-	rpl::producer<bool> canSaveChanges() const;
-	bool canSaveChangesNow() const;
-
 	void saveSearchState(not_null<ContentMemento*> memento);
 
 	void showSection(
-		Window::SectionMemento &&memento,
+		std::shared_ptr<Window::SectionMemento> memento,
 		const Window::SectionShow &params = Window::SectionShow()) override;
 	void showBackFromStack(
 		const Window::SectionShow &params = Window::SectionShow()) override;
@@ -223,7 +234,6 @@ private:
 	std::unique_ptr<Ui::SearchFieldController> _searchFieldController;
 	std::unique_ptr<Api::DelayedSearchController> _searchController;
 	rpl::variable<bool> _seachEnabledByContent = false;
-	rpl::variable<bool> _canSaveChanges = false;
 	bool _searchStartsFocused = false;
 
 	rpl::lifetime _lifetime;

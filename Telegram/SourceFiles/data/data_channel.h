@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer.h"
 #include "data/data_pts_waiter.h"
 #include "data/data_location.h"
+#include "data/data_chat_participant_status.h"
 
 struct ChannelLocation {
 	QString address;
@@ -29,25 +30,51 @@ struct ChannelLocation {
 	}
 };
 
+enum class ChannelDataFlag {
+	Left = (1 << 0),
+	Creator = (1 << 1),
+	Forbidden = (1 << 2),
+	CallActive = (1 << 3),
+	CallNotEmpty = (1 << 4),
+	Signatures = (1 << 5),
+	Verified = (1 << 6),
+	Scam = (1 << 7),
+	Fake = (1 << 8),
+	Megagroup = (1 << 9),
+	Broadcast = (1 << 10),
+	Gigagroup = (1 << 11),
+	Username = (1 << 12),
+	Location = (1 << 13),
+	CanSetUsername = (1 << 14),
+	CanSetStickers = (1 << 15),
+	PreHistoryHidden = (1 << 16),
+	CanViewParticipants = (1 << 17),
+	HasLink = (1 << 18),
+	SlowmodeEnabled = (1 << 19),
+	NoForwards = (1 << 20),
+};
+inline constexpr bool is_flag_type(ChannelDataFlag) { return true; };
+using ChannelDataFlags = base::flags<ChannelDataFlag>;
+
 class MegagroupInfo {
 public:
 	struct Admin {
-		explicit Admin(MTPChatAdminRights rights)
+		explicit Admin(ChatAdminRightsInfo rights)
 		: rights(rights) {
 		}
-		Admin(MTPChatAdminRights rights, bool canEdit)
+		Admin(ChatAdminRightsInfo rights, bool canEdit)
 		: rights(rights)
 		, canEdit(canEdit) {
 		}
-		MTPChatAdminRights rights;
+		ChatAdminRightsInfo rights;
 		bool canEdit = false;
 	};
 
 	struct Restricted {
-		explicit Restricted(MTPChatBannedRights rights)
+		explicit Restricted(ChatRestrictionsInfo rights)
 		: rights(rights) {
 		}
-		MTPChatBannedRights rights;
+		ChatRestrictionsInfo rights;
 	};
 
 	ChatData *getMigrateFromChat() const;
@@ -55,6 +82,15 @@ public:
 
 	const ChannelLocation *getLocation() const;
 	void setLocation(const ChannelLocation &location);
+
+	bool updateBotCommands(const MTPVector<MTPBotInfo> &data);
+	bool updateBotCommands(
+		UserId botId,
+		const MTPVector<MTPBotCommand> &data);
+	[[nodiscard]] auto botCommands() const
+		-> const base::flat_map<UserId, std::vector<BotCommand>> & {
+		return _botCommands;
+	}
 
 	std::deque<not_null<UserData*>> lastParticipants;
 	base::flat_map<not_null<UserData*>, Admin> lastAdmins;
@@ -69,7 +105,7 @@ public:
 	QString creatorRank;
 	int botStatus = 0; // -1 - no bots, 0 - unknown, 1 - one bot, that sees all history, 2 - other
 	bool joinedMessageFound = false;
-	MTPInputStickerSet stickerSet = MTP_inputStickerSetEmpty();
+	StickerSetIdentifier stickerSet;
 
 	enum LastParticipantsStatus {
 		LastParticipantsUpToDate       = 0x00,
@@ -82,37 +118,14 @@ public:
 private:
 	ChatData *_migratedFrom = nullptr;
 	ChannelLocation _location;
+	base::flat_map<UserId, std::vector<BotCommand>> _botCommands;
 
 };
 
 class ChannelData : public PeerData {
 public:
-	static constexpr auto kEssentialFlags = 0
-		| MTPDchannel::Flag::f_creator
-		| MTPDchannel::Flag::f_left
-		| MTPDchannel_ClientFlag::f_forbidden
-		| MTPDchannel::Flag::f_broadcast
-		| MTPDchannel::Flag::f_verified
-		| MTPDchannel::Flag::f_scam
-		| MTPDchannel::Flag::f_megagroup
-		| MTPDchannel::Flag::f_restricted
-		| MTPDchannel::Flag::f_signatures
-		| MTPDchannel::Flag::f_username
-		| MTPDchannel::Flag::f_slowmode_enabled;
-	using Flags = Data::Flags<
-		MTPDchannel::Flags,
-		kEssentialFlags>;
-
-	static constexpr auto kEssentialFullFlags = 0
-		| MTPDchannelFull::Flag::f_can_view_participants
-		| MTPDchannelFull::Flag::f_can_set_username
-		| MTPDchannelFull::Flag::f_can_set_stickers
-		| MTPDchannelFull::Flag::f_location
-		| MTPDchannelFull::Flag::f_slowmode_seconds
-		| MTPDchannelFull::Flag::f_slowmode_next_send_date;
-	using FullFlags = Data::Flags<
-		MTPDchannelFull::Flags,
-		kEssentialFullFlags>;
+	using Flag = ChannelDataFlag;
+	using Flags = Data::Flags<ChannelDataFlags>;
 
 	using AdminRight = ChatAdminRight;
 	using Restriction = ChatRestriction;
@@ -123,19 +136,17 @@ public:
 
 	ChannelData(not_null<Data::Session*> owner, PeerId id);
 
-	void setPhoto(const MTPChatPhoto &photo);
-	void setPhoto(PhotoId photoId, const MTPChatPhoto &photo);
-
 	void setName(const QString &name, const QString &username);
+	void setPhoto(const MTPChatPhoto &photo);
 	void setAccessHash(uint64 accessHash);
 
-	void setFlags(MTPDchannel::Flags which) {
+	void setFlags(ChannelDataFlags which) {
 		_flags.set(which);
 	}
-	void addFlags(MTPDchannel::Flags which) {
+	void addFlags(ChannelDataFlags which) {
 		_flags.add(which);
 	}
-	void removeFlags(MTPDchannel::Flags which) {
+	void removeFlags(ChannelDataFlags which) {
 		_flags.remove(which);
 	}
 	[[nodiscard]] auto flags() const {
@@ -143,22 +154,6 @@ public:
 	}
 	[[nodiscard]] auto flagsValue() const {
 		return _flags.value();
-	}
-
-	void setFullFlags(MTPDchannelFull::Flags which) {
-		_fullFlags.set(which);
-	}
-	void addFullFlags(MTPDchannelFull::Flags which) {
-		_fullFlags.add(which);
-	}
-	void removeFullFlags(MTPDchannelFull::Flags which) {
-		_fullFlags.remove(which);
-	}
-	[[nodiscard]] auto fullFlags() const {
-		return _fullFlags.current();
-	}
-	[[nodiscard]] auto fullFlagsValue() const {
-		return _fullFlags.value();
 	}
 
 	[[nodiscard]] int membersCount() const {
@@ -184,61 +179,81 @@ public:
 	}
 	void setKickedCount(int newKickedCount);
 
+	[[nodiscard]] int pendingRequestsCount() const {
+		return _pendingRequestsCount;
+	}
+	[[nodiscard]] const std::vector<UserId> &recentRequesters() const {
+		return _recentRequesters;
+	}
+	void setPendingRequestsCount(
+		int count,
+		const QVector<MTPlong> &recentRequesters);
+	void setPendingRequestsCount(
+		int count,
+		std::vector<UserId> recentRequesters);
+
 	[[nodiscard]] bool haveLeft() const {
-		return flags() & MTPDchannel::Flag::f_left;
+		return flags() & Flag::Left;
 	}
 	[[nodiscard]] bool amIn() const {
 		return !isForbidden() && !haveLeft();
 	}
 	[[nodiscard]] bool addsSignature() const {
-		return flags() & MTPDchannel::Flag::f_signatures;
+		return flags() & Flag::Signatures;
 	}
 	[[nodiscard]] bool isForbidden() const {
-		return flags() & MTPDchannel_ClientFlag::f_forbidden;
+		return flags() & Flag::Forbidden;
 	}
 	[[nodiscard]] bool isVerified() const {
-		return flags() & MTPDchannel::Flag::f_verified;
+		return flags() & Flag::Verified;
 	}
 	[[nodiscard]] bool isScam() const {
-		return flags() & MTPDchannel::Flag::f_scam;
+		return flags() & Flag::Scam;
+	}
+	[[nodiscard]] bool isFake() const {
+		return flags() & Flag::Fake;
 	}
 
-	static MTPChatBannedRights KickedRestrictedRights();
+	[[nodiscard]] static ChatRestrictionsInfo KickedRestrictedRights(
+		not_null<PeerData*> participant);
 	static constexpr auto kRestrictUntilForever = TimeId(INT_MAX);
 	[[nodiscard]] static bool IsRestrictedForever(TimeId until) {
 		return !until || (until == kRestrictUntilForever);
 	}
 	void applyEditAdmin(
 		not_null<UserData*> user,
-		const MTPChatAdminRights &oldRights,
-		const MTPChatAdminRights &newRights,
+		ChatAdminRightsInfo oldRights,
+		ChatAdminRightsInfo newRights,
 		const QString &rank);
 	void applyEditBanned(
-		not_null<UserData*> user,
-		const MTPChatBannedRights &oldRights,
-		const MTPChatBannedRights &newRights);
+		not_null<PeerData*> participant,
+		ChatRestrictionsInfo oldRights,
+		ChatRestrictionsInfo newRights);
 
 	void markForbidden();
 
 	[[nodiscard]] bool isGroupAdmin(not_null<UserData*> user) const;
 	[[nodiscard]] bool lastParticipantsRequestNeeded() const;
 	[[nodiscard]] bool isMegagroup() const {
-		return flags() & MTPDchannel::Flag::f_megagroup;
+		return flags() & Flag::Megagroup;
 	}
 	[[nodiscard]] bool isBroadcast() const {
-		return flags() & MTPDchannel::Flag::f_broadcast;
+		return flags() & Flag::Broadcast;
+	}
+	[[nodiscard]] bool isGigagroup() const {
+		return flags() & Flag::Gigagroup;
 	}
 	[[nodiscard]] bool hasUsername() const {
-		return flags() & MTPDchannel::Flag::f_username;
+		return flags() & Flag::Username;
 	}
 	[[nodiscard]] bool hasLocation() const {
-		return fullFlags() & MTPDchannelFull::Flag::f_location;
+		return flags() & Flag::Location;
 	}
 	[[nodiscard]] bool isPublic() const {
 		return hasUsername() || hasLocation();
 	}
 	[[nodiscard]] bool amCreator() const {
-		return flags() & MTPDchannel::Flag::f_creator;
+		return flags() & Flag::Creator;
 	}
 
 	[[nodiscard]] auto adminRights() const {
@@ -247,7 +262,7 @@ public:
 	[[nodiscard]] auto adminRightsValue() const {
 		return _adminRights.value();
 	}
-	void setAdminRights(const MTPChatAdminRights &rights);
+	void setAdminRights(ChatAdminRights rights);
 	[[nodiscard]] bool hasAdminRights() const {
 		return (adminRights() != 0);
 	}
@@ -261,7 +276,7 @@ public:
 	[[nodiscard]] TimeId restrictedUntil() const {
 		return _restrictedUntil;
 	}
-	void setRestrictions(const MTPChatBannedRights &rights);
+	void setRestrictions(ChatRestrictionsInfo rights);
 	[[nodiscard]] bool hasRestrictions() const {
 		return (restrictions() != 0);
 	}
@@ -276,10 +291,11 @@ public:
 	[[nodiscard]] auto defaultRestrictionsValue() const {
 		return _defaultRestrictions.value();
 	}
-	void setDefaultRestrictions(const MTPChatBannedRights &rights);
+	void setDefaultRestrictions(ChatRestrictions rights);
 
 	// Like in ChatData.
 	[[nodiscard]] bool canWrite() const;
+	[[nodiscard]] bool allowsForwarding() const;
 	[[nodiscard]] bool canEditInformation() const;
 	[[nodiscard]] bool canEditPermissions() const;
 	[[nodiscard]] bool canEditUsername() const;
@@ -301,10 +317,13 @@ public:
 	[[nodiscard]] bool canEditStickers() const;
 	[[nodiscard]] bool canDelete() const;
 	[[nodiscard]] bool canEditAdmin(not_null<UserData*> user) const;
-	[[nodiscard]] bool canRestrictUser(not_null<UserData*> user) const;
+	[[nodiscard]] bool canRestrictParticipant(
+		not_null<PeerData*> participant) const;
 
 	void setInviteLink(const QString &newInviteLink);
-	[[nodiscard]] QString inviteLink() const;
+	[[nodiscard]] QString inviteLink() const {
+		return _inviteLink;
+	}
 	[[nodiscard]] bool canHaveInviteLink() const;
 
 	void setLocation(const MTPChannelLocation &data);
@@ -312,6 +331,7 @@ public:
 
 	void setLinkedChat(ChannelData *linked);
 	[[nodiscard]] ChannelData *linkedChat() const;
+	[[nodiscard]] bool linkedChatKnown() const;
 
 	void ptsInit(int32 pts) {
 		_ptsWaiter.init(pts);
@@ -365,19 +385,6 @@ public:
 	}
 	void setAvailableMinId(MsgId availableMinId);
 
-	enum class UpdateStatus {
-		Good,
-		TooOld,
-		Skipped,
-	};
-	int version() const {
-		return _version;
-	}
-	void setVersion(int version) {
-		_version = version;
-	}
-	UpdateStatus applyUpdateVersion(int version);
-
 	[[nodiscard]] ChatData *getMigrateFromChat() const;
 	void setMigrateFromChat(ChatData *chat);
 
@@ -386,10 +393,31 @@ public:
 	[[nodiscard]] TimeId slowmodeLastMessage() const;
 	void growSlowmodeLastMessage(TimeId when);
 
+	void setInvitePeek(const QString &hash, TimeId expires);
+	void clearInvitePeek();
+	[[nodiscard]] TimeId invitePeekExpires() const;
+	[[nodiscard]] QString invitePeekHash() const;
+	void privateErrorReceived();
+
+	[[nodiscard]] Data::GroupCall *groupCall() const {
+		return _call.get();
+	}
+	void migrateCall(std::unique_ptr<Data::GroupCall> call);
+	void setGroupCall(
+		const MTPInputGroupCall &call,
+		TimeId scheduleDate = 0,
+		bool rtmp = false);
+	void clearGroupCall();
+	void setGroupCallDefaultJoinAs(PeerId peerId);
+	[[nodiscard]] PeerId groupCallDefaultJoinAs() const;
+
+	void setAllowedReactions(base::flat_set<QString> list);
+	[[nodiscard]] const base::flat_set<QString> &allowedReactions() const;
+
 	// Still public data members.
 	uint64 access = 0;
 
-	MTPinputChannel inputChannel;
+	MTPinputChannel inputChannel = MTP_inputChannelEmpty();
 
 	QString username;
 
@@ -399,14 +427,19 @@ public:
 	// > 0 - user who invited me to channel, < 0 - not in channel.
 	UserId inviter = 0;
 	TimeId inviteDate = 0;
+	bool inviteViaRequest = false;
 
 private:
+	struct InvitePeek {
+		QString hash;
+		TimeId expires = 0;
+	};
+
 	auto unavailableReasons() const
 		-> const std::vector<Data::UnavailableReason> & override;
 	bool canEditLastAdmin(not_null<UserData*> user) const;
 
-	Flags _flags = Flags(MTPDchannel_ClientFlag::f_forbidden | 0);
-	FullFlags _fullFlags;
+	Flags _flags = ChannelDataFlags(Flag::Forbidden);
 
 	PtsWaiter _ptsWaiter;
 
@@ -414,8 +447,9 @@ private:
 	int _adminsCount = 1;
 	int _restrictedCount = 0;
 	int _kickedCount = 0;
+	int _pendingRequestsCount = 0;
+	std::vector<UserId> _recentRequesters;
 	MsgId _availableMinId = 0;
-	int _version = 0;
 
 	RestrictionFlags _defaultRestrictions;
 	AdminRightFlags _adminRights;
@@ -423,8 +457,14 @@ private:
 	TimeId _restrictedUntil;
 
 	std::vector<Data::UnavailableReason> _unavailableReasons;
+	std::unique_ptr<InvitePeek> _invitePeek;
 	QString _inviteLink;
-	ChannelData *_linkedChat = nullptr;
+	std::optional<ChannelData*> _linkedChat;
+
+	base::flat_set<QString> _allowedReactions;
+
+	std::unique_ptr<Data::GroupCall> _call;
+	PeerId _callDefaultJoinAs = 0;
 
 	int _slowmodeSeconds = 0;
 	TimeId _slowmodeLastMessage = 0;
@@ -446,9 +486,5 @@ void ApplyChannelUpdate(
 void ApplyChannelUpdate(
 	not_null<ChannelData*> channel,
 	const MTPDchannelFull &update);
-
-void ApplyMegagroupAdmins(
-	not_null<ChannelData*> channel,
-	const MTPDchannels_channelParticipants &data);
 
 } // namespace Data

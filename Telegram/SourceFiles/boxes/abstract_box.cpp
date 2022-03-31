@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mainwidget.h"
 #include "mainwindow.h"
-#include "app.h"
 
 namespace Ui {
 namespace internal {
@@ -31,12 +30,6 @@ void hideLayer(anim::type animated) {
 			{ nullptr },
 			LayerOption::CloseOther,
 			animated);
-	}
-}
-
-void hideSettingsAndLayer(anim::type animated) {
-	if (auto w = App::wnd()) {
-		w->ui_hideSettingsAndLayer(animated);
 	}
 }
 

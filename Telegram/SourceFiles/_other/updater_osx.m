@@ -90,7 +90,7 @@ int main(int argc, const char * argv[]) {
 
 	openLog();
 	pid_t procId = 0;
-	BOOL update = YES, toSettings = NO, autoStart = NO, startInTray = NO, testMode = NO, externalUpdater = NO;
+	BOOL update = YES, toSettings = NO, autoStart = NO, startInTray = NO, freeType = NO;
 	BOOL customWorkingDir = NO;
 	NSString *key = nil;
 	for (int i = 0; i < argc; ++i) {
@@ -114,10 +114,8 @@ int main(int argc, const char * argv[]) {
 			_debug = YES;
 		} else if ([@"-startintray" isEqualToString:[NSString stringWithUTF8String:argv[i]]]) {
 			startInTray = YES;
-		} else if ([@"-testmode" isEqualToString:[NSString stringWithUTF8String:argv[i]]]) {
-			testMode = YES;
-		} else if ([@"-externalupdater" isEqualToString:[NSString stringWithUTF8String:argv[i]]]) {
-			externalUpdater = YES;
+		} else if ([@"-freetype" isEqualToString:[NSString stringWithUTF8String:argv[i]]]) {
+			freeType = YES;
 		} else if ([@"-workdir_custom" isEqualToString:[NSString stringWithUTF8String:argv[i]]]) {
 			customWorkingDir = YES;
 		} else if ([@"-key" isEqualToString:[NSString stringWithUTF8String:argv[i]]]) {
@@ -254,8 +252,7 @@ int main(int argc, const char * argv[]) {
 	if (toSettings) [args addObject:@"-tosettings"];
 	if (_debug) [args addObject:@"-debug"];
 	if (startInTray) [args addObject:@"-startintray"];
-	if (testMode) [args addObject:@"-testmode"];
-	if (externalUpdater) [args addObject:@"-externalupdater"];
+	if (freeType) [args addObject:@"-freetype"];
 	if (autoStart) [args addObject:@"-autostart"];
 	if (key) {
 		[args addObject:@"-key"];

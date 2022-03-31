@@ -20,15 +20,19 @@ namespace Passport {
 class FormController;
 class Panel;
 
+struct EditDocumentCountry;
 struct EditDocumentScheme;
 struct EditContactScheme;
 
 enum class ReadScanError;
 
+using preferredLangCallback =
+	Fn<rpl::producer<EditDocumentCountry>(const QString &)>;
 EditDocumentScheme GetDocumentScheme(
 	Scope::Type type,
 	std::optional<Value::Type> scansType,
-	bool nativeNames);
+	bool nativeNames,
+	preferredLangCallback &&preferredLanguage);
 EditContactScheme GetContactScheme(Scope::Type type);
 
 const std::map<QString, QString> &LatinToNativeMap();
@@ -64,7 +68,7 @@ struct ScopeError {
 	// FileKey - file_hash error (bad scan / selfie / translation)
 	// General - general value error (or scan / translation missing)
 	// QString - data_hash with such key error (bad value)
-	base::variant<FileKey, General, QString> key;
+	std::variant<FileKey, General, QString> key;
 	QString text;
 };
 

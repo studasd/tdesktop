@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "data/data_folder.h"
 #include "data/data_channel.h"
+#include "data/data_changes.h"
 #include "data/data_user.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/padding_wrap.h"
@@ -19,16 +20,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/labels.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/box_content_divider.h"
+#include "ui/boxes/report_box.h"
 #include "ui/layers/generic_box.h"
 #include "ui/toast/toast.h"
 #include "ui/text/text_utilities.h" // Ui::Text::ToUpper
 #include "history/history_location_manager.h" // LocationClickHandler.
+#include "history/view/history_view_context_menu.h" // HistoryView::ShowReportPeerBox
 #include "boxes/abstract_box.h"
-#include "boxes/confirm_box.h"
+#include "ui/boxes/confirm_box.h"
 #include "boxes/peer_list_box.h"
 #include "boxes/peer_list_controllers.h"
 #include "boxes/add_contact_box.h"
-#include "boxes/report_box.h"
 #include "boxes/peers/edit_contact_box.h"
 #include "lang/lang_keys.h"
 #include "info/info_controller.h"
@@ -44,7 +46,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h" // MainWindow::controller.
 #include "main/main_session.h"
 #include "core/application.h"
+#include "core/click_handler_types.h"
 #include "apiwrap.h"
+#include "api/api_blocked_peers.h"
 #include "facades.h"
 #include "styles/style_info.h"
 #include "styles/style_boxes.h"
@@ -76,6 +80,7 @@ auto AddActionButton(
 		Text &&text,
 		ToggleOn &&toggleOn,
 		Callback &&callback,
+		const style::icon *icon,
 		const style::SettingsButton &st
 			= st::infoSharedMediaButton) {
 	auto result = parent->add(object_ptr<Ui::SlideWrap<Ui::SettingsButton>>(
@@ -91,6 +96,12 @@ auto AddActionButton(
 		std::move(toggleOn)
 	)->entity()->addClickHandler(std::move(callback));
 	result->finishAnimating();
+	if (icon) {
+		object_ptr<Profile::FloatingIcon>(
+			result,
+			*icon,
+			st::infoSharedMediaButtonIconPosition);
+	}
 	return result;
 };
 
@@ -106,6 +117,7 @@ auto AddMainButton(
 		std::move(text) | Ui::Text::ToUpper(),
 		std::move(toggleOn),
 		std::move(callback),
+		nullptr,
 		st::infoMainButton));
 }
 
@@ -160,8 +172,6 @@ private:
 	void addShareContactAction(not_null<UserData*> user);
 	void addEditContactAction(not_null<UserData*> user);
 	void addDeleteContactAction(not_null<UserData*> user);
-	void addClearHistoryAction(not_null<UserData*> user);
-	void addDeleteConversationAction(not_null<UserData*> user);
 	void addBotCommandActions(not_null<UserData*> user);
 	void addReportAction();
 	void addBlockAction(not_null<UserData*> user);
@@ -176,37 +186,6 @@ private:
 	object_ptr<Ui::VerticalLayout> _wrap = { nullptr };
 
 };
-// // #feed
-//class FeedDetailsFiller {
-//public:
-//	FeedDetailsFiller(
-//		not_null<Controller*> controller,
-//		not_null<Ui::RpWidget*> parent,
-//		not_null<Data::Feed*> feed);
-//
-//	object_ptr<Ui::RpWidget> fill();
-//
-//private:
-//	object_ptr<Ui::RpWidget> setupDefaultToggle();
-//
-//	template <
-//		typename Widget,
-//		typename = std::enable_if_t<
-//		std::is_base_of_v<Ui::RpWidget, Widget>>>
-//	Widget *add(
-//			object_ptr<Widget> &&child,
-//			const style::margins &margin = style::margins()) {
-//		return _wrap->add(
-//			std::move(child),
-//			margin);
-//	}
-//
-//	not_null<Controller*> _controller;
-//	not_null<Ui::RpWidget*> _parent;
-//	not_null<Data::Feed*> _feed;
-//	object_ptr<Ui::VerticalLayout> _wrap;
-//
-//};
 
 DetailsFiller::DetailsFiller(
 	not_null<Controller*> controller,
@@ -218,9 +197,48 @@ DetailsFiller::DetailsFiller(
 , _wrap(_parent) {
 }
 
+template <typename T>
+bool SetClickContext(
+		const ClickHandlerPtr &handler,
+		const ClickContext &context) {
+	if (const auto casted = std::dynamic_pointer_cast<T>(handler)) {
+		casted->T::onClick(context);
+		return true;
+	}
+	return false;
+}
+
 object_ptr<Ui::RpWidget> DetailsFiller::setupInfo() {
 	auto result = object_ptr<Ui::VerticalLayout>(_wrap);
 	auto tracker = Ui::MultiSlideTracker();
+
+	// Fill context for a mention / hashtag / bot command link.
+	const auto infoClickFilter = [=,
+		peer = _peer.get(),
+		window = _controller->parentController()](
+			const ClickHandlerPtr &handler,
+			Qt::MouseButton button) {
+		const auto context = ClickContext{
+			button,
+			QVariant::fromValue(ClickHandlerContext{
+				.sessionWindow = base::make_weak(window.get()),
+				.peer = peer,
+			})
+		};
+		if (SetClickContext<BotCommandClickHandler>(handler, context)) {
+			return false;
+		} else if (SetClickContext<MentionClickHandler>(handler, context)) {
+			return false;
+		} else if (SetClickContext<HashtagClickHandler>(handler, context)) {
+			return false;
+		} else if (SetClickContext<CashtagClickHandler>(handler, context)) {
+			return false;
+		} else if (SetClickContext<UrlClickHandler>(handler, context)) {
+			return false;
+		}
+		return true;
+	};
+
 	auto addInfoLineGeneric = [&](
 			rpl::producer<QString> &&label,
 			rpl::producer<TextWithEntities> &&text,
@@ -232,6 +250,8 @@ object_ptr<Ui::RpWidget> DetailsFiller::setupInfo() {
 			textSt,
 			st::infoProfileLabeledPadding);
 		tracker.track(result->add(std::move(line.wrap)));
+
+		line.text->setClickHandlerFilter(infoClickFilter);
 		return line.text;
 	};
 	auto addInfoLine = [&](
@@ -266,22 +286,21 @@ object_ptr<Ui::RpWidget> DetailsFiller::setupInfo() {
 			tr::lng_info_mobile_label(),
 			PhoneOrHiddenValue(user),
 			tr::lng_profile_copy_phone(tr::now));
-		if (user->isBot()) {
-			addInfoLine(tr::lng_info_about_label(), AboutValue(user));
-		} else {
-			addInfoLine(tr::lng_info_bio_label(), BioValue(user));
-		}
+		auto label = user->isBot()
+			? tr::lng_info_about_label()
+			: tr::lng_info_bio_label();
+		addInfoLine(std::move(label), AboutValue(user));
 		addInfoOneLine(
 			tr::lng_info_username_label(),
 			UsernameValue(user),
 			tr::lng_context_copy_mention(tr::now));
 
-		const auto window = &_controller->parentController()->window();
+		const auto controller = _controller->parentController();
 		AddMainButton(
 			result,
 			tr::lng_info_add_as_contact(),
 			CanAddContactValue(user),
-			[=] { window->show(Box(EditContactBox, window, user)); },
+			[=] { controller->window().show(Box(EditContactBox, controller, user)); },
 			tracker);
 	} else {
 		auto linkText = LinkValue(
@@ -300,7 +319,7 @@ object_ptr<Ui::RpWidget> DetailsFiller::setupInfo() {
 			std::move(linkText),
 			QString());
 		link->setClickHandlerFilter([peer = _peer](auto&&...) {
-			const auto link = Core::App().createInternalLinkFull(
+			const auto link = peer->session().createInternalLinkFull(
 				peer->userName());
 			if (!link.isEmpty()) {
 				QGuiApplication::clipboard()->setText(link);
@@ -488,12 +507,12 @@ ActionsFiller::ActionsFiller(
 
 void ActionsFiller::addInviteToGroupAction(
 		not_null<UserData*> user) {
-	const auto controller = _controller;
 	AddActionButton(
 		_wrap,
 		tr::lng_profile_invite_to_group(),
 		CanInviteBotToGroupValue(user),
-		[=] { AddBotToGroupBoxController::Start(controller, user); });
+		[=] { AddBotToGroupBoxController::Start(user); },
+		&st::infoIconRequests);
 }
 
 void ActionsFiller::addShareContactAction(not_null<UserData*> user) {
@@ -502,42 +521,28 @@ void ActionsFiller::addShareContactAction(not_null<UserData*> user) {
 		_wrap,
 		tr::lng_info_share_contact(),
 		CanShareContactValue(user),
-		[=] { Window::PeerMenuShareContactBox(controller, user); });
+		[=] { Window::PeerMenuShareContactBox(controller, user); },
+		&st::infoIconShare);
 }
 
 void ActionsFiller::addEditContactAction(not_null<UserData*> user) {
-	const auto window = &_controller->parentController()->window();
+	const auto controller = _controller->parentController();
 	AddActionButton(
 		_wrap,
 		tr::lng_info_edit_contact(),
 		IsContactValue(user),
-		[=] { window->show(Box(EditContactBox, window, user)); });
+		[=] { controller->window().show(Box(EditContactBox, controller, user)); },
+		&st::infoIconEdit);
 }
 
-void ActionsFiller::addDeleteContactAction(
-		not_null<UserData*> user) {
+void ActionsFiller::addDeleteContactAction(not_null<UserData*> user) {
+	const auto controller = _controller->parentController();
 	AddActionButton(
 		_wrap,
 		tr::lng_info_delete_contact(),
 		IsContactValue(user),
-		[user] { Window::PeerMenuDeleteContact(user); });
-}
-
-void ActionsFiller::addClearHistoryAction(not_null<UserData*> user) {
-	AddActionButton(
-		_wrap,
-		tr::lng_profile_clear_history(),
-		rpl::single(true),
-		 Window::ClearHistoryHandler(user));
-}
-
-void ActionsFiller::addDeleteConversationAction(
-		not_null<UserData*> user) {
-	AddActionButton(
-		_wrap,
-		tr::lng_profile_delete_conversation(),
-		rpl::single(true),
-		Window::DeleteAndLeaveHandler(user));
+		[=] { Window::PeerMenuDeleteContact(controller, user); },
+		&st::infoIconDelete);
 }
 
 void ActionsFiller::addBotCommandActions(not_null<UserData*> user) {
@@ -545,10 +550,10 @@ void ActionsFiller::addBotCommandActions(not_null<UserData*> user) {
 		if (!user->isBot()) {
 			return QString();
 		}
-		for_const (auto &data, user->botInfo->commands) {
-			auto isSame = data.command.compare(
+		for (const auto &data : user->botInfo->commands) {
+			const auto isSame = !data.command.compare(
 				command,
-				Qt::CaseInsensitive) == 0;
+				Qt::CaseInsensitive);
 			if (isSame) {
 				return data.command;
 			}
@@ -556,51 +561,68 @@ void ActionsFiller::addBotCommandActions(not_null<UserData*> user) {
 		return QString();
 	};
 	auto hasBotCommandValue = [=](const QString &command) {
-		return Notify::PeerUpdateValue(
+		return user->session().changes().peerFlagsValue(
 			user,
-			Notify::PeerUpdate::Flag::BotCommandsChanged
+			Data::PeerUpdate::Flag::BotCommands
 		) | rpl::map([=] {
 			return !findBotCommand(command).isEmpty();
 		});
 	};
-	auto sendBotCommand = [=](const QString &command) {
-		auto original = findBotCommand(command);
-		if (!original.isEmpty()) {
-			Ui::showPeerHistory(user, ShowAtTheEndMsgId);
-			App::sendBotCommand(user, user, '/' + original);
+	auto sendBotCommand = [=, window = _controller->parentController()](
+			const QString &command) {
+		const auto original = findBotCommand(command);
+		if (original.isEmpty()) {
+			return;
 		}
+		BotCommandClickHandler('/' + original).onClick(ClickContext{
+			Qt::LeftButton,
+			QVariant::fromValue(ClickHandlerContext{
+				.sessionWindow = base::make_weak(window.get()),
+				.peer = user,
+			})
+		});
 	};
 	auto addBotCommand = [=](
 			rpl::producer<QString> text,
-			const QString &command) {
+			const QString &command,
+			const style::icon *icon = nullptr) {
 		AddActionButton(
 			_wrap,
 			std::move(text),
 			hasBotCommandValue(command),
-			[=] { sendBotCommand(command); });
+			[=] { sendBotCommand(command); },
+			icon);
 	};
-	addBotCommand(tr::lng_profile_bot_help(), qsl("help"));
+	addBotCommand(
+		tr::lng_profile_bot_help(),
+		qsl("help"),
+		&st::infoIconInformation);
 	addBotCommand(tr::lng_profile_bot_settings(), qsl("settings"));
 	addBotCommand(tr::lng_profile_bot_privacy(), qsl("privacy"));
 }
 
 void ActionsFiller::addReportAction() {
 	const auto peer = _peer;
+	const auto controller = _controller->parentController();
+	const auto report = [=] {
+		HistoryView::ShowReportPeerBox(controller, peer);
+	};
 	AddActionButton(
 		_wrap,
 		tr::lng_profile_report(),
 		rpl::single(true),
-		[=] { Ui::show(Box<ReportBox>(peer)); },
+		report,
+		&st::infoIconReport,
 		st::infoBlockButton);
 }
 
 void ActionsFiller::addBlockAction(not_null<UserData*> user) {
 	const auto window = &_controller->parentController()->window();
 
-	auto text = Notify::PeerUpdateValue(
+	auto text = user->session().changes().peerFlagsValue(
 		user,
-		Notify::PeerUpdate::Flag::UserIsBlocked
-	) | rpl::map([user] {
+		Data::PeerUpdate::Flag::IsBlocked
+	) | rpl::map([=] {
 		switch (user->blockStatus()) {
 		case UserData::BlockStatus::Blocked:
 			return ((user->isBot() && !user->isSupport())
@@ -627,10 +649,14 @@ void ActionsFiller::addBlockAction(not_null<UserData*> user) {
 				Ui::showPeerHistory(user, ShowAtUnreadMsgId);
 			}
 		} else if (user->isBot()) {
-			user->session().api().blockUser(user);
+			user->session().api().blockedPeers().block(user);
 		} else {
-			window->show(
-				Box(Window::PeerMenuBlockUserBox, window, user, false));
+			window->show(Box(
+				Window::PeerMenuBlockUserBox,
+				window,
+				user,
+				v::null,
+				v::null));
 		}
 	};
 	AddActionButton(
@@ -638,16 +664,20 @@ void ActionsFiller::addBlockAction(not_null<UserData*> user) {
 		rpl::duplicate(text),
 		std::move(toggleOn),
 		std::move(callback),
+		&st::infoIconBlock,
 		st::infoBlockButton);
 }
 
-void ActionsFiller::addLeaveChannelAction(
-		not_null<ChannelData*> channel) {
+void ActionsFiller::addLeaveChannelAction(not_null<ChannelData*> channel) {
+	Expects(_controller->parentController());
 	AddActionButton(
 		_wrap,
 		tr::lng_profile_leave_channel(),
 		AmInChannelValue(channel),
-		Window::DeleteAndLeaveHandler(channel));
+		Window::DeleteAndLeaveHandler(
+			_controller->parentController(),
+			channel),
+		&st::infoIconLeave);
 }
 
 void ActionsFiller::addJoinChannelAction(
@@ -660,7 +690,8 @@ void ActionsFiller::addJoinChannelAction(
 		_wrap,
 		tr::lng_profile_join_channel(),
 		rpl::duplicate(joinVisible),
-		[=] { channel->session().api().joinChannel(channel); });
+		[=] { channel->session().api().joinChannel(channel); },
+		&st::infoIconRequests);
 	_wrap->add(object_ptr<Ui::SlideWrap<Ui::FixedHeightWidget>>(
 		_wrap,
 		CreateSkipWidget(
@@ -682,8 +713,6 @@ void ActionsFiller::fillUserActions(not_null<UserData*> user) {
 		addEditContactAction(user);
 		addDeleteContactAction(user);
 	}
-	addClearHistoryAction(user);
-	addDeleteConversationAction(user);
 	if (!user->isSelf() && !user->isSupport()) {
 		if (user->isBot()) {
 			addBotCommandActions(user);
@@ -715,10 +744,6 @@ object_ptr<Ui::RpWidget> ActionsFiller::fill() {
 		_wrap->add(CreateSkipWidget(_wrap));
 		callback();
 		_wrap->add(CreateSkipWidget(_wrap));
-		object_ptr<FloatingIcon>(
-			_wrap,
-			st::infoIconActions,
-			st::infoIconPosition);
 		return std::move(_wrap);
 	};
 	if (auto user = _peer->asUser()) {
@@ -735,48 +760,6 @@ object_ptr<Ui::RpWidget> ActionsFiller::fill() {
 	}
 	return { nullptr };
 }
-// // #feed
-//FeedDetailsFiller::FeedDetailsFiller(
-//	not_null<Controller*> controller,
-//	not_null<Ui::RpWidget*> parent,
-//	not_null<Data::Feed*> feed)
-//: _controller(controller)
-//, _parent(parent)
-//, _feed(feed)
-//, _wrap(_parent) {
-//}
-//
-//object_ptr<Ui::RpWidget> FeedDetailsFiller::fill() {
-//	add(object_ptr<Ui::BoxContentDivider>(_wrap));
-//	add(CreateSkipWidget(_wrap));
-//	add(setupDefaultToggle());
-//	add(CreateSkipWidget(_wrap));
-//	return std::move(_wrap);
-//}
-//
-//object_ptr<Ui::RpWidget> FeedDetailsFiller::setupDefaultToggle() {
-//	using namespace rpl::mappers;
-//	const auto feed = _feed;
-//	const auto feedId = feed->id();
-//	auto result = object_ptr<Ui::SettingsButton>(
-//		_wrap,
-//		tr::lng_info_feed_is_default(),
-//		st::infoNotificationsButton);
-//	result->toggleOn(
-//		feed->owner().defaultFeedIdValue(
-//		) | rpl::map(_1 == feedId)
-//	)->addClickHandler([=] {
-//		const auto makeDefault = (feed->owner().defaultFeedId() != feedId);
-//		const auto defaultFeedId = makeDefault ? feedId : 0;
-//		feed->owner().setDefaultFeedId(defaultFeedId);
-////		feed->session().api().saveDefaultFeedId(feedId, makeDefault); // #feed
-//	});
-//	object_ptr<FloatingIcon>(
-//		result,
-//		st::infoIconNotifications,
-//		st::infoNotificationsIconPosition);
-//	return result;
-//}
 
 } // namespace
 
@@ -831,16 +814,16 @@ object_ptr<Ui::RpWidget> SetupChannelMembers(
 
 	auto membersShown = rpl::combine(
 		MembersCountValue(channel),
-		Data::PeerFullFlagValue(
+		Data::PeerFlagValue(
 			channel,
-			MTPDchannelFull::Flag::f_can_view_participants),
+			ChannelDataFlag::CanViewParticipants),
 			(_1 > 0) && _2);
-	auto membersText = tr::lng_chat_status_members(
+	auto membersText = tr::lng_chat_status_subscribers(
 		lt_count_decimal,
 		MembersCountValue(channel) | tr::to_count());
 	auto membersCallback = [=] {
-		controller->showSection(Info::Memento(
-			channel->id,
+		controller->showSection(std::make_shared<Info::Memento>(
+			channel,
 			Section::Type::Members));
 	};
 
@@ -860,7 +843,8 @@ object_ptr<Ui::RpWidget> SetupChannelMembers(
 		members,
 		std::move(membersText),
 		rpl::single(true),
-		std::move(membersCallback))->entity();
+		std::move(membersCallback),
+		nullptr)->entity();
 
 	SetupAddChannelMember(controller, button, channel);
 
@@ -872,14 +856,6 @@ object_ptr<Ui::RpWidget> SetupChannelMembers(
 
 	return result;
 }
-// // #feed
-//object_ptr<Ui::RpWidget> SetupFeedDetails(
-//		not_null<Controller*> controller,
-//		not_null<Ui::RpWidget*> parent,
-//		not_null<Data::Feed*> feed) {
-//	FeedDetailsFiller filler(controller, parent, feed);
-//	return filler.fill();
-//}
 
 } // namespace Profile
 } // namespace Info

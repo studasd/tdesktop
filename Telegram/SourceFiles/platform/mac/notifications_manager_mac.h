@@ -13,9 +13,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Platform {
 namespace Notifications {
 
-bool SkipAudio();
-bool SkipToast();
-
 class Manager : public Window::Notifications::NativeManager, public base::has_weak_ptr {
 public:
 	Manager(Window::Notifications::System *system);
@@ -24,14 +21,20 @@ public:
 protected:
 	void doShowNativeNotification(
 		not_null<PeerData*> peer,
+		std::shared_ptr<Data::CloudImageView> &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
 		const QString &msg,
-		bool hideNameAndPhoto,
-		bool hideReplyButton) override;
+		DisplayOptions options) override;
 	void doClearAllFast() override;
+	void doClearFromItem(not_null<HistoryItem*> item) override;
 	void doClearFromHistory(not_null<History*> history) override;
+	void doClearFromSession(not_null<Main::Session*> session) override;
+	QString accountNameSeparator() override;
+	bool doSkipAudio() const override;
+	bool doSkipToast() const override;
+	bool doSkipFlashBounce() const override;
 
 private:
 	class Private;

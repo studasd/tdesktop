@@ -9,16 +9,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/unique_qptr.h"
 
+namespace Main {
+class Session;
+} // namespace Main
+
 namespace Ui {
 class PopupMenu;
+enum class ReportReason;
 } // namespace Ui
 
 namespace Window {
 class SessionNavigation;
+class SessionController;
 } // namespace Main
 
 namespace HistoryView {
 
+enum class Context : char;
 enum class PointState : char;
 class ListWidget;
 class Element;
@@ -43,7 +50,38 @@ base::unique_qptr<Ui::PopupMenu> FillContextMenu(
 	not_null<ListWidget*> list,
 	const ContextMenuRequest &request);
 
-void CopyPostLink(FullMsgId itemId);
-void StopPoll(FullMsgId itemId);
+void CopyPostLink(
+	not_null<Main::Session*> session,
+	FullMsgId itemId,
+	Context context);
+void StopPoll(not_null<Main::Session*> session, FullMsgId itemId);
+void AddPollActions(
+	not_null<Ui::PopupMenu*> menu,
+	not_null<PollData*> poll,
+	not_null<HistoryItem*> item,
+	Context context);
+void AddWhoReactedAction(
+	not_null<Ui::PopupMenu*> menu,
+	not_null<QWidget*> context,
+	not_null<HistoryItem*> item,
+	not_null<Window::SessionController*> controller);
+void ShowWhoReactedMenu(
+	not_null<base::unique_qptr<Ui::PopupMenu>*> menu,
+	QPoint position,
+	not_null<QWidget*> context,
+	not_null<HistoryItem*> item,
+	const QString &emoji,
+	not_null<Window::SessionController*> controller,
+	rpl::lifetime &lifetime);
 
-} // namespace
+void ShowReportItemsBox(not_null<PeerData*> peer, MessageIdsList ids);
+void ShowReportPeerBox(
+	not_null<Window::SessionController*> window,
+	not_null<PeerData*> peer);
+void SendReport(
+	not_null<PeerData*> peer,
+	Ui::ReportReason reason,
+	const QString &comment,
+	MessageIdsList ids = {});
+
+} // namespace HistoryView

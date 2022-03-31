@@ -8,18 +8,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/media/history_view_game.h"
 
 #include "lang/lang_keys.h"
-#include "layout.h"
 #include "history/history_item_components.h"
 #include "history/history.h"
 #include "history/view/history_view_element.h"
 #include "history/view/history_view_cursor_state.h"
 #include "history/view/media/history_view_media_common.h"
-#include "ui/text_options.h"
+#include "ui/item_text_options.h"
+#include "ui/text/text_utilities.h"
+#include "ui/cached_round_corners.h"
+#include "ui/chat/chat_style.h"
+#include "core/ui_integration.h"
 #include "data/data_session.h"
 #include "data/data_game.h"
 #include "data/data_media_types.h"
-#include "app.h"
-#include "styles/style_history.h"
+#include "styles/style_chat.h"
 
 namespace HistoryView {
 
@@ -32,10 +34,14 @@ Game::Game(
 , _title(st::msgMinWidth - st::webPageLeft)
 , _description(st::msgMinWidth - st::webPageLeft) {
 	if (!consumed.text.isEmpty()) {
+		const auto context = Core::MarkedTextContext{
+			.session = &history()->session()
+		};
 		_description.setMarkedText(
 			st::webPageDescriptionStyle,
 			consumed,
-			Ui::ItemTextOptions(parent->data()));
+			Ui::ItemTextOptions(parent->data()),
+			context);
 	}
 	history()->owner().registerGameView(_data, _parent);
 }
@@ -44,10 +50,11 @@ QSize Game::countOptimalSize() {
 	auto lineHeight = unitedLineHeight();
 
 	const auto item = _parent->data();
-	if (!_openl && IsServerMsgId(item->id)) {
+	if (!_openl && item->isRegular()) {
 		const auto row = 0;
 		const auto column = 0;
 		_openl = std::make_shared<ReplyMarkupClickHandler>(
+			&item->history()->owner(),
 			row,
 			column,
 			item->fullId());
@@ -64,16 +71,18 @@ QSize Game::countOptimalSize() {
 	if (_description.isEmpty() && !_data->description.isEmpty()) {
 		auto text = _data->description;
 		if (!text.isEmpty()) {
-			if (!_attach) {
-				text += _parent->skipBlock();
-			}
 			auto marked = TextWithEntities { text };
-			auto parseFlags = TextParseLinks | TextParseMultiline | TextParseRichText;
+			auto parseFlags = TextParseLinks | TextParseMultiline;
 			TextUtilities::ParseEntities(marked, parseFlags);
 			_description.setMarkedText(
 				st::webPageDescriptionStyle,
 				marked,
 				Ui::WebpageTextDescriptionOptions());
+			if (!_attach) {
+				_description.updateSkipBlock(
+					_parent->skipBlockWidth(),
+					_parent->skipBlockHeight());
+			}
 		}
 	}
 	if (_title.isEmpty() && !title.isEmpty()) {
@@ -84,7 +93,6 @@ QSize Game::countOptimalSize() {
 	}
 
 	// init dimensions
-	auto l = st::msgPadding.left() + st::webPageLeft, r = st::msgPadding.right();
 	auto skipBlockWidth = _parent->skipBlockWidth();
 	auto maxWidth = skipBlockWidth;
 	auto minHeight = 0;
@@ -193,16 +201,16 @@ TextSelection Game::fromDescriptionSelection(
 	return ShiftItemSelection(selection, _title);
 }
 
-void Game::draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const {
+void Game::draw(Painter &p, const PaintContext &context) const {
 	if (width() < st::msgPadding.left() + st::msgPadding.right() + 1) return;
-	auto paintw = width(), painth = height();
+	auto paintw = width();
 
-	auto outbg = _parent->hasOutLayout();
-	bool selected = (selection == FullSelection);
+	const auto st = context.st;
+	const auto sti = context.imageStyle();
+	const auto stm = context.messageStyle();
 
-	auto &barfg = selected ? (outbg ? st::msgOutReplyBarSelColor : st::msgInReplyBarSelColor) : (outbg ? st::msgOutReplyBarColor : st::msgInReplyBarColor);
-	auto &semibold = selected ? (outbg ? st::msgOutServiceFgSelected : st::msgInServiceFgSelected) : (outbg ? st::msgOutServiceFg : st::msgInServiceFg);
-	auto &regular = selected ? (outbg ? st::msgOutDateFgSelected : st::msgInDateFgSelected) : (outbg ? st::msgOutDateFg : st::msgInDateFg);
+	const auto &barfg = stm->msgReplyBarColor;
+	const auto &semibold = stm->msgServiceFg;
 
 	QMargins bubble(_attach ? _attach->bubbleMargins() : QMargins());
 	auto padding = inBubblePadding();
@@ -219,20 +227,24 @@ void Game::draw(Painter &p, const QRect &r, TextSelection selection, crl::time m
 	auto lineHeight = unitedLineHeight();
 	if (_titleLines) {
 		p.setPen(semibold);
+		p.setTextPalette(stm->semiboldPalette);
+
 		auto endskip = 0;
 		if (_title.hasSkipBlock()) {
 			endskip = _parent->skipBlockWidth();
 		}
-		_title.drawLeftElided(p, padding.left(), tshift, paintw, width(), _titleLines, style::al_left, 0, -1, endskip, false, selection);
+		_title.drawLeftElided(p, padding.left(), tshift, paintw, width(), _titleLines, style::al_left, 0, -1, endskip, false, context.selection);
 		tshift += _titleLines * lineHeight;
+
+		p.setTextPalette(stm->textPalette);
 	}
 	if (_descriptionLines) {
-		p.setPen(outbg ? st::webPageDescriptionOutFg : st::webPageDescriptionInFg);
+		p.setPen(stm->historyTextFg);
 		auto endskip = 0;
 		if (_description.hasSkipBlock()) {
 			endskip = _parent->skipBlockWidth();
 		}
-		_description.drawLeftElided(p, padding.left(), tshift, paintw, width(), _descriptionLines, style::al_left, 0, -1, endskip, false, toDescriptionSelection(selection));
+		_description.drawLeftElided(p, padding.left(), tshift, paintw, width(), _descriptionLines, style::al_left, 0, -1, endskip, false, toDescriptionSelection(context.selection));
 		tshift += _descriptionLines * lineHeight;
 	}
 	if (_attach) {
@@ -243,10 +255,13 @@ void Game::draw(Painter &p, const QRect &r, TextSelection selection, crl::time m
 		auto attachTop = tshift - bubble.top();
 		if (rtl()) attachLeft = width() - attachLeft - _attach->width();
 
-		auto attachSelection = selected ? FullSelection : TextSelection { 0, 0 };
-
 		p.translate(attachLeft, attachTop);
-		_attach->draw(p, r.translated(-attachLeft, -attachTop), attachSelection, ms);
+		_attach->draw(p, context.translated(
+			-attachLeft,
+			-attachTop
+		).withSelection(context.selected()
+			? FullSelection
+			: TextSelection()));
 		auto pixwidth = _attach->width();
 		auto pixheight = _attach->height();
 
@@ -255,10 +270,10 @@ void Game::draw(Painter &p, const QRect &r, TextSelection selection, crl::time m
 		auto gameX = pixwidth - st::msgDateImgDelta - gameW;
 		auto gameY = pixheight - st::msgDateImgDelta - gameH;
 
-		App::roundRect(p, style::rtlrect(gameX, gameY, gameW, gameH, pixwidth), selected ? st::msgDateImgBgSelected : st::msgDateImgBg, selected ? DateSelectedCorners : DateCorners);
+		Ui::FillRoundRect(p, style::rtlrect(gameX, gameY, gameW, gameH, pixwidth), sti->msgDateImgBg, sti->msgDateImgBgCorners);
 
 		p.setFont(st::msgDateFont);
-		p.setPen(st::msgDateImgFg);
+		p.setPen(st->msgDateImgFg());
 		p.drawTextLeft(gameX + st::msgDateImgPadding.x(), gameY + st::msgDateImgPadding.y(), pixwidth, tr::lng_game_tag(tr::now).toUpper());
 
 		p.translate(-attachLeft, -attachTop);
@@ -271,7 +286,7 @@ TextState Game::textState(QPoint point, StateRequest request) const {
 	if (width() < st::msgPadding.left() + st::msgPadding.right() + 1) {
 		return result;
 	}
-	auto paintw = width(), painth = height();
+	auto paintw = width();
 
 	QMargins bubble(_attach ? _attach->bubbleMargins() : QMargins());
 	auto padding = inBubblePadding();
@@ -412,10 +427,14 @@ void Game::parentTextUpdated() {
 	if (const auto media = _parent->data()->media()) {
 		const auto consumed = media->consumedMessageText();
 		if (!consumed.text.isEmpty()) {
+			const auto context = Core::MarkedTextContext{
+				.session = &history()->session()
+			};
 			_description.setMarkedText(
 				st::webPageDescriptionStyle,
 				consumed,
-				Ui::ItemTextOptions(_parent->data()));
+				Ui::ItemTextOptions(_parent->data()),
+				context);
 		} else {
 			_description = Ui::Text::String(st::msgMinWidth - st::webPageLeft);
 		}

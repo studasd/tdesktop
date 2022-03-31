@@ -9,7 +9,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "data/data_document.h"
 #include "data/data_session.h"
+#include "data/data_changes.h"
 #include "data/data_streaming.h"
+#include "data/data_file_click_handler.h"
+#include "base/options.h"
+#include "base/random.h"
+#include "base/power_save_blocker.h"
 #include "media/audio/media_audio.h"
 #include "media/audio/media_audio_capture.h"
 #include "media/streaming/media_streaming_instance.h"
@@ -21,12 +26,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_media_types.h"
 #include "data/data_file_origin.h"
 #include "window/window_session_controller.h"
+#include "window/window_controller.h"
 #include "core/shortcuts.h"
 #include "core/application.h"
-#include "main/main_account.h" // Account::sessionValue.
+#include "main/main_domain.h" // Domain::activeSessionValue.
 #include "mainwindow.h"
 #include "main/main_session.h"
-#include "facades.h"
+#include "main/main_account.h" // session->account().sessionChanges().
+#include "main/main_session_settings.h"
 
 namespace Media {
 namespace Player {
@@ -34,17 +41,31 @@ namespace {
 
 Instance *SingleInstance = nullptr;
 
-constexpr auto kVoicePlaybackSpeedMultiplier = 1.7;
-
 // Preload X message ids before and after current.
 constexpr auto kIdsLimit = 32;
 
 // Preload next messages if we went further from current than that.
 constexpr auto kIdsPreloadAfter = 28;
 
+constexpr auto kShufflePlaylistLimit = 10'000;
+constexpr auto kRememberShuffledOrderItems = 16;
+
 constexpr auto kMinLengthForSavePosition = 20 * TimeId(60); // 20 minutes.
 
+auto VoicePlaybackSpeed() {
+	return std::clamp(Core::App().settings().voicePlaybackSpeed(), 0.6, 1.7);
+}
+
+base::options::toggle OptionDisableAutoplayNext({
+	.id = kOptionDisableAutoplayNext,
+	.name = "Disable auto-play of the next track",
+	.description = "Disable auto-play of the next "
+		"Audio file / Voice Message / Video message.",
+});
+
 } // namespace
+
+const char kOptionDisableAutoplayNext[] = "disable-autoplay-next";
 
 struct Instance::Streamed {
 	Streamed(
@@ -55,6 +76,21 @@ struct Instance::Streamed {
 	Streaming::Instance instance;
 	View::PlaybackProgress progress;
 	bool clearing = false;
+	rpl::lifetime lifetime;
+};
+
+struct Instance::ShuffleData {
+	using UniversalMsgId = MsgId;
+
+	std::vector<UniversalMsgId> playlist;
+	std::vector<UniversalMsgId> nonPlayedIds;
+	std::vector<UniversalMsgId> playedIds;
+	History *history = nullptr;
+	History *migrated = nullptr;
+	bool scheduled = false;
+	int indexInPlayedIds = 0;
+	bool allLoaded = false;
+	rpl::lifetime nextSliceLifetime;
 	rpl::lifetime lifetime;
 };
 
@@ -113,26 +149,35 @@ Instance::Instance()
 		handleSongUpdate(audioId);
 	});
 
-	// While we have one Media::Player::Instance for all sessions we have to do this.
-	Core::App().activeAccount().sessionValue(
-	) | rpl::start_with_next([=](Main::Session *session) {
-		if (session) {
-			subscribe(session->calls().currentCallChanged(), [=](Calls::Call *call) {
-				if (call) {
-					pauseOnCall(AudioMsgId::Type::Voice);
-					pauseOnCall(AudioMsgId::Type::Song);
-				} else {
-					resumeOnCall(AudioMsgId::Type::Voice);
-					resumeOnCall(AudioMsgId::Type::Song);
-				}
-			});
+	repeatChanges(
+		&_songData
+	) | rpl::start_with_next([=](RepeatMode mode) {
+		if (mode == RepeatMode::All) {
+			refreshPlaylist(&_songData);
+		}
+	}, _lifetime);
+	orderChanges(
+		&_songData
+	) | rpl::start_with_next([=](OrderMode mode) {
+		if (mode == OrderMode::Shuffle) {
+			validateShuffleData(&_songData);
 		} else {
-			const auto reset = [&](AudioMsgId::Type type) {
-				const auto data = getData(type);
-				*data = Data(type, data->overview);
-			};
-			reset(AudioMsgId::Type::Voice);
-			reset(AudioMsgId::Type::Song);
+			_songData.shuffleData = nullptr;
+		}
+	}, _lifetime);
+
+	using namespace rpl::mappers;
+	rpl::combine(
+		Core::App().calls().currentCallValue(),
+		Core::App().calls().currentGroupCallValue(),
+		_1 || _2
+	) | rpl::start_with_next([=](bool call) {
+		if (call) {
+			pauseOnCall(AudioMsgId::Type::Voice);
+			pauseOnCall(AudioMsgId::Type::Song);
+		} else {
+			resumeOnCall(AudioMsgId::Type::Voice);
+			resumeOnCall(AudioMsgId::Type::Song);
 		}
 	}, _lifetime);
 
@@ -176,16 +221,69 @@ void Instance::setCurrent(const AudioMsgId &audioId) {
 		data->current = audioId;
 		data->isPlaying = false;
 
-		const auto item = Auth().data().message(data->current.contextId());
+		const auto item = (audioId.audio() && audioId.contextId())
+			? audioId.audio()->owner().message(audioId.contextId())
+			: nullptr;
 		if (item) {
-			data->history = item->history()->migrateToOrMe();
-			data->migrated = data->history->migrateFrom();
+			setHistory(data, item->history());
 		} else {
-			data->history = nullptr;
-			data->migrated = nullptr;
+			setHistory(
+				data,
+				nullptr,
+				audioId.audio() ? &audioId.audio()->session() : nullptr);
 		}
-		_trackChangedNotifier.notify(data->type, true);
+		_trackChanged.fire_copy(data->type);
 		refreshPlaylist(data);
+	}
+}
+
+void Instance::setHistory(
+		not_null<Data*> data,
+		History *history,
+		Main::Session *sessionFallback) {
+	if (history) {
+		data->history = history->migrateToOrMe();
+		data->migrated = data->history->migrateFrom();
+		setSession(data, &history->session());
+	} else {
+		data->history = data->migrated = nullptr;
+		setSession(data, sessionFallback);
+	}
+}
+
+void Instance::setSession(not_null<Data*> data, Main::Session *session) {
+	if (data->session == session) {
+		return;
+	}
+	data->playlistLifetime.destroy();
+	data->playlistOtherLifetime.destroy();
+	data->sessionLifetime.destroy();
+	data->session = session;
+	if (session) {
+		session->account().sessionChanges(
+		) | rpl::start_with_next([=] {
+			setSession(data, nullptr);
+		}, data->sessionLifetime);
+
+		session->data().documentLoadProgress(
+		) | rpl::filter([=](not_null<DocumentData*> document) {
+			// Before refactoring it was called only for audio files.
+			return document->isAudioFile();
+		}) | rpl::start_with_next([=](not_null<DocumentData*> document) {
+			const auto type = AudioMsgId::Type::Song;
+			emitUpdate(type, [&](const AudioMsgId &audioId) {
+				return (audioId.audio() == document);
+			});
+		}, data->sessionLifetime);
+
+		session->data().itemRemoved(
+		) | rpl::filter([=](not_null<const HistoryItem*> item) {
+			return (data->current.contextId() == item->fullId());
+		}) | rpl::start_with_next([=] {
+			stopAndClear(data);
+		}, data->sessionLifetime);
+	} else {
+		stopAndClear(data);
 	}
 }
 
@@ -204,13 +302,27 @@ void Instance::clearStreamed(not_null<Data*> data, bool savePosition) {
 	requestRoundVideoResize();
 	emitUpdate(data->type);
 	data->streamed = nullptr;
-	App::wnd()->sessionController()->disableGifPauseReason(
-		Window::GifPauseReason::RoundPlaying);
+
+	_roundPlaying = false;
+	if (const auto window = App::wnd()) {
+		if (const auto controller = window->sessionController()) {
+			controller->disableGifPauseReason(
+				Window::GifPauseReason::RoundPlaying);
+		}
+	}
 }
 
 void Instance::refreshPlaylist(not_null<Data*> data) {
 	if (!validPlaylist(data)) {
 		validatePlaylist(data);
+	} else {
+		refreshOtherPlaylist(data);
+	}
+}
+
+void Instance::refreshOtherPlaylist(not_null<Data*> data) {
+	if (!validOtherPlaylist(data)) {
+		validateOtherPlaylist(data);
 	}
 	playlistUpdated(data);
 }
@@ -219,13 +331,17 @@ void Instance::playlistUpdated(not_null<Data*> data) {
 	if (data->playlistSlice) {
 		const auto fullId = data->current.contextId();
 		data->playlistIndex = data->playlistSlice->indexOf(fullId);
+		if (order(data) == OrderMode::Shuffle) {
+			validateShuffleData(data);
+		}
 	} else {
 		data->playlistIndex = std::nullopt;
+		data->shuffleData = nullptr;
 	}
 	data->playlistChanges.fire({});
 }
 
-bool Instance::validPlaylist(not_null<Data*> data) {
+bool Instance::validPlaylist(not_null<const Data*> data) const {
 	if (const auto key = playlistKey(data)) {
 		if (!data->playlistSlice) {
 			return false;
@@ -233,7 +349,8 @@ bool Instance::validPlaylist(not_null<Data*> data) {
 		using Key = SliceKey;
 		const auto inSameDomain = [](const Key &a, const Key &b) {
 			return (a.peerId == b.peerId)
-				&& (a.migratedPeerId == b.migratedPeerId);
+				&& (a.migratedPeerId == b.migratedPeerId)
+				&& (a.scheduled == b.scheduled);
 		};
 		const auto countDistanceInData = [&](const Key &a, const Key &b) {
 			return [&](const SparseIdsMergedSlice &data) {
@@ -261,39 +378,111 @@ bool Instance::validPlaylist(not_null<Data*> data) {
 }
 
 void Instance::validatePlaylist(not_null<Data*> data) {
+	data->playlistLifetime.destroy();
 	if (const auto key = playlistKey(data)) {
 		data->playlistRequestedKey = key;
-		SharedMediaMergedViewer(
+
+		const auto sharedMediaViewer = key->scheduled
+			? SharedScheduledMediaViewer
+			: SharedMediaMergedViewer;
+		sharedMediaViewer(
+			&data->history->session(),
 			SharedMediaMergedKey(*key, data->overview),
 			kIdsLimit,
 			kIdsLimit
 		) | rpl::start_with_next([=](SparseIdsMergedSlice &&update) {
 			data->playlistSlice = std::move(update);
 			data->playlistSliceKey = key;
-			playlistUpdated(data);
+			refreshOtherPlaylist(data);
 		}, data->playlistLifetime);
 	} else {
 		data->playlistSlice = std::nullopt;
 		data->playlistSliceKey = data->playlistRequestedKey = std::nullopt;
-		playlistUpdated(data);
+		refreshOtherPlaylist(data);
 	}
 }
 
-auto Instance::playlistKey(not_null<Data*> data) const
+auto Instance::playlistKey(not_null<const Data*> data) const
 -> std::optional<SliceKey> {
 	const auto contextId = data->current.contextId();
 	const auto history = data->history;
-	if (!contextId || !history || !IsServerMsgId(contextId.msg)) {
+	if (!contextId || !history) {
+		return {};
+	}
+	const auto item = data->history->owner().message(contextId);
+	if (!item || (!item->isRegular() && !item->isScheduled())) {
 		return {};
 	}
 
-	const auto universalId = (contextId.channel == history->channelId())
+	const auto universalId = (contextId.peer == history->peer->id)
 		? contextId.msg
 		: (contextId.msg - ServerMaxMsgId);
 	return SliceKey(
 		data->history->peer->id,
 		data->migrated ? data->migrated->peer->id : 0,
-		universalId);
+		universalId,
+		item->isScheduled());
+}
+
+bool Instance::validOtherPlaylist(not_null<const Data*> data) const {
+	if (const auto key = playlistOtherKey(data)) {
+		return data->playlistOtherSlice
+			&& (key == data->playlistOtherRequestedKey);
+	}
+	return !data->playlistOtherSlice;
+}
+
+void Instance::validateOtherPlaylist(not_null<Data*> data) {
+	data->playlistOtherLifetime.destroy();
+	if (const auto key = playlistOtherKey(data)) {
+		data->playlistOtherRequestedKey = key;
+
+		SharedMediaMergedViewer(
+			&data->history->session(),
+			SharedMediaMergedKey(*key, data->overview),
+			kIdsLimit,
+			kIdsLimit
+		) | rpl::start_with_next([=](SparseIdsMergedSlice &&update) {
+			data->playlistOtherSlice = std::move(update);
+			playlistUpdated(data);
+		}, data->playlistOtherLifetime);
+	} else {
+		data->playlistOtherSlice = std::nullopt;
+		data->playlistOtherRequestedKey = std::nullopt;
+		playlistUpdated(data);
+	}
+}
+
+auto Instance::playlistOtherKey(not_null<const Data*> data) const
+-> std::optional<SliceKey> {
+	if (repeat(data) != RepeatMode::All
+		|| order(data) == OrderMode::Shuffle
+		|| !data->playlistSlice
+		|| (data->playlistSlice->skippedBefore() != 0
+			&& data->playlistSlice->skippedAfter() != 0)
+		|| (data->playlistSlice->skippedBefore() == 0
+			&& data->playlistSlice->skippedAfter() == 0)) {
+		return {};
+	}
+	const auto contextId = data->current.contextId();
+	const auto history = data->history;
+	if (!contextId || !history) {
+		return {};
+	}
+	const auto item = data->history->owner().message(contextId);
+	if (!item || !item->isRegular()) {
+		return {};
+	}
+
+	return SliceKey(
+		data->history->peer->id,
+		data->migrated ? data->migrated->peer->id : 0,
+		(data->playlistSlice->skippedBefore() == 0
+			? ServerMaxMsgId - 1
+			: data->migrated
+			? (1 - ServerMaxMsgId)
+			: 1),
+		false);
 }
 
 HistoryItem *Instance::itemByIndex(not_null<Data*> data, int index) {
@@ -302,8 +491,9 @@ HistoryItem *Instance::itemByIndex(not_null<Data*> data, int index) {
 		|| index >= data->playlistSlice->size()) {
 		return nullptr;
 	}
+	Assert(data->history != nullptr);
 	const auto fullId = (*data->playlistSlice)[index];
-	return Auth().data().message(fullId);
+	return data->history->owner().message(fullId);
 }
 
 bool Instance::moveInPlaylist(
@@ -313,12 +503,11 @@ bool Instance::moveInPlaylist(
 	if (!data->playlistIndex) {
 		return false;
 	}
-	const auto newIndex = *data->playlistIndex + delta;
-	if (const auto item = itemByIndex(data, newIndex)) {
+	const auto jumpByItem = [&](not_null<HistoryItem*> item) {
 		if (const auto media = item->media()) {
 			if (const auto document = media->document()) {
 				if (autonext) {
-					_switchToNextNotifier.notify({
+					_switchToNext.fire({
 						data->current,
 						item->fullId()
 					});
@@ -331,34 +520,242 @@ bool Instance::moveInPlaylist(
 				return true;
 			}
 		}
+		return false;
+	};
+	const auto jumpById = [&](FullMsgId id) {
+		return jumpByItem(data->history->owner().message(id));
+	};
+	const auto repeatAll = (repeat(data) == RepeatMode::All);
+
+	if (order(data) == OrderMode::Shuffle) {
+		const auto raw = data->shuffleData.get();
+		if (!raw || !raw->history) {
+			return false;
+		}
+		const auto universal = computeCurrentUniversalId(data);
+		const auto byUniversal = [&](ShuffleData::UniversalMsgId id) {
+			return (id < 0 && raw->migrated)
+				? jumpById({ raw->migrated->peer->id, id + ServerMaxMsgId })
+				: jumpById({ raw->history->peer->id, id });
+		};
+		if (universal && raw->indexInPlayedIds == raw->playedIds.size()) {
+			raw->playedIds.push_back(universal);
+			const auto i = ranges::find(raw->nonPlayedIds, universal);
+			if (i != end(raw->nonPlayedIds)) {
+				raw->nonPlayedIds.erase(i);
+			}
+		}
+		if (repeatAll) {
+			ensureShuffleMove(data, delta);
+		}
+		if (raw->nonPlayedIds.empty()
+			&& raw->indexInPlayedIds + 1 == raw->playedIds.size()) {
+			raw->nonPlayedIds.push_back(raw->playedIds.back());
+			raw->playedIds.pop_back();
+		}
+		const auto shuffleCompleted = raw->nonPlayedIds.empty()
+			|| (raw->nonPlayedIds.size() == 1
+				&& raw->nonPlayedIds.front() == universal);
+		if (delta < 0) {
+			return (raw->indexInPlayedIds > 0)
+				&& byUniversal(raw->playedIds[--raw->indexInPlayedIds]);
+		} else if (raw->indexInPlayedIds + 1 < raw->playedIds.size()) {
+			return byUniversal(raw->playedIds[++raw->indexInPlayedIds]);
+		}
+		if (shuffleCompleted) {
+			return false;
+		} else if (raw->indexInPlayedIds < raw->playedIds.size()) {
+			++raw->indexInPlayedIds;
+		}
+		const auto index = base::RandomIndex(raw->nonPlayedIds.size());
+		return byUniversal(raw->nonPlayedIds[index]);
+	}
+
+	const auto newIndex = *data->playlistIndex
+		+ (order(data) == OrderMode::Reverse ? -delta : delta);
+	const auto useIndex = (!repeatAll
+		|| !data->playlistSlice
+		|| data->playlistSlice->skippedAfter() != 0
+		|| data->playlistSlice->skippedBefore() != 0
+		|| !data->playlistSlice->size())
+		? newIndex
+		: ((newIndex + int(data->playlistSlice->size()))
+			% int(data->playlistSlice->size()));
+	if (const auto item = itemByIndex(data, useIndex)) {
+		return jumpByItem(item);
+	} else if (repeatAll
+		&& data->playlistOtherSlice
+		&& data->playlistOtherSlice->size() > 0) {
+		const auto &other = *data->playlistOtherSlice;
+		if (newIndex < 0 && other.skippedAfter() == 0) {
+			return jumpById(other[other.size() - 1]);
+		} else if (newIndex > 0 && other.skippedBefore() == 0) {
+			return jumpById(other[0]);
+		}
 	}
 	return false;
+}
+
+void Instance::updatePowerSaveBlocker(
+		not_null<Data*> data,
+		const TrackState &state) {
+	const auto block = !IsPausedOrPausing(state.state)
+		&& !IsStoppedOrStopping(state.state);
+	const auto blockVideo = block
+		&& data->current.audio()
+		&& data->current.audio()->isVideoMessage();
+	const auto windowResolver = [] {
+		const auto window = Core::App().activeWindow();
+		return window ? window->widget()->windowHandle() : nullptr;
+	};
+	base::UpdatePowerSaveBlocker(
+		data->powerSaveBlocker,
+		block,
+		base::PowerSaveBlockType::PreventAppSuspension,
+		[] { return u"Audio playback is active"_q; },
+		windowResolver);
+	base::UpdatePowerSaveBlocker(
+		data->powerSaveBlockerVideo,
+		blockVideo,
+		base::PowerSaveBlockType::PreventDisplaySleep,
+		[] { return u"Video playback is active"_q; },
+		windowResolver);
+}
+
+void Instance::ensureShuffleMove(not_null<Data*> data, int delta) {
+	const auto raw = data->shuffleData.get();
+	if (delta < 0) {
+		if (raw->indexInPlayedIds > 0) {
+			return;
+		} else if (raw->nonPlayedIds.size() < 2) {
+			const auto freeUp = std::max(
+				int(raw->playedIds.size() / 2),
+				int(raw->playlist.size()) - kRememberShuffledOrderItems);
+			const auto till = end(raw->playedIds);
+			const auto from = end(raw->playedIds) - freeUp;
+			raw->nonPlayedIds.insert(end(raw->nonPlayedIds), from, till);
+			raw->playedIds.erase(from, till);
+		}
+		if (raw->nonPlayedIds.empty()) {
+			return;
+		}
+		const auto index = base::RandomIndex(raw->nonPlayedIds.size());
+		raw->playedIds.insert(
+			begin(raw->playedIds),
+			raw->nonPlayedIds[index]);
+		raw->nonPlayedIds.erase(begin(raw->nonPlayedIds) + index);
+		++raw->indexInPlayedIds;
+		if (raw->nonPlayedIds.empty() && raw->playedIds.size() > 1) {
+			raw->nonPlayedIds.push_back(raw->playedIds.back());
+			raw->playedIds.pop_back();
+		}
+		return;
+	} else if (raw->indexInPlayedIds + 1 < raw->playedIds.size()) {
+		return;
+	} else if (raw->nonPlayedIds.size() < 2) {
+		const auto freeUp = std::max(
+			int(raw->playedIds.size() / 2),
+			int(raw->playlist.size()) - kRememberShuffledOrderItems);
+		const auto from = begin(raw->playedIds);
+		const auto till = begin(raw->playedIds) + freeUp;
+		raw->nonPlayedIds.insert(end(raw->nonPlayedIds), from, till);
+		raw->playedIds.erase(from, till);
+		raw->indexInPlayedIds -= freeUp;
+	}
+}
+
+MsgId Instance::computeCurrentUniversalId(not_null<const Data*> data) const {
+	const auto raw = data->shuffleData.get();
+	if (!raw) {
+		return MsgId(0);
+	}
+	const auto current = data->current.contextId();
+	const auto item = raw->history->owner().message(current);
+	return !item
+		? MsgId(0)
+		: (item->history() == raw->history)
+		? item->id
+		: (item->history() == raw->migrated)
+		? (item->id - ServerMaxMsgId)
+		: MsgId(0);
 }
 
 bool Instance::previousAvailable(AudioMsgId::Type type) const {
 	const auto data = getData(type);
 	Assert(data != nullptr);
-	return data->playlistIndex
-		&& data->playlistSlice
-		&& (*data->playlistIndex > 0);
+
+	if (!data->playlistIndex || !data->playlistSlice) {
+		return false;
+	} else if (repeat(data) == RepeatMode::All) {
+		return true;
+	} else if (order(data) == OrderMode::Shuffle) {
+		const auto raw = data->shuffleData.get();
+		return raw && (raw->indexInPlayedIds > 0);
+	}
+	return (order(data) == OrderMode::Reverse)
+		? (*data->playlistIndex + 1 < data->playlistSlice->size())
+		: (*data->playlistIndex > 0);
 }
 
 bool Instance::nextAvailable(AudioMsgId::Type type) const {
 	const auto data = getData(type);
 	Assert(data != nullptr);
-	return data->playlistIndex
-		&& data->playlistSlice
-		&& (*data->playlistIndex + 1 < data->playlistSlice->size());
+
+	if (!data->playlistIndex || !data->playlistSlice) {
+		return false;
+	} else if (repeat(data) == RepeatMode::All) {
+		return true;
+	} else if (order(data) == OrderMode::Shuffle) {
+		const auto raw = data->shuffleData.get();
+		const auto universal = computeCurrentUniversalId(data);
+		return raw
+			&& ((raw->indexInPlayedIds + 1 < raw->playedIds.size())
+				|| (raw->nonPlayedIds.size() > 1)
+				|| (!raw->nonPlayedIds.empty()
+					&& raw->nonPlayedIds.front() != universal));
+	}
+	return (order(data) == OrderMode::Reverse)
+		? (*data->playlistIndex > 0)
+		: (*data->playlistIndex + 1 < data->playlistSlice->size());
 }
 
 rpl::producer<> Media::Player::Instance::playlistChanges(
 		AudioMsgId::Type type) const {
 	const auto data = getData(type);
 	Assert(data != nullptr);
-	return data->playlistChanges.events();
+
+	return rpl::merge(
+		data->playlistChanges.events(),
+		orderChanges(data) | rpl::to_empty,
+		repeatChanges(data) | rpl::to_empty);
 }
 
-Instance *instance() {
+rpl::producer<> Media::Player::Instance::stops(AudioMsgId::Type type) const {
+	return _playerStopped.events(
+	) | rpl::filter([=](auto t) {
+		return t == type;
+	}) | rpl::to_empty;
+}
+
+rpl::producer<> Media::Player::Instance::startsPlay(
+		AudioMsgId::Type type) const {
+	return _playerStartedPlay.events(
+	) | rpl::filter([=](auto t) {
+		return t == type;
+	}) | rpl::to_empty;
+}
+
+auto Media::Player::Instance::seekingChanges(AudioMsgId::Type type) const
+-> rpl::producer<Media::Player::Instance::Seeking> {
+	return _seekingChanges.events(
+	) | rpl::filter([=](SeekingChanges data) {
+		return data.type == type;
+	}) | rpl::map([](SeekingChanges data) {
+		return data.seeking;
+	});
+}
+
+not_null<Instance*> instance() {
 	Expects(SingleInstance != nullptr);
 	return SingleInstance;
 }
@@ -396,6 +793,7 @@ void Instance::play(const AudioMsgId &audioId) {
 	if (document->isVoiceMessage() || document->isVideoMessage()) {
 		document->owner().markMediaRead(document);
 	}
+	_playerStartedPlay.fire_copy({audioId.type()});
 }
 
 void Instance::playPause(const AudioMsgId &audioId) {
@@ -442,10 +840,8 @@ Streaming::PlaybackOptions Instance::streamingOptions(
 	result.mode = (document && document->isVideoMessage())
 		? Streaming::Mode::Both
 		: Streaming::Mode::Audio;
-	result.speed = (document
-		&& (document->isVoiceMessage() || document->isVideoMessage())
-		&& Global::VoiceMsgPlaybackDoubled())
-		? kVoicePlaybackSpeedMultiplier
+	result.speed = audioId.changeablePlaybackSpeed()
+		? VoicePlaybackSpeed()
 		: 1.;
 	result.audioId = audioId;
 	if (position >= 0) {
@@ -477,7 +873,147 @@ void Instance::stop(AudioMsgId::Type type) {
 			clearStreamed(data);
 		}
 		data->resumeOnCallEnd = false;
+		_playerStopped.fire_copy({type});
 	}
+}
+
+void Instance::stopAndClear(not_null<Data*> data) {
+	stop(data->type);
+	*data = Data(data->type, data->overview);
+	_tracksFinished.fire_copy(data->type);
+}
+
+void Instance::validateShuffleData(not_null<Data*> data) {
+	if (!data->history) {
+		data->shuffleData = nullptr;
+		return;
+	} else if (!data->shuffleData) {
+		setupShuffleData(data);
+	}
+	const auto raw = data->shuffleData.get();
+	const auto key = playlistKey(data);
+	const auto scheduled = key && key->scheduled;
+	if (raw->history != data->history
+		|| raw->migrated != data->migrated
+		|| raw->scheduled != scheduled) {
+		raw->history = data->history;
+		raw->migrated = data->migrated;
+		raw->scheduled = scheduled;
+		raw->nextSliceLifetime.destroy();
+		raw->allLoaded = false;
+		raw->playlist.clear();
+		raw->nonPlayedIds.clear();
+		raw->playedIds.clear();
+		raw->indexInPlayedIds = 0;
+	} else if (raw->nextSliceLifetime) {
+		return;
+	} else if (raw->allLoaded) {
+		const auto universal = computeCurrentUniversalId(data);
+		if (!universal
+			|| (raw->indexInPlayedIds < raw->playedIds.size()
+				? (raw->playedIds[raw->indexInPlayedIds] == universal)
+				: ranges::contains(raw->nonPlayedIds, universal))) {
+			return;
+		}
+		// We started playing some track not from the tracks that are left.
+		// Start the whole playlist thing once again.
+		raw->playedIds.clear();
+		raw->indexInPlayedIds = 0;
+		if (ranges::contains(raw->playlist, universal)) {
+			raw->nonPlayedIds = raw->playlist;
+		} else {
+			raw->allLoaded = false;
+			raw->playlist.clear();
+			raw->nonPlayedIds.clear();
+		}
+	}
+	if (raw->scheduled) {
+		const auto count = data->playlistSlice
+			? int(data->playlistSlice->size())
+			: 0;
+		if (raw->playlist.empty() && count > 0) {
+			raw->playlist.reserve(count);
+			for (auto i = 0; i != count; ++i) {
+				raw->playlist.push_back((*data->playlistSlice)[i].msg);
+			}
+			raw->nonPlayedIds = raw->playlist;
+			raw->allLoaded = true;
+			data->playlistChanges.fire({});
+		}
+		return;
+	}
+	const auto last = raw->playlist.empty()
+		? MsgId(ServerMaxMsgId - 1)
+		: raw->playlist.back();
+	SharedMediaMergedViewer(
+		&raw->history->session(),
+		SharedMediaMergedKey(
+			SliceKey(
+				raw->history->peer->id,
+				raw->migrated ? raw->migrated->peer->id : 0,
+				last,
+				false),
+			data->overview),
+		kIdsLimit,
+		kIdsLimit
+	) | rpl::start_with_next([=](SparseIdsMergedSlice &&update) {
+		raw->nextSliceLifetime.destroy();
+
+		const auto size = update.size();
+		const auto peer = raw->history->peer->id;
+		raw->playlist.reserve(raw->playlist.size() + size);
+		raw->nonPlayedIds.reserve(raw->nonPlayedIds.size() + size);
+		for (auto i = size; i != 0;) {
+			const auto fullId = update[--i];
+			const auto universal = (fullId.peer == peer)
+				? fullId.msg
+				: (fullId.msg - ServerMaxMsgId);
+			if (raw->playlist.empty() || raw->playlist.back() > universal) {
+				raw->playlist.push_back(universal);
+				raw->nonPlayedIds.push_back(universal);
+			}
+		}
+		if (update.skippedBefore() == 0
+			|| raw->playlist.size() >= kShufflePlaylistLimit) {
+			raw->allLoaded = true;
+		}
+		data->playlistChanges.fire({});
+	}, raw->nextSliceLifetime);
+}
+
+void Instance::setupShuffleData(not_null<Data*> data) {
+	data->shuffleData = std::make_unique<ShuffleData>();
+	const auto raw = data->shuffleData.get();
+	data->history->session().changes().messageUpdates(
+		::Data::MessageUpdate::Flag::Destroyed
+	) | rpl::map([=](const ::Data::MessageUpdate &update) {
+		const auto item = update.item;
+		const auto history = item->history().get();
+		return (history == raw->history)
+			? item->id
+			: (history == raw->migrated)
+			? (item->id - ServerMaxMsgId)
+			: MsgId(0);
+	}) | rpl::filter(
+		rpl::mappers::_1 != MsgId(0)
+	) | rpl::start_with_next([=](MsgId id) {
+		const auto i = ranges::find(raw->playlist, id);
+		if (i != end(raw->playlist)) {
+			raw->playlist.erase(i);
+		}
+		const auto j = ranges::find(raw->nonPlayedIds, id);
+		if (j != end(raw->nonPlayedIds)) {
+			raw->nonPlayedIds.erase(j);
+		}
+		const auto k = ranges::find(raw->playedIds, id);
+		if (k != end(raw->playedIds)) {
+			const auto index = (k - begin(raw->playedIds));
+			raw->playedIds.erase(k);
+			if (raw->indexInPlayedIds > index) {
+				--raw->indexInPlayedIds;
+			}
+		}
+	}, data->shuffleData->lifetime);
 }
 
 void Instance::playPause(AudioMsgId::Type type) {
@@ -546,7 +1082,6 @@ void Instance::playPauseCancelClicked(AudioMsgId::Type type) {
 		return;
 	}
 	const auto state = getState(type);
-	const auto stopped = IsStoppedOrStopping(state.state);
 	const auto showPause = ShowPauseIcon(state.state);
 	const auto audio = state.id.audio();
 	if (audio && audio->loading() && !data->streamed) {
@@ -564,6 +1099,7 @@ void Instance::startSeeking(AudioMsgId::Type type) {
 	}
 	pause(type);
 	emitUpdate(type);
+	_seekingChanges.fire({ .seeking = Seeking::Start, .type = type });
 }
 
 void Instance::finishSeeking(AudioMsgId::Type type, float64 progress) {
@@ -572,7 +1108,7 @@ void Instance::finishSeeking(AudioMsgId::Type type, float64 progress) {
 			const auto &info = streamed->instance.info();
 			const auto duration = info.audio.state.duration;
 			if (duration != kTimeUnknown) {
-				const auto position = crl::time(std::round(
+				const auto position = crl::time(base::SafeRound(
 					std::clamp(progress, 0., 1.) * duration));
 				streamed->instance.play(streamingOptions(
 					streamed->id,
@@ -582,6 +1118,7 @@ void Instance::finishSeeking(AudioMsgId::Type type, float64 progress) {
 		}
 	}
 	cancelSeeking(type);
+	_seekingChanges.fire({ .seeking = Seeking::Finish, .type = type });
 }
 
 void Instance::cancelSeeking(AudioMsgId::Type type) {
@@ -589,29 +1126,48 @@ void Instance::cancelSeeking(AudioMsgId::Type type) {
 		data->seeking = AudioMsgId();
 	}
 	emitUpdate(type);
+	_seekingChanges.fire({ .seeking = Seeking::Cancel, .type = type });
 }
 
 void Instance::updateVoicePlaybackSpeed() {
-	if (const auto data = getData(AudioMsgId::Type::Voice)) {
+	if (const auto data = getData(getActiveType())) {
+		if (!data->current.changeablePlaybackSpeed()) {
+			return;
+		}
 		if (const auto streamed = data->streamed.get()) {
-			streamed->instance.setSpeed(Global::VoiceMsgPlaybackDoubled()
-				? kVoicePlaybackSpeedMultiplier
-				: 1.);
+			streamed->instance.setSpeed(VoicePlaybackSpeed());
 		}
 	}
 }
 
-void Instance::documentLoadProgress(DocumentData *document) {
-	const auto type = document->isAudioFile()
-		? AudioMsgId::Type::Song
-		: AudioMsgId::Type::Voice;
-	emitUpdate(type, [&](const AudioMsgId &audioId) {
-		return (audioId.audio() == document);
-	});
-}
-
 void Instance::emitUpdate(AudioMsgId::Type type) {
 	emitUpdate(type, [](const AudioMsgId &playing) { return true; });
+}
+
+RepeatMode Instance::repeat(not_null<const Data*> data) const {
+	return (data->type == AudioMsgId::Type::Song)
+		? Core::App().settings().playerRepeatMode()
+		: RepeatMode::None;
+}
+
+rpl::producer<RepeatMode> Instance::repeatChanges(
+		not_null<const Data*> data) const {
+	return (data->type == AudioMsgId::Type::Song)
+		? Core::App().settings().playerRepeatModeChanges()
+		: rpl::never<RepeatMode>();
+}
+
+OrderMode Instance::order(not_null<const Data*> data) const {
+	return (data->type == AudioMsgId::Type::Song)
+		? Core::App().settings().playerOrderMode()
+		: OrderMode::Default;
+}
+
+rpl::producer<OrderMode> Instance::orderChanges(
+		not_null<const Data*> data) const {
+	return (data->type == AudioMsgId::Type::Song)
+		? Core::App().settings().playerOrderModeChanges()
+		: rpl::never<OrderMode>();
 }
 
 TrackState Instance::getState(AudioMsgId::Type type) const {
@@ -659,15 +1215,23 @@ void Instance::emitUpdate(AudioMsgId::Type type, CheckCallback check) {
 				streamed->progress.updateState(state);
 			}
 		}
+		updatePowerSaveBlocker(data, state);
+
+		auto finished = false;
 		_updatedNotifier.fire_copy({state});
 		if (data->isPlaying && state.state == State::StoppedAtEnd) {
-			if (data->repeatEnabled) {
+			if (repeat(data) == RepeatMode::One) {
 				play(data->current);
+			} else if (OptionDisableAutoplayNext.value()) {
+				finished = true;
 			} else if (!moveInPlaylist(data, 1, true)) {
-				_tracksFinishedNotifier.notify(type);
+				finished = true;
 			}
 		}
 		data->isPlaying = !IsStopped(state.state);
+		if (finished) {
+			_tracksFinished.fire_copy(type);
+		}
 	}
 }
 
@@ -676,7 +1240,7 @@ void Instance::setupShortcuts() {
 	) | rpl::start_with_next([=](not_null<Shortcuts::Request*> request) {
 		using Command = Shortcuts::Command;
 		request->check(Command::MediaPlay) && request->handle([=] {
-			play();
+			playPause();
 			return true;
 		});
 		request->check(Command::MediaPause) && request->handle([=] {
@@ -702,20 +1266,29 @@ void Instance::setupShortcuts() {
 	}, _lifetime);
 }
 
+bool Instance::pauseGifByRoundVideo() const {
+	return _roundPlaying;
+}
+
 void Instance::handleStreamingUpdate(
 		not_null<Data*> data,
 		Streaming::Update &&update) {
 	using namespace Streaming;
 
-	update.data.match([&](Information &update) {
+	v::match(update.data, [&](Information &update) {
 		if (!update.video.size.isEmpty()) {
 			data->streamed->progress.setValueChangedCallback([=](
 					float64,
 					float64) {
 				requestRoundVideoRepaint();
 			});
-			App::wnd()->sessionController()->enableGifPauseReason(
-				Window::GifPauseReason::RoundPlaying);
+			_roundPlaying = true;
+			if (const auto window = App::wnd()) {
+				if (const auto controller = window->sessionController()) {
+					controller->enableGifPauseReason(
+						Window::GifPauseReason::RoundPlaying);
+				}
+			}
 			requestRoundVideoResize();
 		}
 		emitUpdate(data->type);
@@ -740,20 +1313,21 @@ void Instance::handleStreamingUpdate(
 HistoryItem *Instance::roundVideoItem() const {
 	const auto data = getData(AudioMsgId::Type::Voice);
 	return (data->streamed
-		&& !data->streamed->instance.info().video.size.isEmpty())
-		? Auth().data().message(data->streamed->id.contextId())
+		&& !data->streamed->instance.info().video.size.isEmpty()
+		&& data->history)
+		? data->history->owner().message(data->streamed->id.contextId())
 		: nullptr;
 }
 
 void Instance::requestRoundVideoResize() const {
 	if (const auto item = roundVideoItem()) {
-		Auth().data().requestItemResize(item);
+		item->history()->owner().requestItemResize(item);
 	}
 }
 
 void Instance::requestRoundVideoRepaint() const {
 	if (const auto item = roundVideoItem()) {
-		Auth().data().requestItemRepaint(item);
+		item->history()->owner().requestItemRepaint(item);
 	}
 }
 
@@ -765,12 +1339,12 @@ void Instance::handleStreamingError(
 	const auto document = data->streamed->id.audio();
 	const auto contextId = data->streamed->id.contextId();
 	if (error == Streaming::Error::NotStreamable) {
-		DocumentSaveClickHandler::Save(
-			(contextId ? contextId : ::Data::FileOrigin()),
+		DocumentSaveClickHandler::SaveAndTrack(
+			contextId,
 			document);
 	} else if (error == Streaming::Error::OpenFailed) {
-		DocumentSaveClickHandler::Save(
-			(contextId ? contextId : ::Data::FileOrigin()),
+		DocumentSaveClickHandler::SaveAndTrack(
+			contextId,
 			document,
 			DocumentSaveClickHandler::Mode::ToFile);
 	}

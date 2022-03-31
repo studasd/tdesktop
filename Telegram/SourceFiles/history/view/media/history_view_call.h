@@ -22,7 +22,7 @@ public:
 		not_null<Element*> parent,
 		not_null<Data::Call*> call);
 
-	void draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const override;
+	void draw(Painter &p, const PaintContext &context) const override;
 	TextState textState(QPoint point, StateRequest request) const override;
 
 	bool toggleSelectionByHandlerClick(const ClickHandlerPtr &p) const override {
@@ -39,15 +39,14 @@ public:
 		return true;
 	}
 
-	Data::CallFinishReason reason() const;
-
 private:
 	using FinishReason = Data::CallFinishReason;
 
 	QSize countOptimalSize() override;
 
-	FinishReason _reason;
-	int _duration = 0;
+	const int _duration = 0;
+	const FinishReason _reason;
+	const bool _video = false;
 
 	QString _text;
 	QString _status;

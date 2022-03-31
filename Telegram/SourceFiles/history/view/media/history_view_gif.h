@@ -10,10 +10,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/media/history_view_file.h"
 #include "media/streaming/media_streaming_common.h"
 
+class Image;
 struct HistoryMessageVia;
 struct HistoryMessageReply;
 struct HistoryMessageForwarded;
 class Painter;
+
+namespace Data {
+class DocumentMedia;
+} // namespace Data
 
 namespace Media {
 namespace View {
@@ -40,7 +45,7 @@ public:
 		not_null<DocumentData*> document);
 	~Gif();
 
-	void draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const override;
+	void draw(Painter &p, const PaintContext &context) const override;
 	TextState textState(QPoint point, StateRequest request) const override;
 
 	[[nodiscard]] TextSelection adjustSelection(
@@ -64,15 +69,15 @@ public:
 	}
 
 	bool fullFeaturedGrouped(RectParts sides) const;
-	QSize sizeForGrouping() const override;
+	QSize sizeForGroupingOptimal(int maxWidth) const override;
+	QSize sizeForGrouping(int width) const override;
 	void drawGrouped(
 		Painter &p,
-		const QRect &clip,
-		TextSelection selection,
-		crl::time ms,
+		const PaintContext &context,
 		const QRect &geometry,
 		RectParts sides,
 		RectParts corners,
+		float64 highlightOpacity,
 		not_null<uint64*> cacheKey,
 		not_null<QPixmap*> cache) const override;
 	TextState getStateGrouped(
@@ -82,7 +87,7 @@ public:
 		StateRequest request) const override;
 
 	void stopAnimation() override;
-	int checkAnimationCount() override;
+	void checkAnimation() override;
 
 	TextWithEntities getCaption() const override {
 		return _caption.toTextWithEntities();
@@ -91,28 +96,41 @@ public:
 	bool customInfoLayout() const override {
 		return _caption.isEmpty();
 	}
+	QRect contentRectForReactions() const override;
+	std::optional<int> reactionButtonCenterOverride() const override;
+	QPoint resolveCustomInfoRightBottom() const override;
 	QString additionalInfoString() const override;
 
+	void stickerClearLoopPlayed() override {
+		_stickerOncePlayed = false;
+	}
+
 	bool skipBubbleTail() const override {
-		return isBubbleBottom() && _caption.isEmpty();
+		return isRoundedInBubbleBottom() && _caption.isEmpty();
 	}
 	bool isReadyForOpen() const override;
 
 	void parentTextUpdated() override;
 
-	void unloadHeavyPart() override {
-		stopAnimation();
-	}
+	bool hasHeavyPart() const override;
+	void unloadHeavyPart() override;
 
 	void refreshParentId(not_null<HistoryItem*> realParent) override;
 
+	[[nodiscard]] static bool CanPlayInline(not_null<DocumentData*> document);
+
 private:
 	struct Streamed;
+
+	void validateVideoThumbnail() const;
+	[[nodiscard]] QSize countThumbSize(int &inOutWidthMax) const;
 
 	float64 dataProgress() const override;
 	bool dataFinished() const override;
 	bool dataLoaded() const override;
 
+	void ensureDataMediaCreated() const;
+	void dataMediaCreated() const;
 	void refreshCaption();
 
 	[[nodiscard]] bool autoplayEnabled() const;
@@ -142,8 +160,7 @@ private:
 		const HistoryMessageReply *reply,
 		const HistoryMessageForwarded *forwarded) const;
 	[[nodiscard]] int additionalWidth() const;
-	[[nodiscard]] QString mediaTypeString() const;
-	[[nodiscard]] bool isSeparateRoundVideo() const;
+	[[nodiscard]] bool isUnwrapped() const;
 
 	void validateGroupedCache(
 		const QRect &geometry,
@@ -155,19 +172,31 @@ private:
 	[[nodiscard]] QSize sizeForAspectRatio() const;
 
 	[[nodiscard]] bool downloadInCorner() const;
-	void drawCornerStatus(Painter &p, bool selected, QPoint position) const;
+	void drawCornerStatus(
+		Painter &p,
+		const PaintContext &context,
+		QPoint position) const;
 	[[nodiscard]] TextState cornerStatusTextState(
 		QPoint point,
 		StateRequest request,
 		QPoint position) const;
 
-	not_null<DocumentData*> _data;
+	void paintPath(
+		Painter &p,
+		const PaintContext &context,
+		const QRect &r) const;
+
+	const not_null<DocumentData*> _data;
 	int _thumbw = 1;
 	int _thumbh = 1;
 	Ui::Text::String _caption;
 	std::unique_ptr<Streamed> _streamed;
+	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
+	mutable std::unique_ptr<Image> _videoThumbnailFrame;
+	ClickHandlerPtr _stickerLink;
 
 	QString _downloadSize;
+	mutable bool _stickerOncePlayed = false;
 
 };
 

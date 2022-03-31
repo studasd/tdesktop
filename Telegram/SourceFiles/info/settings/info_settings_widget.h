@@ -63,7 +63,6 @@ public:
 		const QRect &geometry,
 		not_null<Memento*> memento);
 
-	rpl::producer<bool> canSaveChanges() const override;
 	void saveChanges(FnMut<void()> done) override;
 
 	rpl::producer<bool> desiredShadowVisibility() const override;
@@ -72,7 +71,7 @@ private:
 	void saveState(not_null<Memento*> memento);
 	void restoreState(not_null<Memento*> memento);
 
-	std::unique_ptr<ContentMemento> doCreateMemento() override;
+	std::shared_ptr<ContentMemento> doCreateMemento() override;
 
 	not_null<UserData*> _self;
 	Type _type = Type();

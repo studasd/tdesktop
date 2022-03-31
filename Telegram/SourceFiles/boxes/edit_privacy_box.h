@@ -9,7 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "boxes/abstract_box.h"
 #include "mtproto/sender.h"
-#include "apiwrap.h"
+#include "api/api_user_privacy.h"
 
 namespace Ui {
 class VerticalLayout;
@@ -31,15 +31,14 @@ class EditPrivacyBox;
 
 class EditPrivacyController {
 public:
-	using Key = ApiWrap::Privacy::Key;
-	using Option = ApiWrap::Privacy::Option;
+	using Key = Api::UserPrivacy::Key;
+	using Option = Api::UserPrivacy::Option;
 	enum class Exception {
 		Always,
 		Never,
 	};
 
 	[[nodiscard]] virtual Key key() = 0;
-	[[nodiscard]] virtual MTPInputPrivacyKey apiKey() = 0;
 
 	[[nodiscard]] virtual rpl::producer<QString> title() = 0;
 	[[nodiscard]] virtual bool hasOption(Option option) {
@@ -47,8 +46,10 @@ public:
 	}
 	[[nodiscard]] virtual rpl::producer<QString> optionsTitleKey() = 0;
 	[[nodiscard]] virtual QString optionLabel(Option option);
-	[[nodiscard]] virtual rpl::producer<QString> warning() {
+	[[nodiscard]] virtual rpl::producer<TextWithEntities> warning() {
 		return nullptr;
+	}
+	virtual void prepareWarningLabel(not_null<Ui::FlatLabel*> warning) {
 	}
 	[[nodiscard]] virtual rpl::producer<QString> exceptionButtonTextKey(
 		Exception exception) = 0;
@@ -59,7 +60,8 @@ public:
 
 	[[nodiscard]] virtual object_ptr<Ui::RpWidget> setupAboveWidget(
 			not_null<QWidget*> parent,
-			rpl::producer<Option> option) {
+			rpl::producer<Option> option,
+			not_null<QWidget*> outerContainer) {
 		return { nullptr };
 	}
 	[[nodiscard]] virtual object_ptr<Ui::RpWidget> setupMiddleWidget(
@@ -76,7 +78,7 @@ public:
 
 	virtual void confirmSave(
 			bool someAreDisallowed,
-			FnMut<void()> saveCallback) {
+			Fn<void()> saveCallback) {
 		saveCallback();
 	}
 	virtual void saveAdditional() {
@@ -102,8 +104,8 @@ private:
 
 class EditPrivacyBox : public Ui::BoxContent {
 public:
-	using Value = ApiWrap::Privacy;
-	using Option = Value::Option;
+	using Value = Api::UserPrivacy::Rule;
+	using Option = Api::UserPrivacy::Option;
 	using Exception = EditPrivacyController::Exception;
 
 	EditPrivacyBox(
@@ -124,11 +126,15 @@ protected:
 private:
 	bool showExceptionLink(Exception exception) const;
 	void setupContent();
-	QVector<MTPInputPrivacyRule> collectResult();
 
 	Ui::FlatLabel *addLabel(
 		not_null<Ui::VerticalLayout*> container,
-		rpl::producer<QString> text);
+		rpl::producer<TextWithEntities> text,
+		int topSkip);
+	Ui::FlatLabel *addLabelOrDivider(
+		not_null<Ui::VerticalLayout*> container,
+		rpl::producer<TextWithEntities> text,
+		int topSkip);
 
 	void editExceptions(Exception exception, Fn<void()> done);
 	std::vector<not_null<PeerData*>> &exceptions(Exception exception);

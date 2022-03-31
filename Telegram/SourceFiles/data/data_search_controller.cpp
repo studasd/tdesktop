@@ -55,6 +55,8 @@ std::optional<MTPmessages_Search> PrepareSearchRequest(
 			return MTP_inputMessagesFilterUrl();
 		case Type::ChatPhoto:
 			return MTP_inputMessagesFilterChatPhotos();
+		case Type::Pinned:
+			return MTP_inputMessagesFilterPinned();
 		}
 		return MTP_inputMessagesFilterEmpty();
 	}();
@@ -81,22 +83,27 @@ std::optional<MTPmessages_Search> PrepareSearchRequest(
 		}
 		Unexpected("Direction in PrepareSearchRequest");
 	}();
-	const auto hash = int32(0);
+	const auto hash = uint64(0);
 
+	const auto mtpOffsetId = int(std::clamp(
+		offsetId.bare,
+		int64(0),
+		int64(0x3FFFFFFF)));
 	return MTPmessages_Search(
 		MTP_flags(0),
 		peer->input,
 		MTP_string(query),
-		MTP_inputUserEmpty(),
+		MTP_inputPeerEmpty(),
+		MTPint(), // top_msg_id
 		filter,
-		MTP_int(0),
-		MTP_int(0),
-		MTP_int(offsetId),
+		MTP_int(0), // min_date
+		MTP_int(0), // max_date
+		MTP_int(mtpOffsetId),
 		MTP_int(addOffset),
 		MTP_int(limit),
 		MTP_int(maxId),
 		MTP_int(minId),
-		MTP_int(hash));
+		MTP_long(hash));
 }
 
 SearchResult ParseSearchResult(
@@ -158,7 +165,7 @@ SearchResult ParseSearchResult(
 	for (const auto &message : *messages) {
 		const auto item = peer->owner().addNewMessage(
 			message,
-			MTPDmessage_ClientFlags(),
+			MessageFlags(),
 			addType);
 		if (item) {
 			const auto itemId = item->id;
@@ -186,10 +193,12 @@ SearchResult ParseSearchResult(
 	return result;
 }
 
-SearchController::CacheEntry::CacheEntry(const Query &query)
-: peerData(Auth().data().peer(query.peerId))
+SearchController::CacheEntry::CacheEntry(
+	not_null<Main::Session*> session,
+	const Query &query)
+: peerData(session->data().peer(query.peerId))
 , migratedData(query.migratedPeerId
-	? base::make_optional(Data(Auth().data().peer(query.migratedPeerId)))
+	? base::make_optional(Data(session->data().peer(query.migratedPeerId)))
 	: std::nullopt) {
 }
 
@@ -211,7 +220,7 @@ void SearchController::setQuery(const Query &query) {
 	if (_current == _cache.end()) {
 		_current = _cache.emplace(
 			query,
-			std::make_unique<CacheEntry>(query)).first;
+			std::make_unique<CacheEntry>(_session, query)).first;
 	}
 }
 
@@ -286,14 +295,14 @@ rpl::producer<SparseIdsSlice> SearchController::simpleIdsSlice(
 			return builder->applyUpdate(update);
 		}) | rpl::start_with_next(pushNextSnapshot, lifetime);
 
-		Auth().data().itemRemoved(
+		_session->data().itemRemoved(
 		) | rpl::filter([=](not_null<const HistoryItem*> item) {
 			return (item->history()->peer->id == peerId);
 		}) | rpl::filter([=](not_null<const HistoryItem*> item) {
 			return builder->removeOne(item->id);
 		}) | rpl::start_with_next(pushNextSnapshot, lifetime);
 
-		Auth().data().historyCleared(
+		_session->data().historyCleared(
 		) | rpl::filter([=](not_null<const History*> history) {
 			return (history->peer->id == peerId);
 		}) | rpl::filter([=] {
@@ -337,7 +346,7 @@ void SearchController::restoreState(SavedState &&state) {
 	if (it == _cache.end()) {
 		it = _cache.emplace(
 			state.query,
-			std::make_unique<CacheEntry>(state.query)).first;
+			std::make_unique<CacheEntry>(_session, state.query)).first;
 	}
 	auto replace = Data(it->second->peerData.peer);
 	replace.list = std::move(state.peerList);
@@ -386,7 +395,7 @@ void SearchController::requestMore(
 				parsed.noSkipRange,
 				parsed.fullCount);
 			finish();
-		}).fail([=](const RPCError &error) {
+		}).fail([=] {
 			finish();
 		}).send();
 	});

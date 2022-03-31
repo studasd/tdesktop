@@ -7,8 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/media/history_view_media_common.h"
 
-#include "layout.h"
+#include "ui/text/format_values.h"
 #include "data/data_document.h"
+#include "data/data_wall_paper.h"
+#include "data/data_media_types.h"
 #include "history/view/history_view_element.h"
 #include "history/view/media/history_view_media_grouped.h"
 #include "history/view/media/history_view_photo.h"
@@ -16,23 +18,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/media/history_view_document.h"
 #include "history/view/media/history_view_sticker.h"
 #include "history/view/media/history_view_theme_document.h"
-#include "styles/style_history.h"
+#include "styles/style_chat.h"
 
 namespace HistoryView {
 
 int documentMaxStatusWidth(DocumentData *document) {
-	auto result = st::normalFont->width(formatDownloadText(document->size, document->size));
+	auto result = st::normalFont->width(Ui::FormatDownloadText(document->size, document->size));
 	const auto duration = document->getDuration();
 	if (const auto song = document->song()) {
-		accumulate_max(result, st::normalFont->width(formatPlayedText(duration, duration)));
-		accumulate_max(result, st::normalFont->width(formatDurationAndSizeText(duration, document->size)));
+		accumulate_max(result, st::normalFont->width(Ui::FormatPlayedText(duration, duration)));
+		accumulate_max(result, st::normalFont->width(Ui::FormatDurationAndSizeText(duration, document->size)));
 	} else if (const auto voice = document->voice()) {
-		accumulate_max(result, st::normalFont->width(formatPlayedText(duration, duration)));
-		accumulate_max(result, st::normalFont->width(formatDurationAndSizeText(duration, document->size)));
+		accumulate_max(result, st::normalFont->width(Ui::FormatPlayedText(duration, duration)));
+		accumulate_max(result, st::normalFont->width(Ui::FormatDurationAndSizeText(duration, document->size)));
 	} else if (document->isVideoFile()) {
-		accumulate_max(result, st::normalFont->width(formatDurationAndSizeText(duration, document->size)));
+		accumulate_max(result, st::normalFont->width(Ui::FormatDurationAndSizeText(duration, document->size)));
 	} else {
-		accumulate_max(result, st::normalFont->width(formatSizeText(document->size)));
+		accumulate_max(result, st::normalFont->width(Ui::FormatSizeText(document->size)));
 	}
 	return result;
 }
@@ -62,6 +64,13 @@ void PaintInterpolatedIcon(
 std::unique_ptr<Media> CreateAttach(
 		not_null<Element*> parent,
 		DocumentData *document,
+		PhotoData *photo) {
+	return CreateAttach(parent, document, photo, {}, {});
+}
+
+std::unique_ptr<Media> CreateAttach(
+		not_null<Element*> parent,
+		DocumentData *document,
 		PhotoData *photo,
 		const std::vector<std::unique_ptr<Data::Media>> &collage,
 		const QString &webpageUrl) {
@@ -78,14 +87,16 @@ std::unique_ptr<Media> CreateAttach(
 			return std::make_unique<ThemeDocument>(
 				parent,
 				document,
-				webpageUrl);
+				ThemeDocument::ParamsFromUrl(webpageUrl));
 		}
-		return std::make_unique<Document>(parent, document);
+		return std::make_unique<Document>(parent, parent->data(), document);
 	} else if (photo) {
 		return std::make_unique<Photo>(
 			parent,
 			parent->data(),
 			photo);
+	} else if (const auto params = ThemeDocument::ParamsFromUrl(webpageUrl)) {
+		return std::make_unique<ThemeDocument>(parent, nullptr, params);
 	}
 	return nullptr;
 }

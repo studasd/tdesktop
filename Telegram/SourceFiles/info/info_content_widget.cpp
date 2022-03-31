@@ -37,7 +37,7 @@ ContentWidget::ContentWidget(
 	not_null<Controller*> controller)
 : RpWidget(parent)
 , _controller(controller)
-, _scroll(this, st::infoScroll) {
+, _scroll(this) {
 	using namespace rpl::mappers;
 
 	setAttribute(Qt::WA_OpaquePaintEvent);
@@ -94,7 +94,7 @@ void ContentWidget::updateControlsGeometry() {
 	}
 }
 
-std::unique_ptr<ContentMemento> ContentWidget::createMemento() {
+std::shared_ptr<ContentMemento> ContentWidget::createMemento() {
 	auto result = doCreateMemento();
 	_controller->saveSearchState(result.get());
 	return result;
@@ -214,20 +214,16 @@ void ContentWidget::scrollTo(const Ui::ScrollToRequest &request) {
 	_scroll->scrollTo(request);
 }
 
-bool ContentWidget::wheelEventFromFloatPlayer(QEvent *e) {
+bool ContentWidget::floatPlayerHandleWheelEvent(QEvent *e) {
 	return _scroll->viewportEvent(e);
 }
 
-QRect ContentWidget::rectForFloatPlayer() const {
+QRect ContentWidget::floatPlayerAvailableRect() const {
 	return mapToGlobal(_scroll->geometry());
 }
 
 rpl::producer<SelectedItems> ContentWidget::selectedListValue() const {
 	return rpl::single(SelectedItems(Storage::SharedMediaType::Photo));
-}
-
-rpl::producer<bool> ContentWidget::canSaveChanges() const {
-	return rpl::single(false);
 }
 
 void ContentWidget::saveChanges(FnMut<void()> done) {
@@ -262,19 +258,22 @@ void ContentWidget::refreshSearchField(bool shown) {
 }
 
 Key ContentMemento::key() const {
-	if (const auto peerId = this->peerId()) {
-		return Key(Auth().data().peer(peerId));
-	//} else if (const auto feed = this->feed()) { // #feed
-	//	return Key(feed);
+	if (const auto peer = this->peer()) {
+		return Key(peer);
 	} else if (const auto poll = this->poll()) {
 		return Key(poll, pollContextId());
+	} else if (const auto self = settingsSelf()) {
+		return Settings::Tag{ self };
 	} else {
-		return Settings::Tag{ settingsSelf() };
+		return Downloads::Tag();
 	}
 }
 
 ContentMemento::ContentMemento(Settings::Tag settings)
 : _settingsSelf(settings.self.get()) {
+}
+
+ContentMemento::ContentMemento(Downloads::Tag downloads) {
 }
 
 } // namespace Info

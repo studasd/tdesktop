@@ -25,7 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/text_utilities.h" // Ui::Text::ToUpper
 #include "ui/search_field_controller.h"
 #include "lang/lang_keys.h"
-#include "boxes/confirm_box.h"
+#include "ui/boxes/confirm_box.h"
 #include "boxes/peers/add_participants_box.h"
 #include "window/window_session_controller.h"
 #include "data/data_channel.h"
@@ -46,6 +46,7 @@ Members::Members(
 	QWidget *parent,
 	not_null<Controller*> controller)
 : RpWidget(parent)
+, _show(std::make_unique<Window::Show>(controller->parentController()))
 , _controller(controller)
 , _peer(_controller->key().peer())
 , _listController(CreateMembersController(controller, _peer)) {
@@ -130,7 +131,7 @@ void Members::setupHeader() {
 	object_ptr<FloatingIcon>(
 		parent,
 		st::infoIconMembers,
-		st::infoIconPosition);
+		st::infoGroupMembersIconPosition);
 
 	_titleWrap = Ui::CreateChild<Ui::RpWidget>(parent);
 	_title = setupTitle();
@@ -212,10 +213,10 @@ void Members::setupButtons() {
 
 void Members::setupList() {
 	auto topSkip = _header ? _header->height() : 0;
+	_listController->setStyleOverrides(&st::infoMembersList);
 	_list = object_ptr<ListWidget>(
 		this,
-		_listController.get(),
-		st::infoMembersList);
+		_listController.get());
 	_list->scrollToRequests(
 	) | rpl::start_with_next([this](Ui::ScrollToRequest request) {
 		auto addmin = (request.ymin < 0 || !_header)
@@ -257,7 +258,7 @@ int Members::resizeGetHeight(int newWidth) {
 //}
 
 void Members::updateHeaderControlsGeometry(int newWidth) {
-	_openMembers->setGeometry(0, st::infoProfileSkip, newWidth, st::infoMembersHeader - st::infoProfileSkip - st::infoMembersHeaderPaddingBottom);
+	_openMembers->setGeometry(0, st::infoProfileSkip, newWidth, st::infoMembersButton.height);
 
 	auto availableWidth = newWidth
 		- st::infoMembersButtonPosition.x();
@@ -326,9 +327,9 @@ void Members::addMember() {
 		AddParticipantsBoxController::Start(_controller, chat);
 	} else if (const auto channel = _peer->asChannel()) {
 		const auto state = _listController->saveState();
-		const auto users = ranges::view::all(
+		const auto users = ranges::views::all(
 			state->list
-		) | ranges::view::transform([](not_null<PeerData*> peer) {
+		) | ranges::views::transform([](not_null<PeerData*> peer) {
 			return peer->asUser();
 		}) | ranges::to_vector;
 		AddParticipantsBoxController::Start(
@@ -342,14 +343,14 @@ void Members::showMembersWithSearch(bool withSearch) {
 	//if (!_searchShown) {
 	//	toggleSearch();
 	//}
-	auto contentMemento = std::make_unique<Info::Members::Memento>(
+	auto contentMemento = std::make_shared<Info::Members::Memento>(
 		_controller);
 	contentMemento->setState(saveState());
 	contentMemento->setSearchStartsFocused(withSearch);
-	auto mementoStack = std::vector<std::unique_ptr<ContentMemento>>();
+	auto mementoStack = std::vector<std::shared_ptr<ContentMemento>>();
 	mementoStack.push_back(std::move(contentMemento));
 	_controller->showSection(
-		Info::Memento(std::move(mementoStack)));
+		std::make_shared<Info::Memento>(std::move(mementoStack)));
 }
 
 //void Members::toggleSearch(anim::type animated) {
@@ -423,10 +424,6 @@ int Members::peerListSelectedRowsCount() {
 	return 0;
 }
 
-std::vector<not_null<PeerData*>> Members::peerListCollectSelectedRows() {
-	return {};
-}
-
 void Members::peerListScrollToTop() {
 	_scrollToRequests.fire({ -1, -1 });
 }
@@ -440,6 +437,20 @@ void Members::peerListAddSelectedRowInBunch(not_null<PeerListRow*> row) {
 }
 
 void Members::peerListFinishSelectedRowsBunch() {
+}
+
+void Members::peerListShowBox(
+		object_ptr<Ui::BoxContent> content,
+		Ui::LayerOptions options) {
+	_show->showBox(std::move(content), options);
+}
+
+void Members::peerListHideLayer() {
+	_show->hideLayer();
+}
+
+not_null<QWidget*> Members::peerListToastParent() {
+	return _show->toastParent();
 }
 
 void Members::peerListSetDescription(

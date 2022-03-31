@@ -8,13 +8,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "history/view/history_view_element.h"
+#include "history/view/history_view_bottom_info.h"
+#include "ui/effects/animations.h"
+#include "base/weak_ptr.h"
 
 class HistoryMessage;
 struct HistoryMessageEdited;
+struct HistoryMessageForwarded;
 
 namespace HistoryView {
 
+class ViewButton;
 class WebPage;
+
+namespace Reactions {
+class InlineList;
+} // namespace Reactions
 
 // Special type of Component for the channel actions log.
 struct LogEntryOriginal
@@ -25,22 +34,38 @@ struct LogEntryOriginal
 	~LogEntryOriginal();
 
 	std::unique_ptr<WebPage> page;
-
 };
 
-class Message : public Element {
+struct PsaTooltipState : public RuntimeComponent<PsaTooltipState, Element> {
+	QString type;
+	mutable ClickHandlerPtr link;
+	mutable Ui::Animations::Simple buttonVisibleAnimation;
+	mutable bool buttonVisible = true;
+};
+
+class Message : public Element, public base::has_weak_ptr {
 public:
 	Message(
 		not_null<ElementDelegate*> delegate,
-		not_null<HistoryMessage*> data);
+		not_null<HistoryMessage*> data,
+		Element *replacing);
+	~Message();
+
+	void clickHandlerPressedChanged(
+		const ClickHandlerPtr &handler,
+		bool pressed) override;
+
+	not_null<HistoryMessage*> message() const;
+
+	[[nodiscard]] const HistoryMessageEdited *displayedEditBadge() const;
+	[[nodiscard]] HistoryMessageEdited *displayedEditBadge();
+
+	[[nodiscard]] bool embedReactionsInBottomInfo() const;
+	[[nodiscard]] bool embedReactionsInBubble() const;
 
 	int marginTop() const override;
 	int marginBottom() const override;
-	void draw(
-		Painter &p,
-		QRect clip,
-		TextSelection selection,
-		crl::time ms) const override;
+	void draw(Painter &p, const PaintContext &context) const override;
 	PointState pointState(QPoint point) const override;
 	TextState textState(
 		QPoint point,
@@ -48,12 +73,12 @@ public:
 	void updatePressed(QPoint point) override;
 	void drawInfo(
 		Painter &p,
+		const PaintContext &context,
 		int right,
 		int bottom,
 		int width,
-		bool selected,
 		InfoDisplayType type) const override;
-	bool pointInTime(
+	TextState bottomInfoTextState(
 		int right,
 		int bottom,
 		QPoint point,
@@ -62,6 +87,14 @@ public:
 	TextSelection adjustSelection(
 		TextSelection selection,
 		TextSelectType type) const override;
+
+	Reactions::ButtonParameters reactionButtonParameters(
+		QPoint position,
+		const TextState &reactionState) const override;
+	int reactionsOptimalWidth() const override;
+
+	bool hasHeavyPart() const override;
+	void unloadHeavyPart() override;
 
 	// hasFromPhoto() returns true even if we don't display the photo
 	// but we need to skip a place at the left side for this photo
@@ -73,43 +106,91 @@ public:
 	bool hasOutLayout() const override;
 	bool drawBubble() const override;
 	bool hasBubble() const override;
+	int minWidthForMedia() const override;
 	bool hasFastReply() const override;
 	bool displayFastReply() const override;
-	bool displayRightAction() const override;
+	bool displayRightActionComments() const;
+	std::optional<QSize> rightActionSize() const override;
 	void drawRightAction(
 		Painter &p,
+		const PaintContext &context,
 		int left,
 		int top,
 		int outerWidth) const override;
-	ClickHandlerPtr rightActionLink() const override;
-	bool displayEditedBadge() const override;
-	TimeId displayedEditDate() const override;
-	int infoWidth() const override;
+	[[nodiscard]] ClickHandlerPtr rightActionLink() const override;
+	[[nodiscard]] bool displayEditedBadge() const override;
+	[[nodiscard]] TimeId displayedEditDate() const override;
+	[[nodiscard]] HistoryMessageReply *displayedReply() const override;
+	[[nodiscard]] bool toggleSelectionByHandlerClick(
+		const ClickHandlerPtr &handler) const override;
+	[[nodiscard]] int infoWidth() const override;
+	[[nodiscard]] int bottomInfoFirstLineWidth() const override;
+	[[nodiscard]] bool bottomInfoIsWide() const override;
+	[[nodiscard]] bool isSignedAuthorElided() const override;
+
+	void itemDataChanged() override;
 
 	VerticalRepaintRange verticalRepaintRange() const override;
+
+	void applyGroupAdminChanges(
+		const base::flat_set<UserId> &changes) override;
+
+	void animateReaction(ReactionAnimationArgs &&args) override;
+	auto takeReactionAnimations()
+		-> base::flat_map<QString, std::unique_ptr<Reactions::Animation>> override;
+
+	QRect innerGeometry() const override;
 
 protected:
 	void refreshDataIdHook() override;
 
 private:
-	not_null<HistoryMessage*> message() const;
+	struct CommentsButton;
 
 	void initLogEntryOriginal();
-	void refreshEditedBadge();
+	void initPsa();
 	void fromNameUpdated(int width) const;
 
+	[[nodiscard]] bool showForwardsFromSender(
+		not_null<HistoryMessageForwarded*> forwarded) const;
 	[[nodiscard]] TextSelection skipTextSelection(
 		TextSelection selection) const;
 	[[nodiscard]] TextSelection unskipTextSelection(
 		TextSelection selection) const;
 
-	void paintFromName(Painter &p, QRect &trect, bool selected) const;
-	void paintForwardedInfo(Painter &p, QRect &trect, bool selected) const;
-	void paintReplyInfo(Painter &p, QRect &trect, bool selected) const;
-	// this method draws "via @bot" if it is not painted in forwarded info or in from name
-	void paintViaBotIdInfo(Painter &p, QRect &trect, bool selected) const;
-	void paintText(Painter &p, QRect &trect, TextSelection selection) const;
+	void toggleCommentsButtonRipple(bool pressed);
 
+	void paintCommentsButton(
+		Painter &p,
+		QRect &g,
+		const PaintContext &context) const;
+	void paintFromName(
+		Painter &p,
+		QRect &trect,
+		const PaintContext &context) const;
+	void paintForwardedInfo(
+		Painter &p,
+		QRect &trect,
+		const PaintContext &context) const;
+	void paintReplyInfo(
+		Painter &p,
+		QRect &trect,
+		const PaintContext &context) const;
+	// This method draws "via @bot" if it is not painted
+	// in forwarded info or in from name.
+	void paintViaBotIdInfo(
+		Painter &p,
+		QRect &trect,
+		const PaintContext &context) const;
+	void paintText(
+		Painter &p,
+		QRect &trect,
+		const PaintContext &context) const;
+
+	bool getStateCommentsButton(
+		QPoint point,
+		QRect &g,
+		not_null<TextState*> outResult) const;
 	bool getStateFromName(
 		QPoint point,
 		QRect &trect,
@@ -140,20 +221,40 @@ private:
 	QSize performCountOptimalSize() override;
 	QSize performCountCurrentSize(int newWidth) override;
 	bool hasVisibleText() const override;
+	[[nodiscard]] bool needInfoDisplay() const;
 
-	bool displayFastShare() const;
-	bool displayGoToOriginal() const;
-	ClickHandlerPtr fastReplyLink() const;
-	const HistoryMessageEdited *displayedEditBadge() const;
-	HistoryMessageEdited *displayedEditBadge();
-	void initTime();
-	int timeLeft() const;
-	int plainMaxWidth() const;
+	[[nodiscard]] bool isPinnedContext() const;
 
-	WebPage *logEntryOriginal() const;
+	[[nodiscard]] bool displayFastShare() const;
+	[[nodiscard]] bool displayGoToOriginal() const;
+	[[nodiscard]] ClickHandlerPtr fastReplyLink() const;
+
+	void refreshInfoSkipBlock();
+	[[nodiscard]] int plainMaxWidth() const;
+	[[nodiscard]] int monospaceMaxWidth() const;
+
+	void updateViewButtonExistence();
+	[[nodiscard]] int viewButtonHeight() const;
+
+	[[nodiscard]] WebPage *logEntryOriginal() const;
+
+	[[nodiscard]] ClickHandlerPtr createGoToCommentsLink() const;
+	[[nodiscard]] ClickHandlerPtr psaTooltipLink() const;
+	void psaTooltipToggled(bool shown) const;
+
+	void refreshRightBadge();
+	void refreshReactions();
 
 	mutable ClickHandlerPtr _rightActionLink;
 	mutable ClickHandlerPtr _fastReplyLink;
+	mutable std::unique_ptr<ViewButton> _viewButton;
+	std::unique_ptr<Reactions::InlineList> _reactions;
+	mutable std::unique_ptr<CommentsButton> _comments;
+
+	Ui::Text::String _rightBadge;
+	int _bubbleWidthLimit = 0;
+
+	BottomInfo _bottomInfo;
 
 };
 

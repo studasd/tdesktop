@@ -13,12 +13,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/rp_widget.h"
 #include "ui/focus_persister.h"
 #include "ui/widgets/buttons.h"
+#include "ui/cached_round_corners.h"
 #include "window/section_widget.h"
 #include "window/window_session_controller.h"
 #include "window/main_window.h"
 #include "main/main_session.h"
 #include "boxes/abstract_box.h"
-#include "app.h"
+#include "core/application.h"
 #include "styles/style_info.h"
 #include "styles/style_window.h"
 #include "styles/style_layers.h"
@@ -31,7 +32,7 @@ LayerWidget::LayerWidget(
 : _controller(controller)
 , _content(this, controller, Wrap::Layer, memento) {
 	setupHeightConsumers();
-	_controller->replaceFloatPlayerDelegate(floatPlayerDelegate());
+	Core::App().replaceFloatPlayerDelegate(floatPlayerDelegate());
 }
 
 LayerWidget::LayerWidget(
@@ -40,7 +41,7 @@ LayerWidget::LayerWidget(
 : _controller(controller)
 , _content(memento->takeContent(this, Wrap::Layer)) {
 	setupHeightConsumers();
-	_controller->replaceFloatPlayerDelegate(floatPlayerDelegate());
+	Core::App().replaceFloatPlayerDelegate(floatPlayerDelegate());
 }
 
 auto LayerWidget::floatPlayerDelegate()
@@ -52,19 +53,15 @@ not_null<Ui::RpWidget*> LayerWidget::floatPlayerWidget() {
 	return this;
 }
 
-not_null<Window::SessionController*> LayerWidget::floatPlayerController() {
-	return _controller;
-}
-
-not_null<Window::AbstractSectionWidget*> LayerWidget::floatPlayerGetSection(
-		Window::Column column) {
+auto LayerWidget::floatPlayerGetSection(Window::Column column)
+-> not_null<::Media::Player::FloatSectionDelegate*> {
 	Expects(_content != nullptr);
 
 	return _content;
 }
 
 void LayerWidget::floatPlayerEnumerateSections(Fn<void(
-		not_null<Window::AbstractSectionWidget*> widget,
+		not_null<::Media::Player::FloatSectionDelegate*> widget,
 		Window::Column widgetColumn)> callback) {
 	Expects(_content != nullptr);
 
@@ -73,6 +70,11 @@ void LayerWidget::floatPlayerEnumerateSections(Fn<void(
 
 bool LayerWidget::floatPlayerIsVisible(not_null<HistoryItem*> item) {
 	return false;
+}
+
+void LayerWidget::floatPlayerDoubleClickEvent(
+		not_null<const HistoryItem*> item) {
+	_controller->showPeerHistoryAtItem(item);
 }
 
 void LayerWidget::setupHeightConsumers() {
@@ -108,7 +110,7 @@ void LayerWidget::parentResized() {
 		Ui::FocusPersister persister(this);
 		restoreFloatPlayerDelegate();
 
-		auto memento = MoveMemento(std::move(_content));
+		auto memento = std::make_shared<MoveMemento>(std::move(_content));
 
 		// We want to call hideSpecialLayer synchronously to avoid glitches,
 		// but we can't destroy LayerStackWidget from its' resizeEvent,
@@ -164,10 +166,10 @@ bool LayerWidget::takeToThirdSection() {
 	//// shrink the window size.
 	////
 	//// See https://github.com/telegramdesktop/tdesktop/issues/4091
-	//Auth().settings().setThirdSectionExtendedBy(0);
+	//localCopy->session()().settings().setThirdSectionExtendedBy(0);
 
-	//Auth().settings().setThirdSectionInfoEnabled(true);
-	//Auth().saveSettingsDelayed();
+	//localCopy->session()().settings().setThirdSectionInfoEnabled(true);
+	//localCopy->session()().saveSettingsDelayed();
 	//localCopy->showSection(
 	//	std::move(memento),
 	//	Window::SectionShow(
@@ -209,17 +211,19 @@ int LayerWidget::resizeGetHeight(int newWidth) {
 	auto windowWidth = parentSize.width();
 	auto windowHeight = parentSize.height();
 	auto newLeft = (windowWidth - newWidth) / 2;
-	auto newTop = snap(
+	auto newTop = std::clamp(
 		windowHeight / 24,
 		st::infoLayerTopMinimal,
 		st::infoLayerTopMaximal);
 	auto newBottom = newTop;
-	auto desiredHeight = st::boxRadius + _desiredHeight + st::boxRadius;
+
+	// Top rounding is included in _desiredHeight.
+	auto desiredHeight = _desiredHeight + st::boxRadius;
 	accumulate_min(desiredHeight, windowHeight - newTop - newBottom);
 
 	// First resize content to new width and get the new desired height.
 	auto contentLeft = 0;
-	auto contentTop = st::boxRadius;
+	auto contentTop = 0;
 	auto contentBottom = st::boxRadius;
 	auto contentWidth = newWidth;
 	auto contentHeight = desiredHeight - contentTop - contentBottom;
@@ -260,23 +264,26 @@ void LayerWidget::doSetInnerFocus() {
 void LayerWidget::paintEvent(QPaintEvent *e) {
 	Painter p(this);
 
-	auto clip = e->rect();
-	auto r = st::boxRadius;
+	const auto clip = e->rect();
+	const auto radius = st::boxRadius;
 	auto parts = RectPart::None | 0;
-	if (clip.intersects({ 0, 0, width(), r })) {
-		parts |= RectPart::FullTop;
-	}
 	if (!_tillBottom) {
-		if (clip.intersects({ 0, height() - r, width(), r })) {
+		if (clip.intersects({ 0, height() - radius, width(), radius })) {
 			parts |= RectPart::FullBottom;
 		}
 	}
+	if (_content->animatingShow()) {
+		if (clip.intersects({ 0, 0, width(), radius })) {
+			parts |= RectPart::FullTop;
+		}
+		parts |= RectPart::Left | RectPart::Center | RectPart::Right;
+	}
 	if (parts) {
-		App::roundRect(
+		Ui::FillRoundRect(
 			p,
 			rect(),
 			st::boxBg,
-			BoxCorners,
+			Ui::BoxCorners,
 			nullptr,
 			parts);
 	}
@@ -285,7 +292,7 @@ void LayerWidget::paintEvent(QPaintEvent *e) {
 void LayerWidget::restoreFloatPlayerDelegate() {
 	if (!_floatPlayerDelegateRestored) {
 		_floatPlayerDelegateRestored = true;
-		_controller->restoreFloatPlayerDelegate(floatPlayerDelegate());
+		Core::App().restoreFloatPlayerDelegate(floatPlayerDelegate());
 	}
 }
 
@@ -294,7 +301,7 @@ void LayerWidget::closeHook() {
 }
 
 LayerWidget::~LayerWidget() {
-	if (!App::quitting()) {
+	if (!Core::Quitting()) {
 		restoreFloatPlayerDelegate();
 	}
 }

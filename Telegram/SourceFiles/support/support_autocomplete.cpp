@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "support/support_autocomplete.h"
 
+#include "ui/chat/chat_theme.h"
+#include "ui/chat/chat_style.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/widgets/input_fields.h"
 #include "ui/widgets/buttons.h"
@@ -17,11 +19,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_service_message.h"
 #include "history/history_message.h"
 #include "lang/lang_keys.h"
-#include "data/data_session.h"
 #include "base/unixtime.h"
 #include "base/call_delayed.h"
 #include "main/main_session.h"
+#include "main/main_session_settings.h"
 #include "apiwrap.h"
+#include "window/window_session_controller.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_window.h"
 #include "styles/style_layers.h"
@@ -269,22 +272,24 @@ AdminLog::OwnedItem GenerateCommentItem(
 	if (data.comment.isEmpty()) {
 		return nullptr;
 	}
-	using Flag = MTPDmessage::Flag;
-	const auto id = ServerMaxMsgId + (ServerMaxMsgId / 2);
-	const auto flags = Flag::f_entities | Flag::f_from_id | Flag::f_out;
-	const auto clientFlags = MTPDmessage_ClientFlag::f_fake_history_item;
-	const auto replyTo = 0;
-	const auto viaBotId = 0;
+	const auto flags = MessageFlag::HasFromId
+		| MessageFlag::Outgoing
+		| MessageFlag::FakeHistoryItem;
+	const auto replyTo = MsgId();
+	const auto viaBotId = UserId();
+	const auto groupedId = uint64();
 	const auto item = history->makeMessage(
-		id,
+		history->nextNonHistoryEntryId(),
 		flags,
-		clientFlags,
 		replyTo,
 		viaBotId,
 		base::unixtime::now(),
 		history->session().userId(),
 		QString(),
-		TextWithEntities{ TextUtilities::Clean(data.comment) });
+		TextWithEntities{ data.comment },
+		MTP_messageMediaEmpty(),
+		HistoryMessageMarkupData(),
+		groupedId);
 	return AdminLog::OwnedItem(delegate, item);
 }
 
@@ -292,38 +297,29 @@ AdminLog::OwnedItem GenerateContactItem(
 		not_null<HistoryView::ElementDelegate*> delegate,
 		not_null<History*> history,
 		const Contact &data) {
-	using Flag = MTPDmessage::Flag;
-	const auto id = ServerMaxMsgId + (ServerMaxMsgId / 2) + 1;
-	const auto flags = Flag::f_from_id | Flag::f_media | Flag::f_out;
-	const auto replyTo = 0;
-	const auto viaBotId = 0;
-	const auto message = MTP_message(
-		MTP_flags(flags),
-		MTP_int(id),
-		MTP_int(history->session().userId()),
-		peerToMTP(history->peer->id),
-		MTPMessageFwdHeader(),
-		MTP_int(viaBotId),
-		MTP_int(replyTo),
-		MTP_int(base::unixtime::now()),
-		MTP_string(),
+	const auto replyTo = MsgId();
+	const auto viaBotId = UserId();
+	const auto postAuthor = QString();
+	const auto groupedId = uint64();
+	const auto item = history->makeMessage(
+		history->nextNonHistoryEntryId(),
+		(MessageFlag::HasFromId
+			| MessageFlag::Outgoing
+			| MessageFlag::FakeHistoryItem),
+		replyTo,
+		viaBotId,
+		base::unixtime::now(),
+		history->session().userPeerId(),
+		postAuthor,
+		TextWithEntities(),
 		MTP_messageMediaContact(
 			MTP_string(data.phone),
 			MTP_string(data.firstName),
 			MTP_string(data.lastName),
-			MTP_string(),
-			MTP_int(0)),
-		MTPReplyMarkup(),
-		MTPVector<MTPMessageEntity>(),
-		MTP_int(0),
-		MTP_int(0),
-		MTP_string(),
-		MTP_long(0),
-		//MTPMessageReactions(),
-		MTPVector<MTPRestrictionReason>());
-	const auto item = history->makeMessage(
-		message.c_message(),
-		MTPDmessage_ClientFlag::f_fake_history_item);
+			MTP_string(), // vcard
+			MTP_long(0)), // user_id
+		HistoryMessageMarkupData(),
+		groupedId);
 	return AdminLog::OwnedItem(delegate, item);
 }
 
@@ -404,9 +400,7 @@ void Autocomplete::setupContent() {
 			rpl::single(qsl("Search for templates"))), // #TODO hard_lang
 		st::autocompleteSearchPadding);
 	const auto input = inputWrap->entity();
-	const auto scroll = Ui::CreateChild<Ui::ScrollArea>(
-		this,
-		st::mentionScroll);
+	const auto scroll = Ui::CreateChild<Ui::ScrollArea>(this);
 
 	const auto inner = scroll->setOwnedWidget(object_ptr<Inner>(scroll));
 
@@ -479,11 +473,10 @@ void Autocomplete::submitValue(const QString &value) {
 	if (value.startsWith(prefix)) {
 		const auto line = value.indexOf('\n');
 		const auto text = (line > 0) ? value.mid(line + 1) : QString();
-		const auto commented = !text.isEmpty();
 		const auto contact = value.mid(
 			prefix.size(),
 			(line > 0) ? (line - prefix.size()) : -1);
-		const auto parts = contact.split(' ', QString::SkipEmptyParts);
+		const auto parts = contact.split(' ', Qt::SkipEmptyParts);
 		if (parts.size() > 1) {
 			const auto phone = parts[0];
 			const auto firstName = parts[1];
@@ -503,12 +496,16 @@ void Autocomplete::submitValue(const QString &value) {
 
 ConfirmContactBox::ConfirmContactBox(
 	QWidget*,
+	not_null<Window::SessionController*> controller,
 	not_null<History*> history,
 	const Contact &data,
 	Fn<void(Qt::KeyboardModifiers)> submit)
-: _comment(GenerateCommentItem(this, history, data))
+: SimpleElementDelegate(controller, [=] { update(); })
+, _chatStyle(std::make_unique<Ui::ChatStyle>())
+, _comment(GenerateCommentItem(this, history, data))
 , _contact(GenerateContactItem(this, history, data))
 , _submit(submit) {
+	_chatStyle->apply(controller->defaultChatTheme().get());
 }
 
 void ConfirmContactBox::prepare() {
@@ -524,7 +521,7 @@ void ConfirmContactBox::prepare() {
 	_contact->initDimensions();
 	accumulate_max(maxWidth, _contact->maxWidth());
 	maxWidth += st::boxPadding.left() + st::boxPadding.right();
-	const auto width = snap(maxWidth, st::boxWidth, st::boxWideWidth);
+	const auto width = std::clamp(maxWidth, st::boxWidth, st::boxWideWidth);
 	const auto available = width
 		- st::boxPadding.left()
 		- st::boxPadding.right();
@@ -569,13 +566,19 @@ void ConfirmContactBox::paintEvent(QPaintEvent *e) {
 
 	p.fillRect(e->rect(), st::boxBg);
 
-	const auto ms = crl::now();
+	const auto theme = controller()->defaultChatTheme().get();
+	auto context = theme->preparePaintContext(
+		_chatStyle.get(),
+		rect(),
+		rect());
 	p.translate(st::boxPadding.left(), 0);
 	if (_comment) {
-		_comment->draw(p, rect(), TextSelection(), ms);
+		context.outbg = _comment->hasOutLayout();
+		_comment->draw(p, context);
 		p.translate(0, _comment->height());
 	}
-	_contact->draw(p, rect(), TextSelection(), ms);
+	context.outbg = _contact->hasOutLayout();
+	_contact->draw(p, context);
 }
 
 HistoryView::Context ConfirmContactBox::elementContext() {

@@ -171,7 +171,7 @@ void PanelNoPassword::setupContent() {
 		_inner->resizeToWidth(newWidth);
 	}, _inner->lifetime());
 
-	const auto about1 = _inner->add(
+	_inner->add(
 		object_ptr<Ui::CenterWrap<Ui::FlatLabel>>(
 			_inner,
 			object_ptr<Ui::FlatLabel>(
@@ -183,7 +183,7 @@ void PanelNoPassword::setupContent() {
 				st::passportPasswordLabelBold)),
 		st::passportPasswordAbout1Padding)->entity();
 
-	const auto about2 = _inner->add(
+	_inner->add(
 		object_ptr<Ui::CenterWrap<Ui::FlatLabel>>(
 			_inner,
 			object_ptr<Ui::FlatLabel>(
@@ -204,7 +204,7 @@ void PanelNoPassword::setupContent() {
 		st::passportPasswordIcon,
 		QPoint(0, 0));
 
-	const auto about3 = _inner->add(
+	_inner->add(
 		object_ptr<Ui::CenterWrap<Ui::FlatLabel>>(
 			_inner,
 			object_ptr<Ui::FlatLabel>(
@@ -248,6 +248,8 @@ void PanelNoPassword::refreshBottom() {
 			container,
 			tr::lng_cancel(),
 			st::defaultBoxButton);
+		cancel->setTextTransform(
+			Ui::RoundButton::TextTransform::NoTransform);
 		cancel->addClickHandler([=] {
 			_controller->cancelPasswordSubmit();
 		});
@@ -255,6 +257,8 @@ void PanelNoPassword::refreshBottom() {
 			container,
 			tr::lng_passport_email_validate(),
 			st::defaultBoxButton);
+		validate->setTextTransform(
+			Ui::RoundButton::TextTransform::NoTransform);
 		validate->addClickHandler([=] {
 			_controller->validateRecoveryEmail();
 		});

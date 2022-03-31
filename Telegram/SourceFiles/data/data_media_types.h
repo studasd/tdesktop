@@ -7,6 +7,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "data/data_location.h"
+
+class Image;
+class History;
 class HistoryItem;
 
 namespace base {
@@ -23,12 +27,14 @@ namespace HistoryView {
 enum class Context : char;
 class Element;
 class Media;
+struct ItemPreview;
+struct ItemPreviewImage;
+struct ToPreviewOptions;
 } // namespace HistoryView
 
 namespace Data {
 
-class LocationPoint;
-struct LocationThumbnail;
+class CloudImage;
 
 enum class CallFinishReason : char {
 	Missed,
@@ -49,6 +55,7 @@ struct Call {
 
 	int duration = 0;
 	FinishReason finishReason = FinishReason::Missed;
+	bool video = false;
 };
 
 struct Invoice {
@@ -68,6 +75,10 @@ public:
 
 	not_null<HistoryItem*> parent() const;
 
+	using ToPreviewOptions = HistoryView::ToPreviewOptions;
+	using ItemPreviewImage = HistoryView::ItemPreviewImage;
+	using ItemPreview = HistoryView::ItemPreview;
+
 	virtual std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) = 0;
 
 	virtual DocumentData *document() const;
@@ -77,7 +88,7 @@ public:
 	virtual const Call *call() const;
 	virtual GameData *game() const;
 	virtual const Invoice *invoice() const;
-	virtual LocationThumbnail *location() const;
+	virtual Data::CloudImage *location() const;
 	virtual PollData *poll() const;
 
 	virtual bool uploading() const;
@@ -85,18 +96,21 @@ public:
 	virtual bool canBeGrouped() const;
 	virtual bool hasReplyPreview() const;
 	virtual Image *replyPreview() const;
+	virtual bool replyPreviewLoaded() const;
 	// Returns text with link-start and link-end commands for service-color highlighting.
 	// Example: "[link1-start]You:[link1-end] [link1-start]Photo,[link1-end] caption text"
-	virtual QString chatListText() const;
-	virtual QString notificationText() const = 0;
+	virtual ItemPreview toPreview(ToPreviewOptions way) const;
+	virtual TextWithEntities notificationText() const = 0;
 	virtual QString pinnedTextSubstring() const = 0;
 	virtual TextForMimeData clipboardText() const = 0;
 	virtual bool allowsForward() const;
 	virtual bool allowsEdit() const;
 	virtual bool allowsEditCaption() const;
 	virtual bool allowsEditMedia() const;
-	virtual bool allowsRevoke() const;
+	virtual bool allowsRevoke(TimeId now) const;
 	virtual bool forwardedBecomesUnread() const;
+	virtual bool dropForwardedInfo() const;
+	virtual bool forceForwardedInfo() const;
 	virtual QString errorTextForForward(not_null<PeerData*> peer) const;
 
 	[[nodiscard]] virtual bool consumeMessageText(
@@ -109,9 +123,16 @@ public:
 	virtual bool updateSentMedia(const MTPMessageMedia &media) = 0;
 	virtual std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) = 0;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) = 0;
 	std::unique_ptr<HistoryView::Media> createView(
-		not_null<HistoryView::Element*> message);
+		not_null<HistoryView::Element*> message,
+		HistoryView::Element *replacing = nullptr);
+
+protected:
+	[[nodiscard]] ItemPreview toGroupPreview(
+		const HistoryItemsList &items,
+		ToPreviewOptions options) const;
 
 private:
 	const not_null<HistoryItem*> _parent;
@@ -138,8 +159,9 @@ public:
 	bool canBeGrouped() const override;
 	bool hasReplyPreview() const override;
 	Image *replyPreview() const override;
-	QString chatListText() const override;
-	QString notificationText() const override;
+	bool replyPreviewLoaded() const override;
+	ItemPreview toPreview(ToPreviewOptions options) const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 	bool allowsEditCaption() const override;
@@ -150,7 +172,8 @@ public:
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
 
 private:
 	not_null<PhotoData*> _photo;
@@ -174,20 +197,23 @@ public:
 	bool canBeGrouped() const override;
 	bool hasReplyPreview() const override;
 	Image *replyPreview() const override;
-	QString chatListText() const override;
-	QString notificationText() const override;
+	bool replyPreviewLoaded() const override;
+	ItemPreview toPreview(ToPreviewOptions options) const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 	bool allowsEditCaption() const override;
 	bool allowsEditMedia() const override;
 	bool forwardedBecomesUnread() const override;
+	bool dropForwardedInfo() const override;
 	QString errorTextForForward(not_null<PeerData*> peer) const override;
 
 	bool updateInlineResultMedia(const MTPMessageMedia &media) override;
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
 
 private:
 	not_null<DocumentData*> _document;
@@ -208,7 +234,7 @@ public:
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
 
 	const SharedContact *sharedContact() const override;
-	QString notificationText() const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 
@@ -216,7 +242,8 @@ public:
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
 
 private:
 	SharedContact _contact;
@@ -236,9 +263,9 @@ public:
 
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
 
-	LocationThumbnail *location() const override;
-	QString chatListText() const override;
-	QString notificationText() const override;
+	Data::CloudImage *location() const override;
+	ItemPreview toPreview(ToPreviewOptions options) const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 
@@ -246,10 +273,12 @@ public:
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
 
 private:
-	not_null<LocationThumbnail*> _location;
+	LocationPoint _point;
+	not_null<Data::CloudImage*> _location;
 	QString _title;
 	QString _description;
 
@@ -257,14 +286,13 @@ private:
 
 class MediaCall final : public Media {
 public:
-	MediaCall(
-		not_null<HistoryItem*> parent,
-		const MTPDmessageActionPhoneCall &call);
+	MediaCall(not_null<HistoryItem*> parent, const Call &call);
+	~MediaCall();
 
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
 
 	const Call *call() const override;
-	QString notificationText() const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 	bool allowsForward() const override;
@@ -273,11 +301,13 @@ public:
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
 
 	static QString Text(
 		not_null<HistoryItem*> item,
-		CallFinishReason reason);
+		CallFinishReason reason,
+		bool video);
 
 private:
 	Call _call;
@@ -299,8 +329,9 @@ public:
 
 	bool hasReplyPreview() const override;
 	Image *replyPreview() const override;
-	QString chatListText() const override;
-	QString notificationText() const override;
+	bool replyPreviewLoaded() const override;
+	ItemPreview toPreview(ToPreviewOptions options) const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 	bool allowsEdit() const override;
@@ -309,7 +340,8 @@ public:
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
 
 private:
 	not_null<WebPageData*> _page;
@@ -328,10 +360,12 @@ public:
 
 	bool hasReplyPreview() const override;
 	Image *replyPreview() const override;
-	QString notificationText() const override;
+	bool replyPreviewLoaded() const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 	QString errorTextForForward(not_null<PeerData*> peer) const override;
+	bool dropForwardedInfo() const override;
 
 	bool consumeMessageText(const TextWithEntities &text) override;
 	TextWithEntities consumedMessageText() const override;
@@ -340,7 +374,8 @@ public:
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
 
 private:
 	not_null<GameData*> _game;
@@ -352,9 +387,6 @@ class MediaInvoice final : public Media {
 public:
 	MediaInvoice(
 		not_null<HistoryItem*> parent,
-		const MTPDmessageMediaInvoice &data);
-	MediaInvoice(
-		not_null<HistoryItem*> parent,
 		const Invoice &data);
 
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
@@ -363,7 +395,8 @@ public:
 
 	bool hasReplyPreview() const override;
 	Image *replyPreview() const override;
-	QString notificationText() const override;
+	bool replyPreviewLoaded() const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 
@@ -371,7 +404,8 @@ public:
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
 
 private:
 	Invoice _invoice;
@@ -389,7 +423,7 @@ public:
 
 	PollData *poll() const override;
 
-	QString notificationText() const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
 	QString errorTextForForward(not_null<PeerData*> peer) const override;
@@ -398,7 +432,8 @@ public:
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
 
 private:
 	not_null<PollData*> _poll;
@@ -407,28 +442,45 @@ private:
 
 class MediaDice final : public Media {
 public:
-	MediaDice(not_null<HistoryItem*> parent, int value);
+	MediaDice(not_null<HistoryItem*> parent, QString emoji, int value);
 
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
 
-	int diceValue() const;
+	[[nodiscard]] QString emoji() const;
+	[[nodiscard]] int value() const;
 
-	QString notificationText() const override;
+	bool allowsRevoke(TimeId now) const override;
+	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
+	bool forceForwardedInfo() const override;
+
 	bool updateInlineResultMedia(const MTPMessageMedia &media) override;
 	bool updateSentMedia(const MTPMessageMedia &media) override;
 	std::unique_ptr<HistoryView::Media> createView(
 		not_null<HistoryView::Element*> message,
-		not_null<HistoryItem*> realParent) override;
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
+
+	[[nodiscard]] ClickHandlerPtr makeHandler() const;
+	[[nodiscard]] static ClickHandlerPtr MakeHandler(
+		not_null<History*> history,
+		const QString &emoji);
 
 private:
+	QString _emoji;
 	int _value = 0;
 
 };
 
-TextForMimeData WithCaptionClipboardText(
+[[nodiscard]] TextForMimeData WithCaptionClipboardText(
 	const QString &attachType,
 	TextForMimeData &&caption);
+
+[[nodiscard]] Invoice ComputeInvoiceData(
+	not_null<HistoryItem*> item,
+	const MTPDmessageMediaInvoice &data);
+
+[[nodiscard]] Call ComputeCallData(const MTPDmessageActionPhoneCall &call);
 
 } // namespace Data

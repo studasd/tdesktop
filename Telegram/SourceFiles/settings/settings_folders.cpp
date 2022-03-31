@@ -25,9 +25,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/filter_icons.h"
 #include "settings/settings_common.h"
+#include "core/application.h"
 #include "lang/lang_keys.h"
 #include "apiwrap.h"
-#include "app.h"
 #include "styles/style_settings.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
@@ -37,7 +37,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Settings {
 namespace {
 
-constexpr auto kRefreshSuggestedTimeout = 7200 * crl::time(1000);
 constexpr auto kFiltersLimit = 10;
 
 using Flag = Data::ChatFilter::Flag;
@@ -246,15 +245,15 @@ void FilterRowButton::updateButtonsVisibility() {
 }
 
 rpl::producer<> FilterRowButton::removeRequests() const {
-	return _remove.clicks() | rpl::map([] { return rpl::empty_value(); });
+	return _remove.clicks() | rpl::to_empty;
 }
 
 rpl::producer<> FilterRowButton::restoreRequests() const {
-	return _restore.clicks() | rpl::map([] { return rpl::empty_value(); });
+	return _restore.clicks() | rpl::to_empty;
 }
 
 rpl::producer<> FilterRowButton::addRequests() const {
-	return _add.clicks() | rpl::map([] { return rpl::empty_value(); });
+	return _add.clicks() | rpl::to_empty;
 }
 
 void FilterRowButton::paintEvent(QPaintEvent *e) {
@@ -301,7 +300,9 @@ void FilterRowButton::paintEvent(QPaintEvent *e) {
 			st::settingsFilterIconLeft,
 			(height() - icon->height()) / 2,
 			width(),
-			(over ? st::menuIconFgOver : st::menuIconFg)->c);
+			(over
+				? st::dialogsUnreadBgMutedOver
+				: st::dialogsUnreadBgMuted)->c);
 	}
 }
 
@@ -385,14 +386,13 @@ void FilterRowButton::paintEvent(QPaintEvent *e) {
 						return;
 					}
 					const auto found = find(button);
-					const auto &real = *i;
 					const auto &now = found->filter;
-					if ((i->flags() != found->filter.flags())
-						|| (i->always() != found->filter.always())
-						|| (i->never() != found->filter.never())) {
+					if ((i->flags() != now.flags())
+						|| (i->always() != now.always())
+						|| (i->never() != now.never())) {
 						return;
 					}
-					button->updateCount(found->filter);
+					button->updateCount(now);
 					found->postponedCountUpdate = false;
 				});
 			}, button->lifetime());
@@ -442,11 +442,8 @@ void FilterRowButton::paintEvent(QPaintEvent *e) {
 	AddSkip(aboutRows);
 	AddSubsectionTitle(aboutRows, tr::lng_filters_recommended());
 
-	const auto changed = lifetime.make_state<bool>();
 	const auto suggested = lifetime.make_state<rpl::variable<int>>();
-	rpl::single(
-		rpl::empty_value()
-	) | rpl::then(
+	rpl::single(rpl::empty) | rpl::then(
 		session->data().chatsFilters().suggestedUpdated()
 	) | rpl::map([=] {
 		return session->data().chatsFilters().suggestedFilters();
@@ -556,7 +553,7 @@ void FilterRowButton::paintEvent(QPaintEvent *e) {
 				tl));
 		}
 		auto previousId = mtpRequestId(0);
-		auto &&requests = ranges::view::concat(removeRequests, addRequests);
+		auto &&requests = ranges::views::concat(removeRequests, addRequests);
 		for (auto &request : requests) {
 			previousId = session->api().request(
 				std::move(request)
@@ -578,7 +575,7 @@ Folders::Folders(
 }
 
 Folders::~Folders() {
-	if (!App::quitting()) {
+	if (!Core::Quitting()) {
 		_save();
 	}
 }

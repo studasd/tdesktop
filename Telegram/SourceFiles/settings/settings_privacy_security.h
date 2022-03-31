@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "settings/settings_common.h"
-#include "apiwrap.h"
+#include "api/api_user_privacy.h"
 
 class EditPrivacyController;
 
@@ -23,14 +23,15 @@ int ExceptionUsersCount(const std::vector<not_null<PeerData*>> &exceptions);
 bool CheckEditCloudPassword(not_null<::Main::Session*> session);
 object_ptr<Ui::BoxContent> EditCloudPasswordBox(
 	not_null<::Main::Session*> session);
-void RemoveCloudPassword(not_null<::Main::Session*> session);
+void RemoveCloudPassword(not_null<Window::SessionController*> session);
 object_ptr<Ui::BoxContent> CloudPasswordAppOutdatedBox();
 
 void AddPrivacyButton(
 	not_null<Window::SessionController*> controller,
 	not_null<Ui::VerticalLayout*> container,
 	rpl::producer<QString> label,
-	ApiWrap::Privacy::Key key,
+	IconDescriptor &&descriptor,
+	Api::UserPrivacy::Key key,
 	Fn<std::unique_ptr<EditPrivacyController>()> controllerFactory);
 
 class PrivacySecurity : public Section {
@@ -39,8 +40,12 @@ public:
 		QWidget *parent,
 		not_null<Window::SessionController*> controller);
 
+	rpl::producer<Type> sectionShowOther() override;
+
 private:
 	void setupContent(not_null<Window::SessionController*> controller);
+
+	rpl::event_stream<Type> _showOther;
 
 };
 

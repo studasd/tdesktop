@@ -57,8 +57,9 @@ public:
 		Fn<void()> callback = nullptr);
 	void dialogEntryApplied(not_null<History*> history);
 	void changeDialogUnreadMark(not_null<History*> history, bool unread);
-	//void changeDialogUnreadMark(not_null<Data::Feed*> feed, bool unread); // #feed
 	void requestFakeChatListMessage(not_null<History*> history);
+
+	void requestGroupAround(not_null<HistoryItem*> item);
 
 	void deleteMessages(
 		not_null<History*> history,
@@ -69,6 +70,19 @@ public:
 		MsgId deleteTillId,
 		bool justClear,
 		bool revoke);
+
+	void deleteMessagesByDates(
+		not_null<History*> history,
+		QDate firstDayToDelete,
+		QDate lastDayToDelete,
+		bool revoke);
+	void deleteMessagesByDates(
+		not_null<History*> history,
+		TimeId minDate,
+		TimeId maxDate,
+		bool revoke);
+
+	void deleteMessages(const MessageIdsList &ids, bool revoke);
 
 	int sendRequest(
 		not_null<History*> history,
@@ -93,6 +107,10 @@ private:
 		crl::time willReadWhen = 0;
 		bool sentReadDone = false;
 		bool postponedRequestEntry = false;
+	};
+	struct ChatListGroupRequest {
+		MsgId aroundId = 0;
+		mtpRequestId requestId = 0;
 	};
 
 	void readInboxTill(not_null<History*> history, MsgId tillId, bool force);
@@ -128,6 +146,10 @@ private:
 		std::vector<Fn<void()>>> _dialogRequestsPending;
 
 	base::flat_set<not_null<History*>> _fakeChatListRequests;
+
+	base::flat_map<
+		not_null<History*>,
+		ChatListGroupRequest> _chatListGroupRequests;
 
 };
 

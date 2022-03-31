@@ -14,23 +14,33 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/labels.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/buttons.h"
+#include "ui/gl/gl_detection.h"
 #include "ui/text/text_utilities.h" // Ui::Text::ToUpper
+#include "ui/text/format_values.h"
+#include "ui/boxes/single_choice_box.h"
 #include "boxes/connection_box.h"
 #include "boxes/about_box.h"
-#include "boxes/confirm_box.h"
+#include "ui/boxes/confirm_box.h"
 #include "platform/platform_specific.h"
+#include "ui/platform/ui_platform_window.h"
 #include "base/platform/base_platform_info.h"
+#include "window/window_controller.h"
 #include "window/window_session_controller.h"
 #include "lang/lang_keys.h"
 #include "core/update_checker.h"
 #include "core/application.h"
 #include "storage/localstorage.h"
+#include "storage/storage_domain.h"
 #include "data/data_session.h"
+#include "main/main_account.h"
+#include "main/main_domain.h"
 #include "main/main_session.h"
-#include "layout.h"
-#include "facades.h"
-#include "app.h"
+#include "mtproto/facade.h"
 #include "styles/style_settings.h"
+
+#ifdef Q_OS_MAC
+#include "base/platform/mac/base_confirm_quit.h"
+#endif // Q_OS_MAC
 
 #ifndef TDESKTOP_DISABLE_SPELLCHECK
 #include "boxes/dictionaries_manager.h"
@@ -40,21 +50,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Settings {
 
-bool HasConnectionType() {
-#ifndef TDESKTOP_DISABLE_NETWORK_PROXY
-	return true;
-#endif // TDESKTOP_DISABLE_NETWORK_PROXY
-	return false;
-}
-
-void SetupConnectionType(not_null<Ui::VerticalLayout*> container) {
-	if (!HasConnectionType()) {
-		return;
-	}
-#ifndef TDESKTOP_DISABLE_NETWORK_PROXY
-	const auto connectionType = [] {
-		const auto transport = MTP::dctransport();
-		if (Global::ProxySettings() != MTP::ProxyData::Settings::Enabled) {
+void SetupConnectionType(
+		not_null<Window::Controller*> controller,
+		not_null<Main::Account*> account,
+		not_null<Ui::VerticalLayout*> container) {
+	const auto connectionType = [=] {
+		const auto transport = account->mtp().dctransport();
+		if (!Core::App().settings().proxy().isEnabled()) {
 			return transport.isEmpty()
 				? tr::lng_connection_auto_connecting(tr::now)
 				: tr::lng_connection_auto(tr::now, lt_transport, transport);
@@ -67,23 +69,25 @@ void SetupConnectionType(not_null<Ui::VerticalLayout*> container) {
 	const auto button = AddButtonWithLabel(
 		container,
 		tr::lng_settings_connection_type(),
-		rpl::single(
-			rpl::empty_value()
-		) | rpl::then(base::ObservableViewer(
-			Global::RefConnectionTypeChanged()
-		)) | rpl::map(connectionType),
-		st::settingsButton);
-	button->addClickHandler([] {
-		Ui::show(ProxiesBoxController::CreateOwningBox());
+		rpl::merge(
+			Core::App().settings().proxy().connectionTypeChanges(),
+			// Handle language switch.
+			tr::lng_connection_auto_connecting() | rpl::to_empty
+		) | rpl::map(connectionType),
+		st::settingsButton,
+		{ &st::settingsIconArrows, kIconGreen });
+	button->addClickHandler([=] {
+		controller->show(ProxiesBoxController::CreateOwningBox(account));
 	});
-#endif // TDESKTOP_DISABLE_NETWORK_PROXY
 }
 
 bool HasUpdate() {
 	return !Core::UpdaterDisabled();
 }
 
-void SetupUpdate(not_null<Ui::VerticalLayout*> container) {
+void SetupUpdate(
+		not_null<Ui::VerticalLayout*> container,
+		Fn<void(Type)> showOther) {
 	if (!HasUpdate()) {
 		return;
 	}
@@ -113,12 +117,30 @@ void SetupUpdate(not_null<Ui::VerticalLayout*> container) {
 	const auto install = cAlphaVersion() ? nullptr : AddButton(
 		inner,
 		tr::lng_settings_install_beta(),
-		st::settingsButton).get();
+		st::settingsButtonNoIcon).get();
+
+	if (showOther) {
+		const auto experimental = inner->add(
+			object_ptr<Ui::SlideWrap<Button>>(
+				inner,
+				CreateButton(
+					inner,
+					tr::lng_settings_experimental(),
+					st::settingsButtonNoIcon)));
+		if (!install) {
+			experimental->toggle(true, anim::type::instant);
+		} else {
+			experimental->toggleOn(install->toggledValue());
+		}
+		experimental->entity()->setClickedCallback([=] {
+			showOther(Type::Experimental);
+		});
+	}
 
 	const auto check = AddButton(
 		inner,
 		tr::lng_settings_check_now(),
-		st::settingsButton);
+		st::settingsButtonNoIcon);
 	const auto update = Ui::CreateChild<Button>(
 		check.get(),
 		tr::lng_update_telegram() | Ui::Text::ToUpper(),
@@ -143,7 +165,7 @@ void SetupUpdate(not_null<Ui::VerticalLayout*> container) {
 		texts->fire(tr::lng_settings_downloading_update(
 			tr::now,
 			lt_progress,
-			formatDownloadText(ready, total)));
+			Ui::FormatDownloadText(ready, total)));
 		downloading->fire(true);
 	};
 	const auto setDefaultStatus = [=](const Core::UpdateChecker &checker) {
@@ -245,7 +267,7 @@ void SetupUpdate(not_null<Ui::VerticalLayout*> container) {
 		if (!Core::UpdaterDisabled()) {
 			Core::checkReadyUpdate();
 		}
-		App::restart();
+		Core::Restart();
 	});
 }
 
@@ -261,14 +283,14 @@ void SetupSpellchecker(
 		not_null<Ui::VerticalLayout*> container) {
 #ifndef TDESKTOP_DISABLE_SPELLCHECK
 	const auto session = &controller->session();
-	const auto settings = &session->settings();
+	const auto settings = &Core::App().settings();
 	const auto isSystem = Platform::Spellchecker::IsSystemSpellchecker();
 	const auto button = AddButton(
 		container,
 		isSystem
 			? tr::lng_settings_system_spellchecker()
 			: tr::lng_settings_custom_spellchecker(),
-		st::settingsButton
+		st::settingsButtonNoIcon
 	)->toggleOn(
 		rpl::single(settings->spellcheckerEnabled())
 	);
@@ -278,7 +300,7 @@ void SetupSpellchecker(
 		return (enabled != settings->spellcheckerEnabled());
 	}) | rpl::start_with_next([=](bool enabled) {
 		settings->setSpellcheckerEnabled(enabled);
-		session->saveSettingsDelayed();
+		Core::App().saveSettingsDelayed();
 	}, container->lifetime());
 
 	if (isSystem) {
@@ -293,7 +315,7 @@ void SetupSpellchecker(
 	AddButton(
 		sliding->entity(),
 		tr::lng_settings_auto_download_dictionaries(),
-		st::settingsButton
+		st::settingsButtonNoIcon
 	)->toggleOn(
 		rpl::single(settings->autoDownloadDictionaries())
 	)->toggledValue(
@@ -301,16 +323,17 @@ void SetupSpellchecker(
 		return (enabled != settings->autoDownloadDictionaries());
 	}) | rpl::start_with_next([=](bool enabled) {
 		settings->setAutoDownloadDictionaries(enabled);
-		session->saveSettingsDelayed();
+		Core::App().saveSettingsDelayed();
 	}, sliding->entity()->lifetime());
 
 	AddButtonWithLabel(
 		sliding->entity(),
 		tr::lng_settings_manage_dictionaries(),
 		Spellchecker::ButtonManageDictsState(session),
-		st::settingsButton
+		st::settingsButtonNoIcon
 	)->addClickHandler([=] {
-		Ui::show(Box<Ui::ManageDictionariesBox>(session));
+		controller->show(
+			Box<Ui::ManageDictionariesBox>(&controller->session()));
 	});
 
 	button->toggledValue(
@@ -320,100 +343,156 @@ void SetupSpellchecker(
 #endif // !TDESKTOP_DISABLE_SPELLCHECK
 }
 
-bool HasTray() {
-	return cSupportTray() || Platform::IsWindows();
-}
+void SetupSystemIntegrationContent(
+		Window::SessionController *controller,
+		not_null<Ui::VerticalLayout*> container) {
+	using WorkMode = Core::Settings::WorkMode;
 
-void SetupTrayContent(not_null<Ui::VerticalLayout*> container) {
-	const auto checkbox = [&](const QString &label, bool checked) {
+	const auto checkbox = [&](rpl::producer<QString> &&label, bool checked) {
 		return object_ptr<Ui::Checkbox>(
 			container,
-			label,
+			std::move(label),
 			checked,
 			st::settingsCheckbox);
 	};
-	const auto addCheckbox = [&](const QString &label, bool checked) {
+	const auto addCheckbox = [&](
+			rpl::producer<QString> &&label,
+			bool checked) {
 		return container->add(
-			checkbox(label, checked),
+			checkbox(std::move(label), checked),
 			st::settingsCheckboxPadding);
 	};
-	const auto addSlidingCheckbox = [&](const QString &label, bool checked) {
+	const auto addSlidingCheckbox = [&](
+			rpl::producer<QString> &&label,
+			bool checked) {
 		return container->add(
 			object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
 				container,
-				checkbox(label, checked),
+				checkbox(std::move(label), checked),
 				st::settingsCheckboxPadding));
 	};
 
-	const auto trayEnabled = [] {
-		const auto workMode = Global::WorkMode().value();
-		return (workMode == dbiwmTrayOnly)
-			|| (workMode == dbiwmWindowAndTray);
-	};
-	const auto tray = addCheckbox(
-		tr::lng_settings_workmode_tray(tr::now),
-		trayEnabled());
+	if (Platform::TrayIconSupported()) {
+		const auto trayEnabled = [] {
+			const auto workMode = Core::App().settings().workMode();
+			return (workMode == WorkMode::TrayOnly)
+				|| (workMode == WorkMode::WindowAndTray);
+		};
+		const auto tray = addCheckbox(
+			tr::lng_settings_workmode_tray(),
+			trayEnabled());
 
-	const auto taskbarEnabled = [] {
-		const auto workMode = Global::WorkMode().value();
-		return (workMode == dbiwmWindowOnly)
-			|| (workMode == dbiwmWindowAndTray);
-	};
-	const auto taskbar = Platform::IsWindows()
-		? addCheckbox(
-			tr::lng_settings_workmode_window(tr::now),
-			taskbarEnabled())
-		: nullptr;
+		const auto taskbarEnabled = [] {
+			const auto workMode = Core::App().settings().workMode();
+			return (workMode == WorkMode::WindowOnly)
+				|| (workMode == WorkMode::WindowAndTray);
+		};
+		const auto taskbar = Platform::SkipTaskbarSupported()
+			? addCheckbox(
+				tr::lng_settings_workmode_window(),
+				taskbarEnabled())
+			: nullptr;
 
-	const auto updateWorkmode = [=] {
-		const auto newMode = tray->checked()
-			? ((!taskbar || taskbar->checked())
-				? dbiwmWindowAndTray
-				: dbiwmTrayOnly)
-			: dbiwmWindowOnly;
-		if ((newMode == dbiwmWindowAndTray || newMode == dbiwmTrayOnly)
-			&& Global::WorkMode().value() != newMode) {
-			cSetSeenTrayTooltip(false);
-		}
-		Global::RefWorkMode().set(newMode);
-		Local::writeSettings();
-	};
+		const auto updateWorkmode = [=] {
+			const auto newMode = tray->checked()
+				? ((!taskbar || taskbar->checked())
+					? WorkMode::WindowAndTray
+					: WorkMode::TrayOnly)
+				: WorkMode::WindowOnly;
+			if ((newMode == WorkMode::WindowAndTray
+				|| newMode == WorkMode::TrayOnly)
+				&& Core::App().settings().workMode() != newMode) {
+				cSetSeenTrayTooltip(false);
+			}
+			Core::App().settings().setWorkMode(newMode);
+			Core::App().saveSettingsDelayed();
+		};
 
-	tray->checkedChanges(
-	) | rpl::filter([=](bool checked) {
-		return (checked != trayEnabled());
-	}) | rpl::start_with_next([=](bool checked) {
-		if (!checked && taskbar && !taskbar->checked()) {
-			taskbar->setChecked(true);
-		} else {
-			updateWorkmode();
-		}
-	}, tray->lifetime());
-
-	if (taskbar) {
-		taskbar->checkedChanges(
+		tray->checkedChanges(
 		) | rpl::filter([=](bool checked) {
-			return (checked != taskbarEnabled());
+			return (checked != trayEnabled());
 		}) | rpl::start_with_next([=](bool checked) {
-			if (!checked && !tray->checked()) {
-				tray->setChecked(true);
+			if (!checked && taskbar && !taskbar->checked()) {
+				taskbar->setChecked(true);
 			} else {
 				updateWorkmode();
 			}
-		}, taskbar->lifetime());
+		}, tray->lifetime());
+
+		if (taskbar) {
+			taskbar->checkedChanges(
+			) | rpl::filter([=](bool checked) {
+				return (checked != taskbarEnabled());
+			}) | rpl::start_with_next([=](bool checked) {
+				if (!checked && !tray->checked()) {
+					tray->setChecked(true);
+				} else {
+					updateWorkmode();
+				}
+			}, taskbar->lifetime());
+		}
 	}
 
-#ifndef OS_WIN_STORE
-	if (Platform::IsWindows() || Platform::IsLinux()) {
-		const auto minimizedToggled = [] {
-			return cStartMinimized() && !Global::LocalPasscode();
+#ifdef Q_OS_MAC
+	const auto warnBeforeQuit = addCheckbox(
+		tr::lng_settings_mac_warn_before_quit(
+			lt_text,
+			rpl::single(Platform::ConfirmQuit::QuitKeysString())),
+		Core::App().settings().macWarnBeforeQuit());
+	warnBeforeQuit->checkedChanges(
+	) | rpl::filter([=](bool checked) {
+		return (checked != Core::App().settings().macWarnBeforeQuit());
+	}) | rpl::start_with_next([=](bool checked) {
+		Core::App().settings().setMacWarnBeforeQuit(checked);
+		Core::App().saveSettingsDelayed();
+	}, warnBeforeQuit->lifetime());
+#else // Q_OS_MAC
+	const auto closeToTaskbar = addSlidingCheckbox(
+		tr::lng_settings_close_to_taskbar(),
+		Core::App().settings().closeToTaskbar());
+
+	const auto closeToTaskbarShown = std::make_shared<rpl::variable<bool>>(false);
+	Core::App().settings().workModeValue(
+	) | rpl::start_with_next([=](WorkMode workMode) {
+		*closeToTaskbarShown = (workMode == WorkMode::WindowOnly)
+			|| !Platform::TrayIconSupported();
+	}, closeToTaskbar->lifetime());
+
+	closeToTaskbar->toggleOn(closeToTaskbarShown->value());
+	closeToTaskbar->entity()->checkedChanges(
+	) | rpl::filter([=](bool checked) {
+		return (checked != Core::App().settings().closeToTaskbar());
+	}) | rpl::start_with_next([=](bool checked) {
+		Core::App().settings().setCloseToTaskbar(checked);
+		Local::writeSettings();
+	}, closeToTaskbar->lifetime());
+#endif // Q_OS_MAC
+
+	if (Ui::Platform::NativeWindowFrameSupported()) {
+		const auto nativeFrame = addCheckbox(
+			tr::lng_settings_native_frame(),
+			Core::App().settings().nativeWindowFrame());
+
+		nativeFrame->checkedChanges(
+		) | rpl::filter([](bool checked) {
+			return (checked != Core::App().settings().nativeWindowFrame());
+		}) | rpl::start_with_next([=](bool checked) {
+			Core::App().settings().setNativeWindowFrame(checked);
+			Core::App().saveSettingsDelayed();
+		}, nativeFrame->lifetime());
+	}
+
+	if (Platform::AutostartSupported() && controller) {
+		const auto minimizedToggled = [=] {
+			return cStartMinimized()
+				&& !controller->session().domain().local().hasLocalPasscode();
 		};
 
 		const auto autostart = addCheckbox(
-			tr::lng_settings_auto_start(tr::now),
+			tr::lng_settings_auto_start(),
 			cAutoStart());
 		const auto minimized = addSlidingCheckbox(
-			tr::lng_settings_start_min(tr::now),
+			tr::lng_settings_start_min(),
 			minimizedToggled());
 
 		autostart->checkedChanges(
@@ -421,41 +500,45 @@ void SetupTrayContent(not_null<Ui::VerticalLayout*> container) {
 			return (checked != cAutoStart());
 		}) | rpl::start_with_next([=](bool checked) {
 			cSetAutoStart(checked);
-			psAutoStart(checked);
-			if (checked) {
-				Local::writeSettings();
-			} else if (minimized->entity()->checked()) {
-				minimized->entity()->setChecked(false);
-			} else {
-				Local::writeSettings();
-			}
+			Platform::AutostartToggle(checked, crl::guard(autostart, [=](
+					bool enabled) {
+				autostart->setChecked(enabled);
+				if (enabled || !minimized->entity()->checked()) {
+					Local::writeSettings();
+				} else {
+					minimized->entity()->setChecked(false);
+				}
+			}));
 		}, autostart->lifetime());
+
+		Platform::AutostartRequestStateFromSystem(crl::guard(
+			controller,
+			[=](bool enabled) { autostart->setChecked(enabled); }));
 
 		minimized->toggleOn(autostart->checkedValue());
 		minimized->entity()->checkedChanges(
 		) | rpl::filter([=](bool checked) {
 			return (checked != minimizedToggled());
 		}) | rpl::start_with_next([=](bool checked) {
-			if (Global::LocalPasscode()) {
+			if (controller->session().domain().local().hasLocalPasscode()) {
 				minimized->entity()->setChecked(false);
-				Ui::show(Box<InformBox>(
-					tr::lng_error_start_minimized_passcoded(tr::now)));
+				controller->show(Ui::MakeInformBox(
+					tr::lng_error_start_minimized_passcoded()));
 			} else {
 				cSetStartMinimized(checked);
 				Local::writeSettings();
 			}
 		}, minimized->lifetime());
 
-		base::ObservableViewer(
-			Global::RefLocalPasscodeChanged()
+		controller->session().domain().local().localPasscodeChanged(
 		) | rpl::start_with_next([=] {
 			minimized->entity()->setChecked(minimizedToggled());
 		}, minimized->lifetime());
 	}
 
-	if (Platform::IsWindows()) {
+	if (Platform::IsWindows() && !Platform::IsWindowsStoreBuild()) {
 		const auto sendto = addCheckbox(
-			tr::lng_settings_add_sendto(tr::now),
+			tr::lng_settings_add_sendto(),
 			cSendToMenu());
 
 		sendto->checkedChanges(
@@ -467,29 +550,27 @@ void SetupTrayContent(not_null<Ui::VerticalLayout*> container) {
 			Local::writeSettings();
 		}, sendto->lifetime());
 	}
-#endif // OS_WIN_STORE
 }
 
-void SetupTray(not_null<Ui::VerticalLayout*> container) {
-	if (!HasTray()) {
-		return;
-	}
-
+void SetupSystemIntegrationOptions(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container) {
 	auto wrap = object_ptr<Ui::VerticalLayout>(container);
-	SetupTrayContent(wrap.data());
+	SetupSystemIntegrationContent(controller, wrap.data());
+	if (wrap->count() > 0) {
+		container->add(object_ptr<Ui::OverrideMargins>(
+			container,
+			std::move(wrap)));
 
-	container->add(object_ptr<Ui::OverrideMargins>(
-		container,
-		std::move(wrap)));
-
-	AddSkip(container, st::settingsCheckboxesSkip);
+		AddSkip(container, st::settingsCheckboxesSkip);
+	}
 }
 
 void SetupAnimations(not_null<Ui::VerticalLayout*> container) {
 	AddButton(
 		container,
 		tr::lng_settings_enable_animations(),
-		st::settingsButton
+		st::settingsButtonNoIcon
 	)->toggleOn(
 		rpl::single(!anim::Disabled())
 	)->toggledValue(
@@ -501,26 +582,136 @@ void SetupAnimations(not_null<Ui::VerticalLayout*> container) {
 	}, container->lifetime());
 }
 
+#ifdef Q_OS_WIN
+void SetupANGLE(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container) {
+	using ANGLE = Ui::GL::ANGLE;
+	const auto options = std::vector{
+		tr::lng_settings_angle_backend_auto(tr::now),
+		tr::lng_settings_angle_backend_d3d11(tr::now),
+		tr::lng_settings_angle_backend_d3d9(tr::now),
+		tr::lng_settings_angle_backend_d3d11on12(tr::now),
+		tr::lng_settings_angle_backend_opengl(tr::now),
+		tr::lng_settings_angle_backend_disabled(tr::now),
+	};
+	const auto backendIndex = [] {
+		if (Core::App().settings().disableOpenGL()) {
+			return 5;
+		} else switch (Ui::GL::CurrentANGLE()) {
+		case ANGLE::Auto: return 0;
+		case ANGLE::D3D11: return 1;
+		case ANGLE::D3D9: return 2;
+		case ANGLE::D3D11on12: return 3;
+		case ANGLE::OpenGL: return 4;
+		}
+		Unexpected("Ui::GL::CurrentANGLE value in SetupANGLE.");
+	}();
+	const auto button = AddButtonWithLabel(
+		container,
+		tr::lng_settings_angle_backend(),
+		rpl::single(options[backendIndex]),
+		st::settingsButtonNoIcon);
+	button->addClickHandler([=] {
+		controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+			const auto save = [=](int index) {
+				if (index == backendIndex) {
+					return;
+				}
+				const auto confirmed = crl::guard(button, [=] {
+					const auto nowDisabled = (index == 5);
+					if (!nowDisabled) {
+						Ui::GL::ChangeANGLE([&] {
+							switch (index) {
+							case 0: return ANGLE::Auto;
+							case 1: return ANGLE::D3D11;
+							case 2: return ANGLE::D3D9;
+							case 3: return ANGLE::D3D11on12;
+							case 4: return ANGLE::OpenGL;
+							}
+							Unexpected("Index in SetupANGLE.");
+						}());
+					}
+					const auto wasDisabled = (backendIndex == 5);
+					if (nowDisabled != wasDisabled) {
+						Core::App().settings().setDisableOpenGL(nowDisabled);
+						Local::writeSettings();
+					}
+					Core::Restart();
+				});
+				controller->show(Ui::MakeConfirmBox({
+					.text = tr::lng_settings_need_restart(),
+					.confirmed = confirmed,
+					.confirmText = tr::lng_settings_restart_now(),
+				}));
+			};
+			SingleChoiceBox(box, {
+				.title = tr::lng_settings_angle_backend(),
+				.options = options,
+				.initialSelection = backendIndex,
+				.callback = save,
+			});
+		}));
+	});
+}
+#endif // Q_OS_WIN
+
+void SetupOpenGL(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> container) {
+	const auto toggles = container->lifetime().make_state<
+		rpl::event_stream<bool>
+	>();
+	const auto button = AddButton(
+		container,
+		tr::lng_settings_enable_opengl(),
+		st::settingsButtonNoIcon
+	)->toggleOn(
+		toggles->events_starting_with_copy(
+			!Core::App().settings().disableOpenGL())
+	);
+	button->toggledValue(
+	) | rpl::filter([](bool enabled) {
+		return (enabled == Core::App().settings().disableOpenGL());
+	}) | rpl::start_with_next([=](bool enabled) {
+		const auto confirmed = crl::guard(button, [=] {
+			Core::App().settings().setDisableOpenGL(!enabled);
+			Local::writeSettings();
+			Core::Restart();
+		});
+		const auto cancelled = crl::guard(button, [=] {
+			toggles->fire(!enabled);
+		});
+		controller->show(Ui::MakeConfirmBox({
+			.text = tr::lng_settings_need_restart(),
+			.confirmed = confirmed,
+			.cancelled = cancelled,
+			.confirmText = tr::lng_settings_restart_now(),
+		}));
+	}, container->lifetime());
+}
+
 void SetupPerformance(
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container) {
 	SetupAnimations(container);
+#ifdef Q_OS_WIN
+	SetupANGLE(controller, container);
+#else // Q_OS_WIN
+	if constexpr (!Platform::IsMac()) {
+		SetupOpenGL(controller, container);
+	}
+#endif // Q_OS_WIN
 }
 
 void SetupSystemIntegration(
+		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> container,
 		Fn<void(Type)> showOther) {
 	AddDivider(container);
 	AddSkip(container);
 	AddSubsectionTitle(container, tr::lng_settings_system_integration());
-	AddButton(
-		container,
-		tr::lng_settings_section_call_settings(),
-		st::settingsButton
-	)->addClickHandler([=] {
-		showOther(Type::Calls);
-	});
-	SetupTray(container);
+	SetupSystemIntegrationOptions(controller, container);
 	AddSkip(container);
 }
 
@@ -551,25 +742,22 @@ void Advanced::setupContent(not_null<Window::SessionController*> controller) {
 			addDivider();
 			AddSkip(content);
 			AddSubsectionTitle(content, tr::lng_settings_version_info());
-			SetupUpdate(content);
+			SetupUpdate(content, [=](Type type) {
+				_showOther.fire_copy(type);
+			});
 			AddSkip(content);
 		}
 	};
 	if (!cAutoUpdate()) {
 		addUpdate();
 	}
-	if (HasConnectionType()) {
-		addDivider();
-		AddSkip(content);
-		AddSubsectionTitle(content, tr::lng_settings_network_proxy());
-		SetupConnectionType(content);
-		AddSkip(content);
-	}
+	addDivider();
 	SetupDataStorage(controller, content);
 	SetupAutoDownload(controller, content);
-	SetupSystemIntegration(content, [=](Type type) {
+	SetupSystemIntegration(controller, content, [=](Type type) {
 		_showOther.fire_copy(type);
 	});
+	empty = false;
 
 	AddDivider(content);
 	AddSkip(content);
@@ -588,6 +776,11 @@ void Advanced::setupContent(not_null<Window::SessionController*> controller) {
 	if (cAutoUpdate()) {
 		addUpdate();
 	}
+
+	AddSkip(content);
+	AddDivider(content);
+	AddSkip(content);
+	SetupExport(controller, content);
 
 	Ui::ResizeFitChild(this, content);
 }

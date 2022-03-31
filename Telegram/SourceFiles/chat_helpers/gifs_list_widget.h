@@ -10,9 +10,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "chat_helpers/tabbed_selector.h"
 #include "base/timer.h"
 #include "inline_bots/inline_bot_layout_item.h"
-#include "app.h"
+#include "layout/layout_mosaic.h"
 
 #include <QtCore/QTimer>
+
+namespace Api {
+struct SendOptions;
+} // namespace Api
 
 namespace InlineBots {
 namespace Layout {
@@ -22,6 +26,7 @@ class Result;
 } // namespace InlineBots
 
 namespace Ui {
+class PopupMenu;
 class RoundButton;
 } // namespace Ui
 
@@ -29,19 +34,26 @@ namespace Window {
 class SessionController;
 } // namespace Window
 
+namespace SendMenu {
+enum class Type;
+} // namespace SendMenu
+
 namespace ChatHelpers {
+
+void AddGifAction(
+	Fn<void(QString, Fn<void()> &&, const style::icon*)> callback,
+	not_null<DocumentData*> document);
 
 class GifsListWidget
 	: public TabbedSelector::Inner
-	, public InlineBots::Layout::Context
-	, private base::Subscriber {
+	, public InlineBots::Layout::Context {
 public:
 	using InlineChosen = TabbedSelector::InlineChosen;
 
 	GifsListWidget(QWidget *parent, not_null<Window::SessionController*> controller);
 
-	rpl::producer<not_null<DocumentData*>> fileChosen() const;
-	rpl::producer<not_null<PhotoData*>> photoChosen() const;
+	rpl::producer<TabbedSelector::FileChosen> fileChosen() const;
+	rpl::producer<TabbedSelector::PhotoChosen> photoChosen() const;
 	rpl::producer<InlineChosen> inlineResultChosen() const;
 
 	void refreshRecent() override;
@@ -65,6 +77,10 @@ public:
 
 	void cancelled();
 	rpl::producer<> cancelRequests() const;
+
+	void fillContextMenu(
+		not_null<Ui::PopupMenu*> menu,
+		SendMenu::Type type) override;
 
 	~GifsListWidget();
 
@@ -102,6 +118,7 @@ private:
 		InlineResults results;
 	};
 
+	void clearHeavyData();
 	void cancelGifsSearch();
 	void switchToSavedGifs();
 	void refreshSavedGifs();
@@ -116,41 +133,42 @@ private:
 	void paintInlineItems(Painter &p, QRect clip);
 
 	void updateInlineItems();
+	void repaintItems(crl::time now = 0);
 	void showPreview();
 
 	MTP::Sender _api;
 
 	Section _section = Section::Gifs;
-	crl::time _lastScrolled = 0;
+	crl::time _lastScrolledAt = 0;
+	crl::time _lastUpdatedAt = 0;
 	base::Timer _updateInlineItems;
 	bool _inlineWithThumb = false;
 
-	struct Row {
-		int maxWidth = 0;
-		int height = 0;
-		QVector<LayoutItem*> items;
-	};
-	QVector<Row> _rows;
 	void clearInlineRows(bool resultsDeleted);
 
-	std::map<DocumentData*, std::unique_ptr<LayoutItem>> _gifLayouts;
-	LayoutItem *layoutPrepareSavedGif(DocumentData *doc, int32 position);
+	std::map<
+		not_null<DocumentData*>,
+		std::unique_ptr<LayoutItem>> _gifLayouts;
+	LayoutItem *layoutPrepareSavedGif(not_null<DocumentData*> document);
 
-	std::map<InlineResult*, std::unique_ptr<LayoutItem>> _inlineLayouts;
-	LayoutItem *layoutPrepareInlineResult(InlineResult *result, int32 position);
+	std::map<
+		not_null<InlineResult*>,
+		std::unique_ptr<LayoutItem>> _inlineLayouts;
+	LayoutItem *layoutPrepareInlineResult(not_null<InlineResult*> result);
 
-	bool inlineRowsAddItem(DocumentData *savedGif, InlineResult *result, Row &row, int32 &sumWidth);
-	bool inlineRowFinalize(Row &row, int32 &sumWidth, bool force = false);
-
-	void layoutInlineRow(Row &row, int fullWidth);
 	void deleteUnusedGifLayouts();
 
 	void deleteUnusedInlineLayouts();
 
 	int validateExistingInlineRows(const InlineResults &results);
-	void selectInlineResult(int row, int column);
+	void selectInlineResult(
+		int index,
+		Api::SendOptions options,
+		bool forceSend = false);
 
 	Footer *_footer = nullptr;
+
+	Mosaic::Layout::MosaicLayout<LayoutItem> _mosaic;
 
 	int _selected = -1;
 	int _pressed = -1;
@@ -168,8 +186,8 @@ private:
 	QString _inlineQuery, _inlineNextQuery, _inlineNextOffset;
 	mtpRequestId _inlineRequestId = 0;
 
-	rpl::event_stream<not_null<DocumentData*>> _fileChosen;
-	rpl::event_stream<not_null<PhotoData*>> _photoChosen;
+	rpl::event_stream<TabbedSelector::FileChosen> _fileChosen;
+	rpl::event_stream<TabbedSelector::PhotoChosen> _photoChosen;
 	rpl::event_stream<InlineChosen> _inlineResultChosen;
 	rpl::event_stream<> _cancelled;
 

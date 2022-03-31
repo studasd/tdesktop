@@ -24,6 +24,7 @@ class IconButton;
 class DropdownMenu;
 class UnreadBadge;
 class InfiniteRadialAnimation;
+enum class ReportReason;
 } // namespace Ui
 
 namespace Window {
@@ -32,7 +33,9 @@ class SessionController;
 
 namespace HistoryView {
 
-class TopBarWidget : public Ui::RpWidget, private base::Subscriber {
+class SendActionPainter;
+
+class TopBarWidget final : public Ui::RpWidget {
 public:
 	struct SelectedState {
 		bool textSelected = false;
@@ -41,40 +44,49 @@ public:
 		int canForwardCount = 0;
 		int canSendNowCount = 0;
 	};
-	enum class Section {
-		History,
-		Scheduled,
-	};
+	using ActiveChat = Dialogs::EntryState;
+	using Section = ActiveChat::Section;
 
 	TopBarWidget(
 		QWidget *parent,
 		not_null<Window::SessionController*> controller);
 	~TopBarWidget();
 
-	Main::Session &session() const;
+	[[nodiscard]] Main::Session &session() const;
 
 	void updateControlsVisibility();
 	void finishAnimating();
 	void showSelected(SelectedState state);
+	[[nodiscard]] bool showSelectedState() const;
 	rpl::producer<bool> membersShowAreaActive() const {
 		return _membersShowAreaActive.events();
 	}
 	void setAnimatingMode(bool enabled);
 
-	void setActiveChat(Dialogs::Key chat, Section section);
+	void setActiveChat(
+		ActiveChat activeChat,
+		SendActionPainter *sendAction);
+	void setCustomTitle(const QString &title);
 
-	rpl::producer<> forwardSelectionRequest() const {
+	void showChooseMessagesForReport(Ui::ReportReason reason);
+	void clearChooseMessagesForReport();
+
+	[[nodiscard]] rpl::producer<> forwardSelectionRequest() const {
 		return _forwardSelection.events();
 	}
-	rpl::producer<> sendNowSelectionRequest() const {
+	[[nodiscard]] rpl::producer<> sendNowSelectionRequest() const {
 		return _sendNowSelection.events();
 	}
-	rpl::producer<> deleteSelectionRequest() const {
+	[[nodiscard]] rpl::producer<> deleteSelectionRequest() const {
 		return _deleteSelection.events();
 	}
-	rpl::producer<> clearSelectionRequest() const {
+	[[nodiscard]] rpl::producer<> clearSelectionRequest() const {
 		return _clearSelection.events();
 	}
+	[[nodiscard]] rpl::producer<> cancelChooseForReportRequest() const {
+		return _cancelChooseForReport.events();
+	}
+	[[nodiscard]] rpl::producer<> searchRequest() const;
 
 protected:
 	void paintEvent(QPaintEvent *e) override;
@@ -85,6 +97,8 @@ protected:
 	int resizeGetHeight(int newWidth) override;
 
 private:
+	struct EmojiInteractionSeenAnimation;
+
 	void refreshInfoButton();
 	void refreshLang();
 	void updateSearchVisibility();
@@ -92,10 +106,24 @@ private:
 	void selectedShowCallback();
 	void updateInfoToggleActive();
 
-	void onCall();
-	void onSearch();
-	void showMenu();
+	void call();
+	void groupCall();
+	void startGroupCall(not_null<ChannelData*> megagroup, bool confirmed);
+	void showPeerMenu();
+	void showGroupCallMenu(not_null<PeerData*> peer);
 	void toggleInfoSection();
+
+	[[nodiscard]] bool createMenu(not_null<Ui::IconButton*> button);
+
+	void handleEmojiInteractionSeen(const QString &emoticon);
+	bool paintSendAction(
+		Painter &p,
+		int x,
+		int y,
+		int availableWidth,
+		int outerWidth,
+		style::color fg,
+		crl::time now);
 
 	void updateConnectingState();
 	void updateAdaptiveLayout();
@@ -121,10 +149,15 @@ private:
 
 	void refreshUnreadBadge();
 	void updateUnreadBadge();
+	void setChooseForReportReason(std::optional<Ui::ReportReason> reason);
+	void toggleSelectedControls(bool shown);
+	[[nodiscard]] bool showSelectedActions() const;
 
 	const not_null<Window::SessionController*> _controller;
-	Dialogs::Key _activeChat;
-	Section _section = Section::History;
+	ActiveChat _activeChat;
+	QString _customTitleText;
+	std::unique_ptr<EmojiInteractionSeenAnimation> _emojiInteractionSeen;
+	rpl::lifetime _activeChatLifetime;
 
 	int _selectedCount = 0;
 	bool _canDelete = false;
@@ -137,10 +170,12 @@ private:
 	object_ptr<Ui::RoundButton> _forward, _sendNow, _delete;
 
 	object_ptr<Ui::IconButton> _back;
+	object_ptr<Ui::IconButton> _cancelChoose;
 	object_ptr<Ui::UnreadBadge> _unreadBadge = { nullptr };
 	object_ptr<Ui::AbstractButton> _info = { nullptr };
 
 	object_ptr<Ui::IconButton> _call;
+	object_ptr<Ui::IconButton> _groupCall;
 	object_ptr<Ui::IconButton> _search;
 	object_ptr<Ui::IconButton> _infoToggle;
 	object_ptr<Ui::IconButton> _menuToggle;
@@ -156,13 +191,16 @@ private:
 	bool _animatingMode = false;
 	std::unique_ptr<Ui::InfiniteRadialAnimation> _connecting;
 
-	int _unreadCounterSubscription = 0;
+	SendActionPainter *_sendAction = nullptr;
+	std::optional<Ui::ReportReason> _chooseForReportReason;
+
 	base::Timer _onlineUpdater;
 
 	rpl::event_stream<> _forwardSelection;
 	rpl::event_stream<> _sendNowSelection;
 	rpl::event_stream<> _deleteSelection;
 	rpl::event_stream<> _clearSelection;
+	rpl::event_stream<> _cancelChooseForReport;
 
 };
 

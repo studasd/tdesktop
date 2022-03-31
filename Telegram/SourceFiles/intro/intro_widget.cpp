@@ -9,41 +9,71 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "intro/intro_start.h"
 #include "intro/intro_phone.h"
+#include "intro/intro_qr.h"
 #include "intro/intro_code.h"
 #include "intro/intro_signup.h"
 #include "intro/intro_password_check.h"
 #include "lang/lang_keys.h"
+#include "lang/lang_instance.h"
 #include "lang/lang_cloud_manager.h"
 #include "storage/localstorage.h"
 #include "main/main_account.h"
+#include "main/main_domain.h"
+#include "main/main_session.h"
 #include "mainwindow.h"
-#include "boxes/confirm_box.h"
+#include "history/history.h"
+#include "history/history_item.h"
+#include "data/data_user.h"
+#include "countries/countries_instance.h"
+#include "ui/boxes/confirm_box.h"
+#include "ui/text/format_values.h" // Ui::FormatPhone
 #include "ui/text/text_utilities.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/wrap/fade_wrap.h"
 #include "core/update_checker.h"
 #include "core/application.h"
-#include "mtproto/dc_options.h"
+#include "mtproto/mtproto_dc_options.h"
 #include "window/window_slide_animation.h"
 #include "window/window_connecting_widget.h"
+#include "window/window_controller.h"
+#include "window/window_session_controller.h"
+#include "window/section_widget.h"
 #include "base/platform/base_platform_info.h"
 #include "api/api_text_entities.h"
-#include "facades.h"
-#include "app.h"
 #include "styles/style_layers.h"
 #include "styles/style_intro.h"
+#include "base/qt/qt_common_adapters.h"
 
 namespace Intro {
 namespace {
 
 using namespace ::Intro::details;
 
+[[nodiscard]] QString ComputeNewAccountCountry() {
+	if (const auto parent
+		= Core::App().domain().maybeLastOrSomeAuthedAccount()) {
+		if (const auto session = parent->maybeSession()) {
+			const auto iso = Countries::Instance().countryISO2ByPhone(
+				session->user()->phone());
+			if (!iso.isEmpty()) {
+				return iso;
+			}
+		}
+	}
+	return Platform::SystemCountry();
+}
+
 } // namespace
 
-Widget::Widget(QWidget *parent, not_null<Main::Account*> account)
+Widget::Widget(
+	QWidget *parent,
+	not_null<Window::Controller*> controller,
+	not_null<Main::Account*> account,
+	EnterPoint point)
 : RpWidget(parent)
 , _account(account)
+, _data(details::Data{ .controller = controller })
 , _back(this, object_ptr<Ui::IconButton>(this, st::introBackButton))
 , _settings(
 	this,
@@ -56,46 +86,57 @@ Widget::Widget(QWidget *parent, not_null<Main::Account*> account)
 	object_ptr<Ui::RoundButton>(this, nullptr, st::introNextButton))
 , _connecting(std::make_unique<Window::ConnectionState>(
 		this,
+		account,
 		rpl::single(true))) {
-	appendStep(new StartWidget(this, _account, getData()));
-	fixOrder();
+	Core::App().setDefaultFloatPlayerDelegate(floatPlayerDelegate());
 
-	getData()->country = Platform::SystemCountry();
+	getData()->country = ComputeNewAccountCountry();
 
 	_account->mtpValue(
-	) | rpl::start_with_next([=](MTP::Instance *instance) {
-		if (instance) {
-			_api.emplace(instance);
-			createLanguageLink();
-		} else {
-			_api.reset();
-		}
+	) | rpl::start_with_next([=](not_null<MTP::Instance*> instance) {
+		_api.emplace(instance);
+		crl::on_main(this, [=] { createLanguageLink(); });
 	}, lifetime());
-	subscribe(Lang::CurrentCloudManager().firstLanguageSuggestion(), [=] {
+
+	switch (point) {
+	case EnterPoint::Start:
+		getNearestDC();
+		appendStep(new StartWidget(this, _account, getData()));
+		break;
+	case EnterPoint::Phone:
+		appendStep(new PhoneWidget(this, _account, getData()));
+		break;
+	case EnterPoint::Qr:
+		appendStep(new QrWidget(this, _account, getData()));
+		break;
+	default: Unexpected("Enter point in Intro::Widget::Widget.");
+	}
+
+	fixOrder();
+
+	Lang::CurrentCloudManager().firstLanguageSuggestion(
+	) | rpl::start_with_next([=] {
 		createLanguageLink();
-	});
+	}, lifetime());
 
 	_account->mtpUpdates(
 	) | rpl::start_with_next([=](const MTPUpdates &updates) {
 		handleUpdates(updates);
 	}, lifetime());
 
-	_back->entity()->setClickedCallback([=] {
-		historyMove(Direction::Back);
-	});
+	_back->entity()->setClickedCallback([=] { backRequested(); });
 	_back->hide(anim::type::instant);
 
 	_next->entity()->setClickedCallback([=] { getStep()->submit(); });
-
-	_settings->entity()->setClickedCallback([] { App::wnd()->showSettings(); });
-
-	getNearestDC();
 
 	if (_changeLanguage) {
 		_changeLanguage->finishAnimating();
 	}
 
-	subscribe(Lang::Current().updated(), [this] { refreshLang(); });
+	Lang::Updated(
+	) | rpl::start_with_next([=] {
+		refreshLang();
+	}, lifetime());
 
 	show();
 	showControls();
@@ -108,7 +149,7 @@ Widget::Widget(QWidget *parent, not_null<Main::Account*> account)
 		Core::UpdateChecker checker;
 		checker.start();
 		rpl::merge(
-			rpl::single(rpl::empty_value()),
+			rpl::single(rpl::empty),
 			checker.isLatest(),
 			checker.failed(),
 			checker.ready()
@@ -116,6 +157,54 @@ Widget::Widget(QWidget *parent, not_null<Main::Account*> account)
 			checkUpdateStatus();
 		}, lifetime());
 	}
+}
+
+rpl::producer<> Widget::showSettingsRequested() const {
+	return _settings->entity()->clicks() | rpl::to_empty;
+}
+
+not_null<Media::Player::FloatDelegate*> Widget::floatPlayerDelegate() {
+	return static_cast<Media::Player::FloatDelegate*>(this);
+}
+
+auto Widget::floatPlayerSectionDelegate()
+-> not_null<Media::Player::FloatSectionDelegate*> {
+	return static_cast<Media::Player::FloatSectionDelegate*>(this);
+}
+
+not_null<Ui::RpWidget*> Widget::floatPlayerWidget() {
+	return this;
+}
+
+auto Widget::floatPlayerGetSection(Window::Column column)
+-> not_null<Media::Player::FloatSectionDelegate*> {
+	return this;
+}
+
+void Widget::floatPlayerEnumerateSections(Fn<void(
+		not_null<Media::Player::FloatSectionDelegate*> widget,
+		Window::Column widgetColumn)> callback) {
+	callback(this, Window::Column::Second);
+}
+
+bool Widget::floatPlayerIsVisible(not_null<HistoryItem*> item) {
+	return false;
+}
+
+void Widget::floatPlayerDoubleClickEvent(not_null<const HistoryItem*> item) {
+	getData()->controller->invokeForSessionController(
+		&item->history()->peer->session().account(),
+		[=](not_null<Window::SessionController*> controller) {
+			controller->showPeerHistoryAtItem(item);
+		});
+}
+
+QRect Widget::floatPlayerAvailableRect() {
+	return mapToGlobal(rect());
+}
+
+bool Widget::floatPlayerHandleWheelEvent(QEvent *e) {
+	return false;
 }
 
 void Widget::refreshLang() {
@@ -140,20 +229,21 @@ void Widget::handleUpdates(const MTPUpdates &updates) {
 
 void Widget::handleUpdate(const MTPUpdate &update) {
 	update.match([&](const MTPDupdateDcOptions &data) {
-		Core::App().dcOptions()->addFromList(data.vdc_options());
+		_account->mtp().dcOptions().addFromList(data.vdc_options());
 	}, [&](const MTPDupdateConfig &data) {
-		_account->mtp()->requestConfig();
+		_account->mtp().requestConfig();
 	}, [&](const MTPDupdateServiceNotification &data) {
 		const auto text = TextWithEntities{
 			qs(data.vmessage()),
-			Api::EntitiesFromMTP(data.ventities().v)
+			Api::EntitiesFromMTP(nullptr, data.ventities().v)
 		};
-		Ui::show(Box<InformBox>(text));
+		Ui::show(Ui::MakeInformBox(text));
 	}, [](const auto &) {});
 }
 
 void Widget::createLanguageLink() {
-	if (_changeLanguage) {
+	if (_changeLanguage
+		|| Core::App().domain().maybeLastOrSomeAuthedAccount()) {
 		return;
 	}
 
@@ -173,7 +263,7 @@ void Widget::createLanguageLink() {
 		updateControlsGeometry();
 	};
 
-	const auto currentId = Lang::LanguageIdOrDefault(Lang::Current().id());
+	const auto currentId = Lang::LanguageIdOrDefault(Lang::Id());
 	const auto defaultId = Lang::DefaultLanguageId();
 	const auto suggested = Lang::CurrentCloudManager().suggestedLanguage();
 	if (currentId != defaultId) {
@@ -213,7 +303,7 @@ void Widget::checkUpdateStatus() {
 		_update->toggle(!stepHasCover, anim::type::instant);
 		_update->entity()->setClickedCallback([] {
 			Core::checkReadyUpdate();
-			App::restart();
+			Core::Restart();
 		});
 	} else {
 		if (!_update) return;
@@ -230,18 +320,18 @@ void Widget::setInnerFocus() {
 	}
 }
 
-void Widget::historyMove(Direction direction) {
+void Widget::historyMove(StackAction action, Animate animate) {
 	Expects(_stepHistory.size() > 1);
 
 	if (getStep()->animating()) {
 		return;
 	}
 
-	auto wasStep = getStep((direction == Direction::Back) ? 0 : 1);
-	if (direction == Direction::Back) {
+	auto wasStep = getStep((action == StackAction::Back) ? 0 : 1);
+	if (action == StackAction::Back) {
 		_stepHistory.pop_back();
 		wasStep->cancelled();
-	} else if (direction == Direction::Replace) {
+	} else if (action == StackAction::Replace) {
 		_stepHistory.erase(_stepHistory.end() - 2);
 	}
 
@@ -261,10 +351,10 @@ void Widget::historyMove(Direction direction) {
 	}
 
 	_stepLifetime.destroy();
-	if (direction == Direction::Forward || direction == Direction::Replace) {
+	if (action == StackAction::Forward || action == StackAction::Replace) {
 		wasStep->finished();
 	}
-	if (direction == Direction::Back || direction == Direction::Replace) {
+	if (action == StackAction::Back || action == StackAction::Replace) {
 		delete base::take(wasStep);
 	}
 	_back->toggle(getStep()->hasBack(), anim::type::normal);
@@ -277,7 +367,7 @@ void Widget::historyMove(Direction direction) {
 	setupNextButton();
 	if (_resetAccount) _resetAccount->show(anim::type::normal);
 	if (_terms) _terms->show(anim::type::normal);
-	getStep()->showAnimated(direction);
+	getStep()->showAnimated(animate);
 	fixOrder();
 }
 
@@ -298,10 +388,11 @@ void Widget::fixOrder() {
 	if (_changeLanguage) _changeLanguage->raise();
 	_settings->raise();
 	_back->raise();
+	floatPlayerRaiseAll();
 	_connecting->raise();
 }
 
-void Widget::moveToStep(Step *step, Direction direction) {
+void Widget::moveToStep(Step *step, StackAction action, Animate animate) {
 	appendStep(step);
 	_back->raise();
 	_settings->raise();
@@ -310,24 +401,29 @@ void Widget::moveToStep(Step *step, Direction direction) {
 	}
 	_connecting->raise();
 
-	historyMove(direction);
+	historyMove(action, animate);
 }
 
 void Widget::appendStep(Step *step) {
 	_stepHistory.push_back(step);
 	step->setGeometry(rect());
-	step->setGoCallback([=](Step *step, Direction direction) {
-		if (direction == Direction::Back) {
-			historyMove(direction);
+	step->setGoCallback([=](Step *step, StackAction action, Animate animate) {
+		if (action == StackAction::Back) {
+			backRequested();
 		} else {
-			moveToStep(step, direction);
+			moveToStep(step, action, animate);
 		}
 	});
 	step->setShowResetCallback([=] {
 		showResetButton();
 	});
-	step->setShowTermsCallback([=]() {
+	step->setShowTermsCallback([=] {
 		showTerms();
+	});
+	step->setCancelNearestDcCallback([=] {
+		if (_api) {
+			_api->request(base::take(_nearestDcRequestId)).cancel();
+		}
 	});
 	step->setAcceptTermsCallback([=](Fn<void()> callback) {
 		acceptTerms(callback);
@@ -390,25 +486,35 @@ void Widget::resetAccount() {
 		return;
 	}
 
-	Ui::show(Box<ConfirmBox>(tr::lng_signin_sure_reset(tr::now), tr::lng_signin_reset(tr::now), st::attentionBoxButton, crl::guard(this, [this] {
+	const auto callback = crl::guard(this, [this] {
 		if (_resetRequest) {
 			return;
 		}
 		_resetRequest = _api->request(MTPaccount_DeleteAccount(
 			MTP_string("Forgot password")
-		)).done([=](const MTPBool &result) {
+		)).done([=] {
 			_resetRequest = 0;
 
 			Ui::hideLayer();
-			moveToStep(
-				new SignupWidget(this, _account, getData()),
-				Direction::Replace);
-		}).fail([=](const RPCError &error) {
+			if (getData()->phone.isEmpty()) {
+				moveToStep(
+					new QrWidget(this, _account, getData()),
+					StackAction::Replace,
+					Animate::Back);
+			} else {
+				moveToStep(
+					new SignupWidget(this, _account, getData()),
+					StackAction::Replace,
+					Animate::Forward);
+			}
+		}).fail([=](const MTP::Error &error) {
 			_resetRequest = 0;
 
 			const auto &type = error.type();
 			if (type.startsWith(qstr("2FA_CONFIRM_WAIT_"))) {
-				const auto seconds = type.mid(qstr("2FA_CONFIRM_WAIT_").size()).toInt();
+				const auto seconds = base::StringViewMid(
+					type,
+					qstr("2FA_CONFIRM_WAIT_").size()).toInt();
 				const auto days = (seconds + 59) / 86400;
 				const auto hours = ((seconds + 59) % 86400) / 3600;
 				const auto minutes = ((seconds + 59) % 3600) / 60;
@@ -445,29 +551,37 @@ void Widget::resetAccount() {
 						lt_minutes_count,
 						when);
 				}
-				Ui::show(Box<InformBox>(tr::lng_signin_reset_wait(
+				Ui::show(Ui::MakeInformBox(tr::lng_signin_reset_wait(
 					tr::now,
 					lt_phone_number,
-					App::formatPhone(getData()->phone),
+					Ui::FormatPhone(getData()->phone),
 					lt_when,
 					when)));
 			} else if (type == qstr("2FA_RECENT_CONFIRM")) {
-				Ui::show(Box<InformBox>(
-					tr::lng_signin_reset_cancelled(tr::now)));
+				Ui::show(Ui::MakeInformBox(
+					tr::lng_signin_reset_cancelled()));
 			} else {
 				Ui::hideLayer();
 				getStep()->showError(rpl::single(Lang::Hard::ServerError()));
 			}
 		}).send();
-	})));
+	});
+
+	Ui::show(Ui::MakeConfirmBox({
+		.text = tr::lng_signin_sure_reset(),
+		.confirmed = callback,
+		.confirmText = tr::lng_signin_reset(),
+		.confirmStyle = &st::attentionBoxButton,
+	}));
 }
 
 void Widget::getNearestDC() {
 	if (!_api) {
 		return;
 	}
-	_api->request(MTPhelp_GetNearestDc(
+	_nearestDcRequestId = _api->request(MTPhelp_GetNearestDc(
 	)).done([=](const MTPNearestDc &result) {
+		_nearestDcRequestId = 0;
 		const auto &nearest = result.c_nearestDc();
 		DEBUG_LOG(("Got nearest dc, country: %1, nearest: %2, this: %3"
 			).arg(qs(nearest.vcountry())
@@ -477,7 +591,7 @@ void Widget::getNearestDC() {
 		const auto nearestCountry = qs(nearest.vcountry());
 		if (getData()->country != nearestCountry) {
 			getData()->country = nearestCountry;
-			getData()->updated.notify();
+			getData()->updated.fire({});
 		}
 	}).send();
 }
@@ -534,7 +648,7 @@ void Widget::showTerms(Fn<void()> callback) {
 void Widget::showControls() {
 	getStep()->show();
 	setupNextButton();
-	_next->show(anim::type::instant);
+	_next->toggle(_nextShown, anim::type::instant);
 	_nextShownAnimation.stop();
 	_connecting->setForceHidden(false);
 	auto hasCover = getStep()->hasCover();
@@ -597,8 +711,10 @@ void Widget::showAnimated(const QPixmap &bgAnimCache, bool back) {
 
 	_a_show.stop();
 	showControls();
+	floatPlayerHideAll();
 	(_showBack ? _cacheUnder : _cacheOver) = Ui::GrabWidget(this);
 	hideControls();
+	floatPlayerShowVisible();
 
 	_a_show.start(
 		[=] { animationCallback(); },
@@ -647,11 +763,15 @@ void Widget::paintEvent(QPaintEvent *e) {
 }
 
 void Widget::resizeEvent(QResizeEvent *e) {
+	if (_stepHistory.empty()) {
+		return;
+	}
 	for (const auto step : _stepHistory) {
 		step->setGeometry(rect());
 	}
 
 	updateControlsGeometry();
+	floatPlayerAreaUpdated();
 }
 
 void Widget::updateControlsGeometry() {
@@ -692,7 +812,7 @@ void Widget::keyPressEvent(QKeyEvent *e) {
 
 	if (e->key() == Qt::Key_Escape || e->key() == Qt::Key_Back) {
 		if (getStep()->hasBack()) {
-			historyMove(Direction::Back);
+			backRequested();
 		}
 	} else if (e->key() == Qt::Key_Enter
 		|| e->key() == Qt::Key_Return
@@ -701,11 +821,24 @@ void Widget::keyPressEvent(QKeyEvent *e) {
 	}
 }
 
+void Widget::backRequested() {
+	if (_stepHistory.size() > 1) {
+		historyMove(StackAction::Back, Animate::Back);
+	} else if (const auto parent
+		= Core::App().domain().maybeLastOrSomeAuthedAccount()) {
+		Core::App().domain().activate(parent);
+	} else {
+		moveToStep(
+			new StartWidget(this, _account, getData()),
+			StackAction::Replace,
+			Animate::Back);
+	}
+}
+
 Widget::~Widget() {
 	for (auto step : base::take(_stepHistory)) {
 		delete step;
 	}
-	if (App::wnd()) App::wnd()->noIntro(this);
 }
 
 } // namespace Intro

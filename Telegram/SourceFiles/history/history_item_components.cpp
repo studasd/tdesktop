@@ -7,15 +7,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_item_components.h"
 
+#include "base/qt/qt_key_modifiers.h"
 #include "lang/lang_keys.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/image/image.h"
 #include "ui/toast/toast.h"
-#include "ui/text_options.h"
+#include "ui/text/text_options.h"
+#include "ui/text/text_utilities.h"
+#include "ui/chat/chat_style.h"
+#include "ui/chat/chat_theme.h"
 #include "history/history.h"
 #include "history/history_message.h"
 #include "history/view/history_view_service_message.h"
 #include "history/view/media/history_view_document.h"
+#include "core/click_handler_types.h"
+#include "layout/layout_position.h"
 #include "mainwindow.h"
 #include "media/audio/media_audio.h"
 #include "media/player/media_player_instance.h"
@@ -24,20 +30,31 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_user.h"
 #include "data/data_file_origin.h"
 #include "data/data_document.h"
+#include "data/data_web_page.h"
+#include "data/data_file_click_handler.h"
 #include "main/main_session.h"
 #include "window/window_session_controller.h"
 #include "facades.h"
 #include "styles/style_widgets.h"
-#include "styles/style_history.h"
+#include "styles/style_chat.h"
 
 #include <QtGui/QGuiApplication>
 
-void HistoryMessageVia::create(UserId userId) {
-	bot = Auth().data().user(userId);
+namespace {
+
+const auto kPsaForwardedPrefix = "cloud_lng_forwarded_psa_";
+
+} // namespace
+
+void HistoryMessageVia::create(
+		not_null<Data::Session*> owner,
+		UserId userId) {
+	bot = owner->user(userId);
 	maxWidth = st::msgServiceNameFont->width(
 		tr::lng_inline_bot_via(tr::now, lt_inline_bot, '@' + bot->username));
-	link = std::make_shared<LambdaClickHandler>([bot = this->bot] {
-		if (QGuiApplication::keyboardModifiers() == Qt::ControlModifier) {
+	link = std::make_shared<LambdaClickHandler>([bot = this->bot](
+			ClickContext context) {
+		if (base::IsCtrlPressed()) {
 			if (const auto window = App::wnd()) {
 				if (const auto controller = window->sessionController()) {
 					controller->showPeerInfo(bot);
@@ -45,7 +62,12 @@ void HistoryMessageVia::create(UserId userId) {
 				}
 			}
 		}
-		App::insertBotCommand('@' + bot->username);
+		const auto my = context.other.value<ClickHandlerContext>();
+		if (const auto delegate = my.elementDelegate ? my.elementDelegate() : nullptr) {
+			delegate->elementHandleViaClick(bot);
+		} else {
+			App::insertBotCommand('@' + bot->username);
+		}
 	});
 }
 
@@ -64,42 +86,18 @@ void HistoryMessageVia::resize(int32 availw) const {
 	}
 }
 
-void HistoryMessageSigned::refresh(const QString &date) {
-	auto name = author;
-	const auto time = qsl(", ") + date;
-	const auto timew = st::msgDateFont->width(time);
-	const auto namew = st::msgDateFont->width(name);
-	isElided = (timew + namew > st::maxSignatureSize);
-	if (isElided) {
-		name = st::msgDateFont->elided(author, st::maxSignatureSize - timew);
-	}
-	signature.setText(
-		st::msgDateTextStyle,
-		name + time,
-		Ui::NameTextOptions());
-}
-
-int HistoryMessageSigned::maxWidth() const {
-	return signature.maxWidth();
-}
-
-void HistoryMessageEdited::refresh(const QString &date, bool displayed) {
-	const auto prefix = displayed
-		? (tr::lng_edited(tr::now) + ' ')
-		: QString();
-	text.setText(st::msgDateTextStyle, prefix + date, Ui::NameTextOptions());
-}
-
-int HistoryMessageEdited::maxWidth() const {
-	return text.maxWidth();
-}
-
-HiddenSenderInfo::HiddenSenderInfo(const QString &name)
+HiddenSenderInfo::HiddenSenderInfo(const QString &name, bool external)
 : name(name)
 , colorPeerId(Data::FakePeerIdForJustName(name))
-, userpic(Data::PeerUserpicColor(colorPeerId), name) {
+, emptyUserpic(
+	Data::PeerUserpicColor(colorPeerId),
+	(external
+		? Ui::EmptyUserpic::ExternalName()
+		: name)) {
+	Expects(!name.isEmpty());
+
 	nameText.setText(st::msgNameStyle, name, Ui::NameTextOptions());
-	const auto parts = name.trimmed().split(' ', QString::SkipEmptyParts);
+	const auto parts = name.trimmed().split(' ', Qt::SkipEmptyParts);
 	firstName = parts[0];
 	for (const auto &part : parts.mid(1)) {
 		if (!lastName.isEmpty()) {
@@ -109,60 +107,95 @@ HiddenSenderInfo::HiddenSenderInfo(const QString &name)
 	}
 }
 
+bool HiddenSenderInfo::paintCustomUserpic(
+		Painter &p,
+		int x,
+		int y,
+		int outerWidth,
+		int size) const {
+	const auto view = customUserpic.activeView();
+	if (const auto image = view ? view->image() : nullptr) {
+		const auto circled = Images::Option::RoundCircle;
+		p.drawPixmap(
+			x,
+			y,
+			image->pix(size, size, { .options = circled }));
+		return true;
+	} else {
+		emptyUserpic.paint(p, x, y, outerWidth, size);
+		return false;
+	}
+}
+
 void HistoryMessageForwarded::create(const HistoryMessageVia *via) const {
-	auto phrase = QString();
+	auto phrase = TextWithEntities();
 	const auto fromChannel = originalSender
 		&& originalSender->isChannel()
 		&& !originalSender->isMegagroup();
-	const auto name = originalSender
-		? originalSender->name
-		: hiddenSenderInfo->name;
+	const auto name = TextWithEntities{
+		.text = originalSender ? originalSender->name : hiddenSenderInfo->name
+	};
 	if (!originalAuthor.isEmpty()) {
 		phrase = tr::lng_forwarded_signed(
 			tr::now,
 			lt_channel,
 			name,
 			lt_user,
-			originalAuthor);
+			{ .text = originalAuthor },
+			Ui::Text::WithEntities);
 	} else {
 		phrase = name;
 	}
-	if (via) {
+	if (via && psaType.isEmpty()) {
 		if (fromChannel) {
 			phrase = tr::lng_forwarded_channel_via(
 				tr::now,
 				lt_channel,
-				textcmdLink(1, phrase),
+				Ui::Text::Link(phrase.text, 1), // Link 1.
 				lt_inline_bot,
-				textcmdLink(2, '@' + via->bot->username));
+				Ui::Text::Link('@' + via->bot->username, 2),  // Link 2.
+				Ui::Text::WithEntities);
 		} else {
 			phrase = tr::lng_forwarded_via(
 				tr::now,
 				lt_user,
-				textcmdLink(1, phrase),
+				Ui::Text::Link(phrase.text, 1), // Link 1.
 				lt_inline_bot,
-				textcmdLink(2, '@' + via->bot->username));
+				Ui::Text::Link('@' + via->bot->username, 2),  // Link 2.
+				Ui::Text::WithEntities);
 		}
 	} else {
-		if (fromChannel) {
-			phrase = tr::lng_forwarded_channel(
-				tr::now,
-				lt_channel,
-				textcmdLink(1, phrase));
+		if (fromChannel || !psaType.isEmpty()) {
+			auto custom = psaType.isEmpty()
+				? QString()
+				: Lang::GetNonDefaultValue(
+					kPsaForwardedPrefix + psaType.toUtf8());
+			if (!custom.isEmpty()) {
+				custom = custom.replace("{channel}", phrase.text);
+				const auto index = int(custom.indexOf(phrase.text));
+				const auto size = int(phrase.text.size());
+				phrase = TextWithEntities{
+					.text = custom,
+					.entities = {{ EntityType::CustomUrl, index, size, {} }},
+				};
+			} else {
+				phrase = (psaType.isEmpty()
+					? tr::lng_forwarded_channel
+					: tr::lng_forwarded_psa_default)(
+						tr::now,
+						lt_channel,
+						Ui::Text::Link(phrase.text, QString()), // Link 1.
+						Ui::Text::WithEntities);
+			}
 		} else {
 			phrase = tr::lng_forwarded(
 				tr::now,
 				lt_user,
-				textcmdLink(1, phrase));
+				Ui::Text::Link(phrase.text, QString()), // Link 1.
+				Ui::Text::WithEntities);
 		}
 	}
-	TextParseOptions opts = {
-		TextParseRichText,
-		0,
-		0,
-		Qt::LayoutDirectionAuto
-	};
-	text.setText(st::fwdTextStyle, phrase, opts);
+	text.setMarkedText(st::fwdTextStyle, phrase);
 	static const auto hidden = std::make_shared<LambdaClickHandler>([] {
 		Ui::Toast::Show(tr::lng_forwarded_hidden(tr::now));
 	});
@@ -180,7 +213,7 @@ void HistoryMessageForwarded::create(const HistoryMessageVia *via) const {
 bool HistoryMessageReply::updateData(
 		not_null<HistoryMessage*> holder,
 		bool force) {
-	const auto guard = gsl::finally([&] { refreshReplyToDocument(); });
+	const auto guard = gsl::finally([&] { refreshReplyToMedia(); });
 	if (!force) {
 		if (replyToMsg || !replyToMsgId) {
 			return true;
@@ -188,7 +221,9 @@ bool HistoryMessageReply::updateData(
 	}
 	if (!replyToMsg) {
 		replyToMsg = holder->history()->owner().message(
-			holder->channelId(),
+			(replyToPeerId
+				? replyToPeerId
+				: holder->history()->peer->id),
 			replyToMsgId);
 		if (replyToMsg) {
 			if (replyToMsg->isEmpty()) {
@@ -204,18 +239,20 @@ bool HistoryMessageReply::updateData(
 	}
 
 	if (replyToMsg) {
-		replyToText.setText(
+		replyToText.setMarkedText(
 			st::messageTextStyle,
 			replyToMsg->inReplyText(),
 			Ui::DialogTextOptions());
 
-		updateName();
+		updateName(holder);
 
 		setReplyToLinkFrom(holder);
 		if (!replyToMsg->Has<HistoryMessageForwarded>()) {
 			if (auto bot = replyToMsg->viaBot()) {
 				replyToVia = std::make_unique<HistoryMessageVia>();
-				replyToVia->create(peerToUser(bot->id));
+				replyToVia->create(
+					&holder->history()->owner(),
+					peerToUser(bot->id));
 			}
 		}
 	} else if (force) {
@@ -243,28 +280,63 @@ void HistoryMessageReply::clearData(not_null<HistoryMessage*> holder) {
 		replyToMsg = nullptr;
 	}
 	replyToMsgId = 0;
-	refreshReplyToDocument();
+	refreshReplyToMedia();
 }
 
-bool HistoryMessageReply::isNameUpdated() const {
-	if (replyToMsg && replyToMsg->author()->nameVersion > replyToVersion) {
-		updateName();
-		return true;
+PeerData *HistoryMessageReply::replyToFrom(
+		not_null<HistoryMessage*> holder) const {
+	if (!replyToMsg) {
+		return nullptr;
+	} else if (holder->Has<HistoryMessageForwarded>()) {
+		if (const auto fwd = replyToMsg->Get<HistoryMessageForwarded>()) {
+			return fwd->originalSender;
+		}
+	}
+	if (const auto from = replyToMsg->displayFrom()) {
+		return from;
+	}
+	return replyToMsg->author().get();
+}
+
+QString HistoryMessageReply::replyToFromName(
+		not_null<HistoryMessage*> holder) const {
+	if (!replyToMsg) {
+		return QString();
+	} else if (holder->Has<HistoryMessageForwarded>()) {
+		if (const auto fwd = replyToMsg->Get<HistoryMessageForwarded>()) {
+			return fwd->originalSender
+				? replyToFromName(fwd->originalSender)
+				: fwd->hiddenSenderInfo->name;
+		}
+	}
+	if (const auto from = replyToMsg->displayFrom()) {
+		return replyToFromName(from);
+	}
+	return replyToFromName(replyToMsg->author());
+}
+
+QString HistoryMessageReply::replyToFromName(
+		not_null<PeerData*> peer) const {
+	if (const auto user = replyToVia ? peer->asUser() : nullptr) {
+		return user->firstName;
+	}
+	return peer->name;
+}
+
+bool HistoryMessageReply::isNameUpdated(
+		not_null<HistoryMessage*> holder) const {
+	if (const auto from = replyToFrom(holder)) {
+		if (from->nameVersion > replyToVersion) {
+			updateName(holder);
+			return true;
+		}
 	}
 	return false;
 }
 
-void HistoryMessageReply::updateName() const {
-	if (replyToMsg) {
-		const auto from = [&] {
-			if (const auto from = replyToMsg->displayFrom()) {
-				return from;
-			}
-			return replyToMsg->author().get();
-		}();
-		const auto name = (replyToVia && from->isUser())
-			? from->asUser()->firstName
-			: from->name;
+void HistoryMessageReply::updateName(
+		not_null<HistoryMessage*> holder) const {
+	if (const auto name = replyToFromName(holder); !name.isEmpty()) {
 		replyToName.setText(st::fwdTextStyle, name, Ui::NameTextOptions());
 		replyToVersion = replyToMsg->author()->nameVersion;
 		bool hasPreview = replyToMsg->media() ? replyToMsg->media()->hasReplyPreview() : false;
@@ -301,16 +373,17 @@ void HistoryMessageReply::itemRemoved(
 void HistoryMessageReply::paint(
 		Painter &p,
 		not_null<const HistoryView::Element*> holder,
+		const Ui::ChatPaintContext &context,
 		int x,
 		int y,
 		int w,
-		PaintFlags flags) const {
-	bool selected = (flags & PaintFlag::Selected), outbg = holder->hasOutLayout();
+		bool inBubble) const {
+	const auto st = context.st;
+	const auto stm = context.messageStyle();
 
-	style::color bar = st::msgImgReplyBarColor;
-	if (flags & PaintFlag::InBubble) {
-		bar = (flags & PaintFlag::Selected) ? (outbg ? st::msgOutReplyBarSelColor : st::msgInReplyBarSelColor) : (outbg ? st::msgOutReplyBarColor : st::msgInReplyBarColor);
-	}
+	const auto &bar = inBubble
+		? stm->msgReplyBarColor
+		: st->msgImgReplyBarColor();
 	QRect rbar(style::rtlrect(x + st::msgReplyBarPos.x(), y + st::msgReplyPadding.top() + st::msgReplyBarPos.y(), st::msgReplyBarSize.width(), st::msgReplyBarSize.height(), w + 2 * x));
 	p.fillRect(rbar, bar);
 
@@ -325,79 +398,79 @@ void HistoryMessageReply::paint(
 			if (hasPreview) {
 				if (const auto image = replyToMsg->media()->replyPreview()) {
 					auto to = style::rtlrect(x + st::msgReplyBarSkip, y + st::msgReplyPadding.top() + st::msgReplyBarPos.y(), st::msgReplyBarSize.height(), st::msgReplyBarSize.height(), w + 2 * x);
-					auto previewWidth = image->width() / cIntRetinaFactor();
-					auto previewHeight = image->height() / cIntRetinaFactor();
-					auto preview = image->pixSingle(replyToMsg->fullId(), previewWidth, previewHeight, to.width(), to.height(), ImageRoundRadius::Small, RectPart::AllCorners, selected ? &st::msgStickerOverlay : nullptr);
+					const auto preview = image->pixSingle(
+						image->size() / style::DevicePixelRatio(),
+						{
+							.colored = (context.selected()
+								? &st->msgStickerOverlay()
+								: nullptr),
+							.options = Images::Option::RoundSmall,
+							.outer = to.size(),
+						});
 					p.drawPixmap(to.x(), to.y(), preview);
 				}
 			}
 			if (w > st::msgReplyBarSkip + previewSkip) {
-				if (flags & PaintFlag::InBubble) {
-					p.setPen(selected ? (outbg ? st::msgOutServiceFgSelected : st::msgInServiceFgSelected) : (outbg ? st::msgOutServiceFg : st::msgInServiceFg));
-				} else {
-					p.setPen(st::msgImgReplyBarColor);
-				}
+				p.setPen(inBubble
+					? stm->msgServiceFg
+					: st->msgImgReplyBarColor());
 				replyToName.drawLeftElided(p, x + st::msgReplyBarSkip + previewSkip, y + st::msgReplyPadding.top(), w - st::msgReplyBarSkip - previewSkip, w + 2 * x);
 				if (replyToVia && w > st::msgReplyBarSkip + previewSkip + replyToName.maxWidth() + st::msgServiceFont->spacew) {
 					p.setFont(st::msgServiceFont);
 					p.drawText(x + st::msgReplyBarSkip + previewSkip + replyToName.maxWidth() + st::msgServiceFont->spacew, y + st::msgReplyPadding.top() + st::msgServiceFont->ascent, replyToVia->text);
 				}
 
-				if (flags & PaintFlag::InBubble) {
-					p.setPen(outbg ? (selected ? st::historyTextOutFgSelected : st::historyTextOutFg) : (selected ? st::historyTextInFgSelected : st::historyTextInFg));
-					p.setTextPalette(outbg ? (selected ? st::outReplyTextPaletteSelected : st::outReplyTextPalette) : (selected ? st::inReplyTextPaletteSelected : st::inReplyTextPalette));
-				} else {
-					p.setTextPalette(st::imgReplyTextPalette);
-				}
+				p.setPen(inBubble
+					? stm->historyTextFg
+					: st->msgImgReplyBarColor());
+				p.setTextPalette(inBubble
+					? stm->replyTextPalette
+					: st->imgReplyTextPalette());
 				replyToText.drawLeftElided(p, x + st::msgReplyBarSkip + previewSkip, y + st::msgReplyPadding.top() + st::msgServiceNameFont->height, w - st::msgReplyBarSkip - previewSkip, w + 2 * x);
-				p.setTextPalette(selected ? (outbg ? st::outTextPaletteSelected : st::inTextPaletteSelected) : (outbg ? st::outTextPalette : st::inTextPalette));
+				p.setTextPalette(stm->textPalette);
 			}
 		} else {
 			p.setFont(st::msgDateFont);
-			auto &date = outbg ? (selected ? st::msgOutDateFgSelected : st::msgOutDateFg) : (selected ? st::msgInDateFgSelected : st::msgInDateFg);
-			p.setPen((flags & PaintFlag::InBubble) ? date : st::msgDateImgFg);
+			p.setPen(inBubble
+				? stm->msgDateFg
+				: st->msgDateImgFg());
 			p.drawTextLeft(x + st::msgReplyBarSkip, y + st::msgReplyPadding.top() + (st::msgReplyBarSize.height() - st::msgDateFont->height) / 2, w + 2 * x, st::msgDateFont->elided(replyToMsgId ? tr::lng_profile_loading(tr::now) : tr::lng_deleted_message(tr::now), w - st::msgReplyBarSkip));
 		}
 	}
 }
 
-void HistoryMessageReply::refreshReplyToDocument() {
+void HistoryMessageReply::refreshReplyToMedia() {
 	replyToDocumentId = 0;
+	replyToWebPageId = 0;
 	if (const auto media = replyToMsg ? replyToMsg->media() : nullptr) {
 		if (const auto document = media->document()) {
 			replyToDocumentId = document->id;
+		} else if (const auto webpage = media->webpage()) {
+			replyToWebPageId = webpage->id;
 		}
 	}
 }
 
 ReplyMarkupClickHandler::ReplyMarkupClickHandler(
+	not_null<Data::Session*> owner,
 	int row,
 	int column,
 	FullMsgId context)
-: _itemId(context)
+: _owner(owner)
+, _itemId(context)
 , _row(row)
 , _column(column) {
 }
 
 // Copy to clipboard support.
 QString ReplyMarkupClickHandler::copyToClipboardText() const {
-	if (const auto button = getButton()) {
-		using Type = HistoryMessageMarkupButton::Type;
-		if (button->type == Type::Url || button->type == Type::Auth) {
-			return QString::fromUtf8(button->data);
-		}
-	}
-	return QString();
+	const auto button = getUrlButton();
+	return button ? QString::fromUtf8(button->data) : QString();
 }
 
 QString ReplyMarkupClickHandler::copyToClipboardContextItemText() const {
-	if (const auto button = getButton()) {
-		using Type = HistoryMessageMarkupButton::Type;
-		if (button->type == Type::Url || button->type == Type::Auth) {
-			return tr::lng_context_copy_link(tr::now);
-		}
-	}
-	return QString();
+	const auto button = getUrlButton();
+	return button ? tr::lng_context_copy_link(tr::now) : QString();
 }
 
 // Finds the corresponding button in the items markup struct.
@@ -405,12 +478,27 @@ QString ReplyMarkupClickHandler::copyToClipboardContextItemText() const {
 // Note: it is possible that we will point to the different button
 // than the one was used when constructing the handler, but not a big deal.
 const HistoryMessageMarkupButton *ReplyMarkupClickHandler::getButton() const {
-	return HistoryMessageMarkupButton::Get(_itemId, _row, _column);
+	return HistoryMessageMarkupButton::Get(_owner, _itemId, _row, _column);
 }
 
-void ReplyMarkupClickHandler::onClickImpl() const {
-	if (const auto item = Auth().data().message(_itemId)) {
-		App::activateBotCommand(item, _row, _column);
+auto ReplyMarkupClickHandler::getUrlButton() const
+-> const HistoryMessageMarkupButton* {
+	if (const auto button = getButton()) {
+		using Type = HistoryMessageMarkupButton::Type;
+		if (button->type == Type::Url || button->type == Type::Auth) {
+			return button;
+		}
+	}
+	return nullptr;
+}
+
+void ReplyMarkupClickHandler::onClick(ClickContext context) const {
+	if (context.button != Qt::LeftButton) {
+		return;
+	}
+	if (const auto item = _owner->message(_itemId)) {
+		const auto my = context.other.value<ClickHandlerContext>();
+		App::activateBotCommand(my.sessionWindow.get(), item, _row, _column);
 	}
 }
 
@@ -420,6 +508,19 @@ QString ReplyMarkupClickHandler::buttonText() const {
 		return button->text;
 	}
 	return QString();
+}
+
+QString ReplyMarkupClickHandler::tooltip() const {
+	const auto button = getUrlButton();
+	const auto url = button ? QString::fromUtf8(button->data) : QString();
+	const auto text = _fullDisplayed ? QString() : buttonText();
+	if (!url.isEmpty() && !text.isEmpty()) {
+		return QString("%1\n\n%2").arg(text, url);
+	} else if (url.isEmpty() != text.isEmpty()) {
+		return text + url;
+	} else {
+		return QString();
+	}
 }
 
 ReplyKeyboard::Button::Button() = default;
@@ -437,11 +538,12 @@ ReplyKeyboard::ReplyKeyboard(
 })
 , _st(std::move(s)) {
 	if (const auto markup = _item->Get<HistoryMessageReplyMarkup>()) {
+		const auto owner = &_item->history()->owner();
 		const auto context = _item->fullId();
-		const auto rowCount = int(markup->rows.size());
+		const auto rowCount = int(markup->data.rows.size());
 		_rows.reserve(rowCount);
 		for (auto i = 0; i != rowCount; ++i) {
-			const auto &row = markup->rows.at(i);
+			const auto &row = markup->data.rows[i];
 			const auto rowSize = int(row.size());
 			auto newRow = std::vector<Button>();
 			newRow.reserve(rowSize);
@@ -450,13 +552,14 @@ ReplyKeyboard::ReplyKeyboard(
 				const auto text = row[j].text;
 				button.type = row.at(j).type;
 				button.link = std::make_shared<ReplyMarkupClickHandler>(
+					owner,
 					i,
 					j,
 					context);
 				button.text.setText(
 					_st->textStyle(),
 					TextUtilities::SingleLine(text),
-					_textPlainOptions);
+					kPlainTextOptions);
 				button.characters = text.isEmpty() ? 1 : text.size();
 				newRow.push_back(std::move(button));
 			}
@@ -478,7 +581,6 @@ void ReplyKeyboard::updateMessageId() {
 void ReplyKeyboard::resize(int width, int height) {
 	_width = width;
 
-	auto markup = _item->Get<HistoryMessageReplyMarkup>();
 	auto y = 0.;
 	auto buttonHeight = _rows.empty()
 		? float64(_st->buttonHeight())
@@ -490,7 +592,7 @@ void ReplyKeyboard::resize(int width, int height) {
 		int widthForText = widthForButtons;
 		int widthOfText = 0;
 		int maxMinButtonWidth = 0;
-		for_const (auto &button, row) {
+		for (const auto &button : row) {
 			widthOfText += qMax(button.text.maxWidth(), 1);
 			int minButtonWidth = _st->minButtonWidth(button.type);
 			widthForText -= minButtonWidth;
@@ -500,7 +602,7 @@ void ReplyKeyboard::resize(int width, int height) {
 		bool enough = (widthForButtons - s * maxMinButtonWidth) >= widthOfText;
 
 		float64 x = 0;
-		for (Button &button : row) {
+		for (auto &button : row) {
 			int buttonw = qMax(button.text.maxWidth(), 1);
 			float64 textw = buttonw, minw = _st->minButtonWidth(button.type);
 			float64 w = textw;
@@ -528,10 +630,10 @@ void ReplyKeyboard::resize(int width, int height) {
 }
 
 bool ReplyKeyboard::isEnoughSpace(int width, const style::BotKeyboardButton &st) const {
-	for_const (auto &row, _rows) {
+	for (const auto &row : _rows) {
 		int s = row.size();
 		int widthLeft = width - ((s - 1) * st.margin + s * 2 * st.padding);
-		for_const (auto &button, row) {
+		for (const auto &button : row) {
 			widthLeft -= qMax(button.text.maxWidth(), 1);
 			if (widthLeft < 0) {
 				if (row.size() > 3) {
@@ -577,11 +679,15 @@ int ReplyKeyboard::naturalHeight() const {
 	return (_rows.size() - 1) * _st->buttonSkip() + _rows.size() * _st->buttonHeight();
 }
 
-void ReplyKeyboard::paint(Painter &p, int outerWidth, const QRect &clip) const {
+void ReplyKeyboard::paint(
+		Painter &p,
+		const Ui::ChatStyle *st,
+		int outerWidth,
+		const QRect &clip) const {
 	Assert(_st != nullptr);
 	Assert(_width > 0);
 
-	_st->startPaint(p);
+	_st->startPaint(p, st);
 	for (const auto &row : _rows) {
 		for (const auto &button : row) {
 			const auto rect = button.rect;
@@ -591,7 +697,7 @@ void ReplyKeyboard::paint(Painter &p, int outerWidth, const QRect &clip) const {
 			// just ignore the buttons that didn't layout well
 			if (rect.x() + rect.width() > _width) break;
 
-			_st->paintButton(p, outerWidth, button);
+			_st->paintButton(p, st, outerWidth, button);
 		}
 	}
 }
@@ -599,8 +705,8 @@ void ReplyKeyboard::paint(Painter &p, int outerWidth, const QRect &clip) const {
 ClickHandlerPtr ReplyKeyboard::getLink(QPoint point) const {
 	Assert(_width > 0);
 
-	for_const (auto &row, _rows) {
-		for_const (auto &button, row) {
+	for (const auto &row : _rows) {
+		for (const auto &button : row) {
 			QRect rect(button.rect);
 
 			// just ignore the buttons that didn't layout well
@@ -671,7 +777,7 @@ void ReplyKeyboard::clickHandlerPressedChanged(
 void ReplyKeyboard::startAnimation(int i, int j, int direction) {
 	auto notStarted = _animations.empty();
 
-	int indexForAnimation = (i * MatrixRowShift + j + 1) * direction;
+	int indexForAnimation = Layout::PositionToIndex(i, j + 1) * direction;
 
 	_animations.remove(-indexForAnimation);
 	if (!_animations.contains(indexForAnimation)) {
@@ -689,8 +795,7 @@ bool ReplyKeyboard::selectedAnimationCallback(crl::time now) {
 	}
 	for (auto i = _animations.begin(); i != _animations.end();) {
 		const auto index = std::abs(i->first) - 1;
-		const auto row = (index / MatrixRowShift);
-		const auto col = index % MatrixRowShift;
+		const auto &[row, col] = Layout::IndexToPosition(index);
 		const auto dt = float64(now - i->second) / st::botKbDuration;
 		if (dt >= 1) {
 			_rows[row][col].howMuchOver = (i->first > 0) ? 1 : 0;
@@ -705,10 +810,9 @@ bool ReplyKeyboard::selectedAnimationCallback(crl::time now) {
 }
 
 void ReplyKeyboard::clearSelection() {
-	for (const auto [relativeIndex, time] : _animations) {
+	for (const auto &[relativeIndex, time] : _animations) {
 		const auto index = std::abs(relativeIndex) - 1;
-		const auto row = (index / MatrixRowShift);
-		const auto col = index % MatrixRowShift;
+		const auto &[row, col] = Layout::IndexToPosition(index);
 		_rows[row][col].howMuchOver = 0;
 	}
 	_animations.clear();
@@ -729,22 +833,25 @@ int ReplyKeyboard::Style::buttonHeight() const {
 
 void ReplyKeyboard::Style::paintButton(
 		Painter &p,
+		const Ui::ChatStyle *st,
 		int outerWidth,
 		const ReplyKeyboard::Button &button) const {
 	const QRect &rect = button.rect;
-	paintButtonBg(p, rect, button.howMuchOver);
+	paintButtonBg(p, st, rect, button.howMuchOver);
 	if (button.ripple) {
-		button.ripple->paint(p, rect.x(), rect.y(), outerWidth);
+		const auto color = st ? &st->msgBotKbRippleBg()->c : nullptr;
+		button.ripple->paint(p, rect.x(), rect.y(), outerWidth, color);
 		if (button.ripple->empty()) {
 			button.ripple.reset();
 		}
 	}
-	paintButtonIcon(p, rect, outerWidth, button.type);
-	if (button.type == HistoryMessageMarkupButton::Type::Callback
+	paintButtonIcon(p, st, rect, outerWidth, button.type);
+	if (button.type == HistoryMessageMarkupButton::Type::CallbackWithPassword
+		|| button.type == HistoryMessageMarkupButton::Type::Callback
 		|| button.type == HistoryMessageMarkupButton::Type::Game) {
-		if (auto data = button.link->getButton()) {
+		if (const auto data = button.link->getButton()) {
 			if (data->requestId) {
-				paintButtonLoading(p, rect);
+				paintButtonLoading(p, st, rect);
 			}
 		}
 	}
@@ -760,175 +867,17 @@ void ReplyKeyboard::Style::paintButton(
 	button.text.drawElided(p, tx, rect.y() + _st->textTop + ((rect.height() - _st->height) / 2), tw, 1, style::al_top);
 }
 
-HistoryMessageMarkupButton::HistoryMessageMarkupButton(
-	Type type,
-	const QString &text,
-	const QByteArray &data,
-	const QString &forwardText,
-	int32 buttonId)
-: type(type)
-, text(text)
-, forwardText(forwardText)
-, data(data)
-, buttonId(buttonId) {
+void HistoryMessageReplyMarkup::createForwarded(
+		const HistoryMessageReplyMarkup &original) {
+	Expects(!inlineKeyboard);
+
+	data.fillForwardedData(original.data);
 }
 
-HistoryMessageMarkupButton *HistoryMessageMarkupButton::Get(
-		FullMsgId itemId,
-		int row,
-		int column) {
-	if (const auto item = Auth().data().message(itemId)) {
-		if (const auto markup = item->Get<HistoryMessageReplyMarkup>()) {
-			if (row < markup->rows.size()) {
-				auto &buttons = markup->rows[row];
-				if (column < buttons.size()) {
-					return &buttons[column];
-				}
-			}
-		}
-	}
-	return nullptr;
-}
-
-void HistoryMessageReplyMarkup::createFromButtonRows(
-		const QVector<MTPKeyboardButtonRow> &list) {
-	rows.clear();
-	if (list.isEmpty()) {
-		return;
-	}
-
-	rows.reserve(list.size());
-	for (const auto &row : list) {
-		row.match([&](const MTPDkeyboardButtonRow &data) {
-			auto row = std::vector<Button>();
-			row.reserve(data.vbuttons().v.size());
-			for (const auto &button : data.vbuttons().v) {
-				using Type = Button::Type;
-				button.match([&](const MTPDkeyboardButton &data) {
-					row.emplace_back(Type::Default, qs(data.vtext()));
-				}, [&](const MTPDkeyboardButtonCallback &data) {
-					row.emplace_back(
-						Type::Callback,
-						qs(data.vtext()),
-						qba(data.vdata()));
-				}, [&](const MTPDkeyboardButtonRequestGeoLocation &data) {
-					row.emplace_back(Type::RequestLocation, qs(data.vtext()));
-				}, [&](const MTPDkeyboardButtonRequestPhone &data) {
-					row.emplace_back(Type::RequestPhone, qs(data.vtext()));
-				}, [&](const MTPDkeyboardButtonUrl &data) {
-					row.emplace_back(
-						Type::Url,
-						qs(data.vtext()),
-						qba(data.vurl()));
-				}, [&](const MTPDkeyboardButtonSwitchInline &data) {
-					const auto type = data.is_same_peer()
-						? Type::SwitchInlineSame
-						: Type::SwitchInline;
-					row.emplace_back(type, qs(data.vtext()), qba(data.vquery()));
-					if (type == Type::SwitchInline) {
-						// Optimization flag.
-						// Fast check on all new messages if there is a switch button to auto-click it.
-						flags |= MTPDreplyKeyboardMarkup_ClientFlag::f_has_switch_inline_button;
-					}
-				}, [&](const MTPDkeyboardButtonGame &data) {
-					row.emplace_back(Type::Game, qs(data.vtext()));
-				}, [&](const MTPDkeyboardButtonBuy &data) {
-					row.emplace_back(Type::Buy, qs(data.vtext()));
-				}, [&](const MTPDkeyboardButtonUrlAuth &data) {
-					row.emplace_back(
-						Type::Auth,
-						qs(data.vtext()),
-						qba(data.vurl()),
-						qs(data.vfwd_text().value_or_empty()),
-						data.vbutton_id().v);
-				}, [&](const MTPDinputKeyboardButtonUrlAuth &data) {
-					LOG(("API Error: inputKeyboardButtonUrlAuth received."));
-					// Should not get those for the users.
-				}, [&](const MTPDkeyboardButtonRequestPoll &data) {
-					const auto quiz = [&] {
-						if (!data.vquiz()) {
-							return QByteArray();
-						}
-						return data.vquiz()->match([&](const MTPDboolTrue&) {
-							return QByteArray(1, 1);
-						}, [&](const MTPDboolFalse&) {
-							return QByteArray(1, 0);
-						});
-					}();
-					row.emplace_back(
-						Type::RequestPoll,
-						qs(data.vtext()),
-						quiz);
-				});
-			}
-			if (!row.empty()) {
-				rows.push_back(std::move(row));
-			}
-		});
-	}
-}
-
-void HistoryMessageReplyMarkup::create(const MTPReplyMarkup &markup) {
-	flags = 0;
-	rows.clear();
+void HistoryMessageReplyMarkup::updateData(
+		HistoryMessageMarkupData &&markup) {
+	data = std::move(markup);
 	inlineKeyboard = nullptr;
-
-	switch (markup.type()) {
-	case mtpc_replyKeyboardMarkup: {
-		auto &d = markup.c_replyKeyboardMarkup();
-		flags = d.vflags().v;
-
-		createFromButtonRows(d.vrows().v);
-	} break;
-
-	case mtpc_replyInlineMarkup: {
-		auto &d = markup.c_replyInlineMarkup();
-		flags = MTPDreplyKeyboardMarkup::Flags(0) | MTPDreplyKeyboardMarkup_ClientFlag::f_inline;
-
-		createFromButtonRows(d.vrows().v);
-	} break;
-
-	case mtpc_replyKeyboardHide: {
-		auto &d = markup.c_replyKeyboardHide();
-		flags = mtpCastFlags(d.vflags()) | MTPDreplyKeyboardMarkup_ClientFlag::f_zero;
-	} break;
-
-	case mtpc_replyKeyboardForceReply: {
-		auto &d = markup.c_replyKeyboardForceReply();
-		flags = mtpCastFlags(d.vflags()) | MTPDreplyKeyboardMarkup_ClientFlag::f_force_reply;
-	} break;
-	}
-}
-
-void HistoryMessageReplyMarkup::create(
-		const HistoryMessageReplyMarkup &markup) {
-	flags = markup.flags;
-	inlineKeyboard = nullptr;
-
-	rows.clear();
-	rows.reserve(markup.rows.size());
-	using Type = HistoryMessageMarkupButton::Type;
-	for (const auto &existing : markup.rows) {
-		auto row = std::vector<Button>();
-		row.reserve(existing.size());
-		for (const auto &button : existing) {
-			const auto newType = (button.type != Type::SwitchInlineSame)
-				? button.type
-				: Type::SwitchInline;
-			const auto text = button.forwardText.isEmpty()
-				? button.text
-				: button.forwardText;
-			row.emplace_back(
-				newType,
-				text,
-				button.data,
-				QString(),
-				button.buttonId);
-		}
-		if (!row.empty()) {
-			rows.push_back(std::move(row));
-		}
-	}
 }
 
 HistoryMessageLogEntryOriginal::HistoryMessageLogEntryOriginal() = default;

@@ -27,14 +27,15 @@ public:
 	GroupedMedia(
 		not_null<Element*> parent,
 		const std::vector<not_null<HistoryItem*>> &items);
+	~GroupedMedia();
 
 	void refreshParentId(not_null<HistoryItem*> realParent) override;
 
-	void draw(
+	void drawHighlight(
 		Painter &p,
-		const QRect &clip,
-		TextSelection selection,
-		crl::time ms) const override;
+		const PaintContext &context,
+		int top) const override;
+	void draw(Painter &p, const PaintContext &context) const override;
 	PointState pointState(QPoint point) const override;
 	TextState textState(
 		QPoint point,
@@ -47,17 +48,16 @@ public:
 	[[nodiscard]] TextSelection adjustSelection(
 		TextSelection selection,
 		TextSelectType type) const override;
-	uint16 fullSelectionLength() const override {
-		return _caption.length();
-	}
-	bool hasTextForCopy() const override {
-		return !_caption.isEmpty();
-	}
+	uint16 fullSelectionLength() const override;
+	bool hasTextForCopy() const override;
 
 	PhotoData *getPhoto() const override;
 	DocumentData *getDocument() const override;
 
 	TextForMimeData selectedText(TextSelection selection) const override;
+
+	std::vector<Ui::BubbleSelectionInterval> getBubbleSelectionIntervals(
+		TextSelection selection) const override;
 
 	void clickHandlerActiveChanged(
 		const ClickHandlerPtr &p,
@@ -75,24 +75,36 @@ public:
 	HistoryMessageEdited *displayedEditBadge() const override;
 
 	bool skipBubbleTail() const override {
-		return isBubbleBottom() && _caption.isEmpty();
+		return (_mode == Mode::Grid)
+			&& isRoundedInBubbleBottom()
+			&& _caption.isEmpty();
 	}
 	void updateNeedBubbleState() override;
 	bool needsBubble() const override;
 	bool customInfoLayout() const override {
-		return _caption.isEmpty();
+		return _caption.isEmpty() && (_mode != Mode::Column);
 	}
+	QPoint resolveCustomInfoRightBottom() const override;
+
 	bool allowsFastShare() const override {
+		return true;
+	}
+	bool customHighlight() const override {
 		return true;
 	}
 
 	void stopAnimation() override;
-	int checkAnimationCount() override;
+	void checkAnimation() override;
+	bool hasHeavyPart() const override;
 	void unloadHeavyPart() override;
 
 	void parentTextUpdated() override;
 
 private:
+	enum class Mode : char {
+		Grid,
+		Column,
+	};
 	struct Part {
 		Part(
 			not_null<Element*> parent,
@@ -108,6 +120,8 @@ private:
 		mutable QPixmap cache;
 
 	};
+
+	[[nodiscard]] static Mode DetectMode(not_null<Data::Media*> media);
 
 	template <typename DataMediaRange>
 	bool applyGroup(const DataMediaRange &medias);
@@ -125,10 +139,15 @@ private:
 		QPoint point,
 		StateRequest request) const;
 
+	void refreshCaption();
+
 	[[nodiscard]] RectParts cornersFromSides(RectParts sides) const;
+	[[nodiscard]] QMargins groupedPadding() const;
 
 	Ui::Text::String _caption;
+	HistoryItem *_captionItem = nullptr;
 	std::vector<Part> _parts;
+	Mode _mode = Mode::Grid;
 	bool _needBubble = false;
 
 };

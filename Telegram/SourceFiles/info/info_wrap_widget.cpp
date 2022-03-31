@@ -20,21 +20,26 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/dropdown_menu.h"
 #include "ui/wrap/fade_wrap.h"
 #include "ui/search_field_controller.h"
+#include "core/application.h"
 #include "calls/calls_instance.h"
 #include "core/shortcuts.h"
 #include "window/window_session_controller.h"
 #include "window/window_slide_animation.h"
 #include "window/window_peer_menu.h"
 #include "boxes/peer_list_box.h"
-#include "boxes/confirm_box.h"
+#include "ui/boxes/confirm_box.h"
 #include "main/main_session.h"
+#include "mtproto/mtproto_config.h"
+#include "data/data_download_manager.h"
 #include "data/data_session.h"
+#include "data/data_changes.h"
 #include "data/data_user.h"
 #include "mainwidget.h"
 #include "lang/lang_keys.h"
-#include "facades.h"
 #include "styles/style_info.h"
 #include "styles/style_profile.h"
+#include "styles/style_menu_icons.h"
+#include "styles/style_layers.h"
 
 namespace Info {
 namespace {
@@ -48,8 +53,8 @@ const style::InfoTopBar &TopBarStyle(Wrap wrap) {
 } // namespace
 
 struct WrapWidget::StackItem {
-	std::unique_ptr<ContentMemento> section;
-//	std::unique_ptr<ContentMemento> anotherTab;
+	std::shared_ptr<ContentMemento> section;
+//	std::shared_ptr<ContentMemento> anotherTab;
 };
 
 WrapWidget::WrapWidget(
@@ -57,7 +62,7 @@ WrapWidget::WrapWidget(
 	not_null<Window::SessionController*> window,
 	Wrap wrap,
 	not_null<Memento*> memento)
-: SectionWidget(parent, window)
+: SectionWidget(parent, window, rpl::producer<PeerData*>())
 , _wrap(wrap)
 , _controller(createController(window, memento->content()))
 , _topShadow(this) {
@@ -94,7 +99,7 @@ void WrapWidget::setupShortcuts() {
 }
 
 void WrapWidget::restoreHistoryStack(
-		std::vector<std::unique_ptr<ContentMemento>> stack) {
+		std::vector<std::shared_ptr<ContentMemento>> stack) {
 	Expects(!stack.empty());
 	Expects(!hasStackHistory());
 
@@ -132,15 +137,13 @@ void WrapWidget::startInjectingActivePeerProfiles() {
 void WrapWidget::injectActiveProfile(Dialogs::Key key) {
 	if (const auto peer = key.peer()) {
 		injectActivePeerProfile(peer);
-	//} else if (const auto feed = key.feed()) { // #feed
-	//	injectActiveFeedProfile(feed);
 	}
 }
 
 void WrapWidget::injectActivePeerProfile(not_null<PeerData*> peer) {
-	const auto firstPeerId = hasStackHistory()
-		? _historyStack.front().section->peerId()
-		: _controller->peerId();
+	const auto firstPeer = hasStackHistory()
+		? _historyStack.front().section->peer()
+		: _controller->peer();
 	const auto firstSectionType = hasStackHistory()
 		? _historyStack.front().section->section().type()
 		: _controller->section().type();
@@ -152,41 +155,25 @@ void WrapWidget::injectActivePeerProfile(not_null<PeerData*> peer) {
 			? _historyStack.front().section->section().mediaType()
 			: _controller->section().mediaType();
 	}();
-	const auto expectedType = peer->isSelf()
+	const auto expectedType = peer->sharedMediaInfo()
 		? Section::Type::Media
 		: Section::Type::Profile;
-	const auto expectedMediaType = peer->isSelf()
+	const auto expectedMediaType = peer->sharedMediaInfo()
 		? Section::MediaType::Photo
 		: Section::MediaType::kCount;
 	if (firstSectionType != expectedType
 		|| firstSectionMediaType != expectedMediaType
-		|| firstPeerId != peer->id) {
-		auto section = peer->isSelf()
+		|| firstPeer != peer) {
+		auto section = peer->sharedMediaInfo()
 			? Section(Section::MediaType::Photo)
 			: Section(Section::Type::Profile);
 		injectActiveProfileMemento(std::move(
-			Memento(peer->id, section).takeStack().front()));
+			Memento(peer, section).takeStack().front()));
 	}
 }
-// // #feed
-//void WrapWidget::injectActiveFeedProfile(not_null<Data::Feed*> feed) {
-//	const auto firstFeed = hasStackHistory()
-//		? _historyStack.front().section->feed()
-//		: _controller->feed();
-//	const auto firstSectionType = hasStackHistory()
-//		? _historyStack.front().section->section().type()
-//		: _controller->section().type();
-//	const auto expectedType = Section::Type::Profile;
-//	if (firstSectionType != expectedType
-//		|| firstFeed != feed) {
-//		auto section = Section(Section::Type::Profile);
-//		injectActiveProfileMemento(std::move(
-//			Memento(feed, section).takeStack().front()));
-//	}
-//}
 
 void WrapWidget::injectActiveProfileMemento(
-		std::unique_ptr<ContentMemento> memento) {
+		std::shared_ptr<ContentMemento> memento) {
 	auto injected = StackItem();
 	injected.section = std::move(memento);
 	_historyStack.insert(
@@ -214,10 +201,10 @@ Key WrapWidget::key() const {
 
 Dialogs::RowDescriptor WrapWidget::activeChat() const {
 	if (const auto peer = key().peer()) {
-		return Dialogs::RowDescriptor(peer->owner().history(peer), FullMsgId());
-	//} else if (const auto feed = key().feed()) { // #feed
-	//	return Dialogs::RowDescriptor(feed, FullMsgId());
-	} else if (key().settingsSelf() || key().poll()) {
+		return Dialogs::RowDescriptor(
+			peer->owner().history(peer),
+			FullMsgId());
+	} else if (key().settingsSelf() || key().isDownloads() || key().poll()) {
 		return Dialogs::RowDescriptor();
 	}
 	Unexpected("Owner in WrapWidget::activeChat().");
@@ -359,9 +346,9 @@ void WrapWidget::createTopBar() {
 		_controller.get(),
 		TopBarStyle(wrapValue),
 		std::move(selectedItems));
-	_topBar->cancelSelectionRequests(
-	) | rpl::start_with_next([this] {
-		_content->cancelSelection();
+	_topBar->selectionActionRequests(
+	) | rpl::start_with_next([=](SelectionAction action) {
+		_content->selectionAction(action);
 	}, _topBar->lifetime());
 
 	_topBar->setTitle(TitleValue(
@@ -407,14 +394,33 @@ void WrapWidget::createTopBar() {
 		&& (wrapValue != Wrap::Side || hasStackHistory())) {
 		addTopBarMenuButton();
 		addProfileCallsButton();
-//		addProfileNotificationsButton();
 	} else if (section.type() == Section::Type::Settings
 		&& (section.settingsType() == Section::SettingsType::Main
 			|| section.settingsType() == Section::SettingsType::Chat)) {
 		addTopBarMenuButton();
-	} else if (section.type() == Section::Type::Settings
-		&& section.settingsType() == Section::SettingsType::Information) {
-		addContentSaveButton();
+	} else if (section.type() == Section::Type::Downloads) {
+		auto &manager = Core::App().downloadManager();
+		rpl::merge(
+			rpl::single(false),
+			manager.loadingListChanges() | rpl::map_to(false),
+			manager.loadedAdded() | rpl::map_to(true),
+			manager.loadedRemoved() | rpl::map_to(false)
+		) | rpl::start_with_next([=, &manager](bool definitelyHas) {
+			const auto has = [&] {
+				for ([[maybe_unused]] const auto id : manager.loadingList()) {
+					return true;
+				}
+				for ([[maybe_unused]] const auto id : manager.loadedList()) {
+					return true;
+				}
+				return false;
+			};
+			if (!definitelyHas && !has()) {
+				_topBarMenuToggle = nullptr;
+			} else if (!_topBarMenuToggle) {
+				addTopBarMenuButton();
+			}
+		}, _topBar->lifetime());
 	}
 
 	_topBar->lower();
@@ -424,18 +430,8 @@ void WrapWidget::createTopBar() {
 }
 
 void WrapWidget::checkBeforeClose(Fn<void()> close) {
-	const auto confirmed = [=] {
-		Ui::hideLayer();
-		close();
-	};
-	if (_controller->canSaveChangesNow()) {
-		Ui::show(Box<ConfirmBox>(
-			tr::lng_settings_close_sure(tr::now),
-			tr::lng_close(tr::now),
-			confirmed));
-	} else {
-		confirmed();
-	}
+	Ui::hideLayer();
+	close();
 }
 
 void WrapWidget::addTopBarMenuButton() {
@@ -452,25 +448,8 @@ void WrapWidget::addTopBarMenuButton() {
 	});
 }
 
-void WrapWidget::addContentSaveButton() {
-	Expects(_topBar != nullptr);
-
-	_topBar->addButtonWithVisibility(
-		base::make_unique_q<Ui::IconButton>(
-			_topBar,
-			(wrap() == Wrap::Layer
-				? st::infoLayerTopBarSave
-				: st::infoTopBarSave)),
-		_controller->canSaveChanges()
-	)->addClickHandler([=] {
-		_content->saveChanges(crl::guard(_content.data(), [=] {
-			_controller->showBackFromStack();
-		}));
-	});
-}
-
 bool WrapWidget::closeByOutsideClick() const {
-	return !_controller->canSaveChangesNow();
+	return true;
 }
 
 void WrapWidget::addProfileCallsButton() {
@@ -478,13 +457,13 @@ void WrapWidget::addProfileCallsButton() {
 
 	const auto peer = key().peer();
 	const auto user = peer ? peer->asUser() : nullptr;
-	if (!user || user->isSelf() || !Global::PhoneCallsEnabled()) {
+	if (!user || user->sharedMediaInfo()) {
 		return;
 	}
 
-	Notify::PeerUpdateValue(
+	user->session().changes().peerFlagsValue(
 		user,
-		Notify::PeerUpdate::Flag::UserHasCalls
+		Data::PeerUpdate::Flag::HasCalls
 	) | rpl::filter([=] {
 		return user->hasCalls();
 	}) | rpl::take(
@@ -497,7 +476,7 @@ void WrapWidget::addProfileCallsButton() {
 					? st::infoLayerTopBarCall
 					: st::infoTopBarCall))
 		)->addClickHandler([=] {
-			user->session().calls().startOutgoingCall(user);
+			Core::App().calls().startOutgoingCall(user, false);
 		});
 	}, _topBar->lifetime());
 
@@ -506,46 +485,15 @@ void WrapWidget::addProfileCallsButton() {
 	}
 }
 
-void WrapWidget::addProfileNotificationsButton() {
-	Expects(_topBar != nullptr);
-
-	const auto peer = key().peer();
-	if (!peer) {
-		return;
-	}
-	auto notifications = _topBar->addButton(
-		base::make_unique_q<Ui::IconButton>(
-			_topBar,
-			(wrap() == Wrap::Layer
-				? st::infoLayerTopBarNotifications
-				: st::infoTopBarNotifications)));
-	notifications->addClickHandler([peer] {
-		const auto muteForSeconds = Auth().data().notifyIsMuted(peer)
-			? 0
-			: Data::NotifySettings::kDefaultMutePeriod;
-		Auth().data().updateNotifySettings(peer, muteForSeconds);
-	});
-	Profile::NotificationsEnabledValue(
-		peer
-	) | rpl::start_with_next([notifications](bool enabled) {
-		const auto iconOverride = enabled
-			? &st::infoNotificationsActive
-			: nullptr;
-		const auto rippleOverride = enabled
-			? &st::lightButtonBgOver
-			: nullptr;
-		notifications->setIconOverride(iconOverride, iconOverride);
-		notifications->setRippleColorOverride(rippleOverride);
-	}, notifications->lifetime());
-}
-
 void WrapWidget::showTopBarMenu() {
 	if (_topBarMenu) {
 		_topBarMenu->hideAnimated(
 			Ui::InnerDropdown::HideOption::IgnoreShow);
 		return;
 	}
-	_topBarMenu = base::make_unique_q<Ui::DropdownMenu>(this);
+	_topBarMenu = base::make_unique_q<Ui::DropdownMenu>(
+		this,
+		st::dropdownMenuWithIcons);
 
 	_topBarMenu->setHiddenCallback([this] {
 		InvokeQueued(this, [this] { _topBarMenu = nullptr; });
@@ -567,22 +515,23 @@ void WrapWidget::showTopBarMenu() {
 
 	const auto addAction = [=](
 			const QString &text,
-			Fn<void()> callback) {
-		return _topBarMenu->addAction(text, std::move(callback));
+			Fn<void()> callback,
+			const style::icon *icon) {
+		return _topBarMenu->addAction(text, std::move(callback), icon);
 	};
-	if (const auto peer = key().peer()) {
-		Window::FillPeerMenu(
+	if (key().isDownloads()) {
+		addAction(
+			tr::lng_context_delete_all_files(tr::now),
+			[=] { deleteAllDownloads(); },
+			&st::menuIconDelete);
+	} else if (const auto peer = key().peer()) {
+		Window::FillDialogsEntryMenu(
 			_controller->parentController(),
-			peer,
-			FilterId(),
-			addAction,
-			Window::PeerMenuSource::Profile);
-	//} else if (const auto feed = key().feed()) { // #feed
-	//	Window::FillFeedMenu(
-	//		_controller->parentController(),
-	//		feed,
-	//		addAction,
-	//		Window::PeerMenuSource::Profile);
+			Dialogs::EntryState{
+				.key = peer->owner().history(peer),
+				.section = Dialogs::EntryState::Section::Profile,
+			},
+			addAction);
 	} else if (const auto self = key().settingsSelf()) {
 		const auto showOther = [=](::Settings::Type type) {
 			const auto controller = _controller.get();
@@ -603,6 +552,24 @@ void WrapWidget::showTopBarMenu() {
 		: st::infoTopBarMenuPosition;
 	_topBarMenu->moveToRight(position.x(), position.y());
 	_topBarMenu->showAnimated(Ui::PanelAnimation::Origin::TopRight);
+}
+
+void WrapWidget::deleteAllDownloads() {
+	auto &manager = Core::App().downloadManager();
+	const auto phrase = tr::lng_downloads_delete_sure_all(tr::now);
+	const auto added = manager.loadedHasNonCloudFile()
+		? QString()
+		: tr::lng_downloads_delete_in_cloud(tr::now);
+	const auto deleteSure = [=, &manager](Fn<void()> close) {
+		Ui::PostponeCall(this, close);
+		manager.deleteAll();
+	};
+	_controller->parentController()->show(Ui::MakeConfirmBox({
+		.text = phrase + (added.isEmpty() ? QString() : "\n\n" + added),
+		.confirmed = deleteSure,
+		.confirmText = tr::lng_box_delete(tr::now),
+		.confirmStyle = &st::attentionBoxButton,
+	}));
 }
 
 bool WrapWidget::requireTopBarSearch() const {
@@ -707,13 +674,13 @@ rpl::producer<SelectedItems> WrapWidget::selectedListValue() const {
 
 // Was done for top level tabs support.
 //
-//std::unique_ptr<ContentMemento> WrapWidget::createTabMemento(
+//std::shared_ptr<ContentMemento> WrapWidget::createTabMemento(
 //		Tab tab) {
 //	switch (tab) {
-//	case Tab::Profile: return std::make_unique<Profile::Memento>(
+//	case Tab::Profile: return std::make_shared<Profile::Memento>(
 //		_controller->peerId(),
 //		_controller->migratedPeerId());
-//	case Tab::Media: return std::make_unique<Media::Memento>(
+//	case Tab::Media: return std::make_shared<Media::Memento>(
 //		_controller->peerId(),
 //		_controller->migratedPeerId(),
 //		Media::Type::Photo);
@@ -879,8 +846,8 @@ void WrapWidget::highlightTopBar() {
 	}
 }
 
-std::unique_ptr<Window::SectionMemento> WrapWidget::createMemento() {
-	auto stack = std::vector<std::unique_ptr<ContentMemento>>();
+std::shared_ptr<Window::SectionMemento> WrapWidget::createMemento() {
+	auto stack = std::vector<std::shared_ptr<ContentMemento>>();
 	stack.reserve(_historyStack.size() + 1);
 	for (auto &stackItem : base::take(_historyStack)) {
 		stack.push_back(std::move(stackItem.section));
@@ -890,7 +857,7 @@ std::unique_ptr<Window::SectionMemento> WrapWidget::createMemento() {
 	// We're not in valid state anymore and supposed to be destroyed.
 	_controller = nullptr;
 
-	return std::make_unique<Memento>(std::move(stack));
+	return std::make_shared<Memento>(std::move(stack));
 }
 
 rpl::producer<int> WrapWidget::desiredHeightValue() const {
@@ -908,9 +875,9 @@ bool WrapWidget::returnToFirstStackFrame(
 	if (!hasStackHistory()) {
 		return false;
 	}
-	auto firstPeerId = _historyStack.front().section->peerId();
+	auto firstPeer = _historyStack.front().section->peer();
 	auto firstSection = _historyStack.front().section->section();
-	if (firstPeerId == memento->peerId()
+	if (firstPeer == memento->peer()
 		&& firstSection.type() == memento->section().type()
 		&& firstSection.type() == Section::Type::Profile) {
 		_historyStack.resize(1);
@@ -938,7 +905,9 @@ void WrapWidget::showNewContent(
 			&& newContent->hasTopBarShadow();
 		animationParams.oldContentCache = grabForShowAnimation(
 			animationParams);
-		animationParams.withFade = (wrap() == Wrap::Layer);
+		const auto layer = (wrap() == Wrap::Layer);
+		animationParams.withFade = layer;
+		animationParams.topSkip = layer ? st::boxRadius : 0;
 	}
 	if (saveToStack) {
 		auto item = StackItem();
@@ -951,13 +920,19 @@ void WrapWidget::showNewContent(
 		_historyStack.clear();
 	}
 
-	_controller = std::move(newController);
-	if (newContent) {
-		setupTop();
-		showContent(std::move(newContent));
-	} else {
-		showNewContent(memento);
+	{
+		// Let old controller outlive old content widget.
+		const auto oldController = std::exchange(
+			_controller,
+			std::move(newController));
+		if (newContent) {
+			setupTop();
+			showContent(std::move(newContent));
+		} else {
+			showNewContent(memento);
+		}
 	}
+
 	if (animationParams) {
 		if (Ui::InFocusChain(this)) {
 			setFocus();
@@ -1023,12 +998,12 @@ void WrapWidget::updateContentGeometry() {
 	}
 }
 
-bool WrapWidget::wheelEventFromFloatPlayer(QEvent *e) {
-	return _content->wheelEventFromFloatPlayer(e);
+bool WrapWidget::floatPlayerHandleWheelEvent(QEvent *e) {
+	return _content->floatPlayerHandleWheelEvent(e);
 }
 
-QRect WrapWidget::rectForFloatPlayer() const {
-	return _content->rectForFloatPlayer();
+QRect WrapWidget::floatPlayerAvailableRect() {
+	return _content->floatPlayerAvailableRect();
 }
 
 object_ptr<Ui::RpWidget> WrapWidget::createTopBarSurrogate(

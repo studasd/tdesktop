@@ -18,14 +18,18 @@ extern "C" {
 #include <libswresample/swresample.h>
 } // extern "C"
 
-#include <AL/al.h>
+#include <al.h>
+
+namespace Core {
+class FileLocation;
+} // namespace Core
 
 namespace Media {
 
 class AbstractFFMpegLoader : public AudioPlayerLoader {
 public:
 	AbstractFFMpegLoader(
-		const FileLocation &file,
+		const Core::FileLocation &file,
 		const QByteArray &data,
 		bytes::vector &&buffer)
 	: AudioPlayerLoader(file, data, std::move(buffer)) {
@@ -56,7 +60,11 @@ protected:
 	uchar *ioBuffer = nullptr;
 	AVIOContext *ioContext = nullptr;
 	AVFormatContext *fmtContext = nullptr;
+#if LIBAVFORMAT_VERSION_MAJOR >= 59
+	const AVCodec *codec = nullptr;
+#else
 	AVCodec *codec = nullptr;
+#endif
 	int32 streamId = 0;
 
 	bool _opened = false;
@@ -74,7 +82,7 @@ private:
 class AbstractAudioFFMpegLoader : public AbstractFFMpegLoader {
 public:
 	AbstractAudioFFMpegLoader(
-		const FileLocation &file,
+		const Core::FileLocation &file,
 		const QByteArray &data,
 		bytes::vector &&buffer);
 
@@ -149,7 +157,7 @@ private:
 class FFMpegLoader : public AbstractAudioFFMpegLoader {
 public:
 	FFMpegLoader(
-		const FileLocation &file,
+		const Core::FileLocation &file,
 		const QByteArray &data,
 		bytes::vector &&buffer);
 

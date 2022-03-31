@@ -20,6 +20,10 @@ class AbstractButton;
 class SettingsButton;
 } // namespace Ui
 
+namespace Window {
+class Show;
+} // namespace Window
+
 namespace Info {
 
 class Controller;
@@ -63,7 +67,6 @@ private:
 	void peerListSetAdditionalTitle(rpl::producer<QString> title) override;
 	bool peerListIsRowChecked(not_null<PeerListRow*> row) override;
 	int peerListSelectedRowsCount() override;
-	std::vector<not_null<PeerData*>> peerListCollectSelectedRows() override;
 	void peerListScrollToTop() override;
 	void peerListAddSelectedPeerInBunch(
 		not_null<PeerData*> peer) override;
@@ -72,6 +75,11 @@ private:
 	void peerListFinishSelectedRowsBunch() override;
 	void peerListSetDescription(
 		object_ptr<Ui::FlatLabel> description) override;
+	void peerListShowBox(
+		object_ptr<Ui::BoxContent> content,
+		Ui::LayerOptions options = Ui::LayerOption::KeepOther) override;
+	void peerListHideLayer() override;
+	not_null<QWidget*> peerListToastParent() override;
 
 	//void peerListAppendRow(
 	//	std::unique_ptr<PeerListRow> row) override {
@@ -102,6 +110,8 @@ private:
 	//void searchAnimationCallback();
 	void updateHeaderControlsGeometry(int newWidth);
 	//void updateSearchEnabledByContent();
+
+	std::unique_ptr<Window::Show> _show;
 
 	//Wrap _wrap;
 	not_null<Controller*> _controller;

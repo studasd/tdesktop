@@ -9,9 +9,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "data/data_user.h"
 #include "data/data_session.h"
+#include "boxes/peers/edit_peer_common.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/input_fields.h"
+#include "ui/text/format_values.h" // Ui::FormatPhone
 #include "ui/text/text_utilities.h"
 #include "info/profile/info_profile_cover.h"
 #include "lang/lang_keys.h"
@@ -19,19 +21,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/toast/toast.h"
 #include "main/main_session.h"
 #include "apiwrap.h"
-#include "app.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
 #include "styles/style_info.h"
 
 namespace {
 
-constexpr auto kMaxUserFirstLastName = 64; // See also add_contact_box.
-
 QString UserPhone(not_null<UserData*> user) {
 	const auto phone = user->phone();
 	return phone.isEmpty()
-		? user->owner().findContactPhone(user->bareId())
+		? user->owner().findContactPhone(peerToUser(user->id))
 		: phone;
 }
 
@@ -60,22 +59,19 @@ void SendRequest(
 			user->username);
 		user->session().api().applyUpdates(result);
 		if (const auto settings = user->settings()) {
-			using Flag = MTPDpeerSettings::Flag;
-			const auto flags = Flag::f_add_contact
-				| Flag::f_block_contact
-				| Flag::f_report_spam;
+			const auto flags = PeerSetting::AddContact
+				| PeerSetting::BlockContact
+				| PeerSetting::ReportSpam;
 			user->setSettings(*settings & ~flags);
 		}
 		if (box) {
+			if (!wasContact) {
+				Ui::Toast::Show(
+					Ui::BoxShow(box.data()).toastParent(),
+					tr::lng_new_contact_add_done(tr::now, lt_user, first));
+			}
 			box->closeBox();
 		}
-		if (!wasContact) {
-			Ui::Toast::Show(tr::lng_new_contact_add_done(
-				tr::now,
-				lt_user,
-				first));
-		}
-	}).fail([=](const RPCError &error) {
 	}).send();
 }
 
@@ -83,7 +79,7 @@ class Controller {
 public:
 	Controller(
 		not_null<Ui::GenericBox*> box,
-		not_null<Window::Controller*> window,
+		not_null<Window::SessionController*> window,
 		not_null<UserData*> user);
 
 	void prepare();
@@ -100,7 +96,7 @@ private:
 		bool inverted);
 
 	not_null<Ui::GenericBox*> _box;
-	not_null<Window::Controller*> _window;
+	not_null<Window::SessionController*> _window;
 	not_null<UserData*> _user;
 	Ui::Checkbox *_sharePhone = nullptr;
 	QString _phone;
@@ -111,7 +107,7 @@ private:
 
 Controller::Controller(
 	not_null<Ui::GenericBox*> box,
-	not_null<Window::Controller*> window,
+	not_null<Window::SessionController*> window,
 	not_null<UserData*> user)
 : _box(box)
 , _window(window)
@@ -143,10 +139,10 @@ void Controller::setupCover() {
 		object_ptr<Info::Profile::Cover>(
 			_box,
 			_user,
-			_window->sessionController(),
+			_window,
 			(_phone.isEmpty()
 				? tr::lng_contact_mobile_hidden()
-				: rpl::single(App::formatPhone(_phone)))),
+				: rpl::single(Ui::FormatPhone(_phone)))),
 		style::margins())->setAttribute(Qt::WA_TransparentForMouseEvents);
 }
 
@@ -223,8 +219,8 @@ void Controller::initNameFields(
 	};
 	QObject::connect(first, &Ui::InputField::submitted, submit);
 	QObject::connect(last, &Ui::InputField::submitted, submit);
-	first->setMaxLength(kMaxUserFirstLastName);
-	first->setMaxLength(kMaxUserFirstLastName);
+	first->setMaxLength(Ui::EditPeer::kMaxUserFirstLastName);
+	first->setMaxLength(Ui::EditPeer::kMaxUserFirstLastName);
 }
 
 void Controller::setupWarning() {
@@ -241,9 +237,8 @@ void Controller::setupWarning() {
 
 void Controller::setupSharePhoneNumber() {
 	const auto settings = _user->settings();
-	using Setting = MTPDpeerSettings::Flag;
 	if (!settings
-		|| !((*settings) & Setting::f_need_contacts_exception)) {
+		|| !((*settings) & PeerSetting::NeedContactsException)) {
 		return;
 	}
 	_sharePhone = _box->addRow(
@@ -266,7 +261,7 @@ void Controller::setupSharePhoneNumber() {
 
 void EditContactBox(
 		not_null<Ui::GenericBox*> box,
-		not_null<Window::Controller*> window,
+		not_null<Window::SessionController*> window,
 		not_null<UserData*> user) {
 	box->lifetime().make_state<Controller>(box, window, user)->prepare();
 }

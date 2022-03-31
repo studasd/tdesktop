@@ -8,19 +8,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "boxes/abstract_box.h"
-#include "data/data_peer.h"
+#include "data/data_chat_participant_status.h"
 
 namespace Ui {
 class RoundButton;
 class VerticalLayout;
 } // namespace Ui
 
+namespace Window {
+class SessionController;
+class SessionNavigation;
+} // namespace Window
+
 class EditPeerPermissionsBox : public Ui::BoxContent {
 public:
-	EditPeerPermissionsBox(QWidget*, not_null<PeerData*> peer);
+	EditPeerPermissionsBox(
+		QWidget*,
+		not_null<Window::SessionNavigation*> navigation,
+		not_null<PeerData*> peer);
 
 	struct Result {
-		MTPDchatBannedRights::Flags rights;
+		ChatRestrictions rights;
 		int slowmodeSeconds = 0;
 	};
 
@@ -32,13 +40,19 @@ protected:
 private:
 	Fn<int()> addSlowmodeSlider(not_null<Ui::VerticalLayout*> container);
 	void addSlowmodeLabels(not_null<Ui::VerticalLayout*> container);
+	void addSuggestGigagroup(not_null<Ui::VerticalLayout*> container);
 	void addBannedButtons(not_null<Ui::VerticalLayout*> container);
 
-	not_null<PeerData*> _peer;
+	const not_null<Window::SessionNavigation*> _navigation;
+	const not_null<PeerData*> _peer;
 	Ui::RoundButton *_save = nullptr;
 	Fn<Result()> _value;
 
 };
+
+[[nodiscard]] Fn<void()> AboutGigagroupCallback(
+	not_null<ChannelData*> channel,
+	not_null<Window::SessionController*> controller);
 
 template <typename Flags>
 struct EditFlagsControl {
@@ -47,20 +61,20 @@ struct EditFlagsControl {
 	rpl::producer<Flags> changes;
 };
 
-EditFlagsControl<MTPDchatBannedRights::Flags> CreateEditRestrictions(
+EditFlagsControl<ChatRestrictions> CreateEditRestrictions(
 	QWidget *parent,
 	rpl::producer<QString> header,
-	MTPDchatBannedRights::Flags restrictions,
-	std::map<MTPDchatBannedRights::Flags, QString> disabledMessages);
+	ChatRestrictions restrictions,
+	std::map<ChatRestrictions, QString> disabledMessages);
 
-EditFlagsControl<MTPDchatAdminRights::Flags> CreateEditAdminRights(
+EditFlagsControl<ChatAdminRights> CreateEditAdminRights(
 	QWidget *parent,
 	rpl::producer<QString> header,
-	MTPDchatAdminRights::Flags rights,
-	std::map<MTPDchatAdminRights::Flags, QString> disabledMessages,
+	ChatAdminRights rights,
+	std::map<ChatAdminRights, QString> disabledMessages,
 	bool isGroup,
 	bool anyoneCanAddMembers);
 
 ChatAdminRights DisabledByDefaultRestrictions(not_null<PeerData*> peer);
 ChatRestrictions FixDependentRestrictions(ChatRestrictions restrictions);
-ChatAdminRights FullAdminRights(bool isGroup);
+ChatAdminRights AdminRightsForOwnershipTransfer(bool isGroup);

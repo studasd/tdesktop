@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/history_view_element.h"
 
+#include "api/api_chat_invite.h"
 #include "history/view/history_view_service_message.h"
 #include "history/view/history_view_message.h"
 #include "history/history_item_components.h"
@@ -15,17 +16,29 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/media/history_view_media_grouped.h"
 #include "history/view/media/history_view_sticker.h"
 #include "history/view/media/history_view_large_emoji.h"
+#include "history/view/history_view_react_animation.h"
+#include "history/view/history_view_react_button.h"
+#include "history/view/history_view_cursor_state.h"
 #include "history/history.h"
+#include "base/unixtime.h"
+#include "core/application.h"
+#include "core/core_settings.h"
+#include "core/click_handler_types.h"
 #include "main/main_session.h"
+#include "main/main_domain.h"
 #include "chat_helpers/stickers_emoji_pack.h"
+#include "window/window_session_controller.h"
+#include "ui/effects/path_shift_gradient.h"
+#include "ui/chat/chat_style.h"
+#include "ui/toast/toast.h"
+#include "ui/toasts/common_toasts.h"
 #include "data/data_session.h"
 #include "data/data_groups.h"
 #include "data/data_media_types.h"
+#include "data/data_sponsored_messages.h"
+#include "data/data_message_reactions.h"
 #include "lang/lang_keys.h"
-#include "layout.h"
-#include "facades.h"
-#include "app.h"
-#include "styles/style_history.h"
+#include "styles/style_chat.h"
 
 namespace HistoryView {
 namespace {
@@ -33,36 +46,77 @@ namespace {
 // A new message from the same sender is attached to previous within 15 minutes.
 constexpr int kAttachMessageToPreviousSecondsDelta = 900;
 
-bool IsAttachedToPreviousInSavedMessages(
+Element *HoveredElement/* = nullptr*/;
+Element *PressedElement/* = nullptr*/;
+Element *HoveredLinkElement/* = nullptr*/;
+Element *PressedLinkElement/* = nullptr*/;
+Element *MousedElement/* = nullptr*/;
+
+[[nodiscard]] bool IsAttachedToPreviousInSavedMessages(
 		not_null<HistoryItem*> previous,
-		not_null<HistoryItem*> item) {
-	const auto forwarded = previous->Has<HistoryMessageForwarded>();
+		HistoryMessageForwarded *prevForwarded,
+		not_null<HistoryItem*> item,
+		HistoryMessageForwarded *forwarded) {
 	const auto sender = previous->senderOriginal();
-	if (forwarded != item->Has<HistoryMessageForwarded>()) {
+	if ((prevForwarded != nullptr) != (forwarded != nullptr)) {
 		return false;
 	} else if (sender != item->senderOriginal()) {
 		return false;
-	} else if (!forwarded || sender) {
+	} else if (!prevForwarded || sender) {
 		return true;
 	}
-	const auto previousInfo = previous->hiddenForwardedInfo();
-	const auto itemInfo = item->hiddenForwardedInfo();
+	const auto previousInfo = prevForwarded->hiddenSenderInfo.get();
+	const auto itemInfo = forwarded->hiddenSenderInfo.get();
 	Assert(previousInfo != nullptr);
 	Assert(itemInfo != nullptr);
 	return (*previousInfo == *itemInfo);
 }
 
+[[nodiscard]] Window::SessionController *ContextOrSessionWindow(
+		const ClickHandlerContext &context,
+		not_null<Main::Session*> session) {
+	if (const auto controller = context.sessionWindow.get()) {
+		if (&controller->session() == session) {
+			return controller;
+		}
+	}
+	return session->tryResolveWindow();
+}
+
 } // namespace
 
+std::unique_ptr<Ui::PathShiftGradient> MakePathShiftGradient(
+		not_null<const Ui::ChatStyle*> st,
+		Fn<void()> update) {
+	return std::make_unique<Ui::PathShiftGradient>(
+		st->msgServiceBg(),
+		st->msgServiceBgSelected(),
+		std::move(update),
+		st->paletteChanged());
+}
+
+SimpleElementDelegate::SimpleElementDelegate(
+	not_null<Window::SessionController*> controller,
+	Fn<void()> update)
+: _controller(controller)
+, _pathGradient(
+	MakePathShiftGradient(
+		controller->chatStyle(),
+		std::move(update))) {
+}
+
+SimpleElementDelegate::~SimpleElementDelegate() = default;
 
 std::unique_ptr<HistoryView::Element> SimpleElementDelegate::elementCreate(
-		not_null<HistoryMessage*> message) {
-	return std::make_unique<HistoryView::Message>(this, message);
+		not_null<HistoryMessage*> message,
+		Element *replacing) {
+	return std::make_unique<HistoryView::Message>(this, message, replacing);
 }
 
 std::unique_ptr<HistoryView::Element> SimpleElementDelegate::elementCreate(
-		not_null<HistoryService*> message) {
-	return std::make_unique<HistoryView::Service>(this, message);
+		not_null<HistoryService*> message,
+		Element *replacing) {
+	return std::make_unique<HistoryView::Service>(this, message, replacing);
 }
 
 bool SimpleElementDelegate::elementUnderCursor(
@@ -70,12 +124,8 @@ bool SimpleElementDelegate::elementUnderCursor(
 	return false;
 }
 
-void SimpleElementDelegate::elementAnimationAutoplayAsync(
-	not_null<const Element*> element) {
-}
-
 crl::time SimpleElementDelegate::elementHighlightTime(
-	not_null<const Element*> element) {
+		not_null<const HistoryItem*> item) {
 	return crl::time(0);
 }
 
@@ -97,6 +147,65 @@ void SimpleElementDelegate::elementStartStickerLoop(
 void SimpleElementDelegate::elementShowPollResults(
 	not_null<PollData*> poll,
 	FullMsgId context) {
+}
+
+void SimpleElementDelegate::elementOpenPhoto(
+	not_null<PhotoData*> photo,
+	FullMsgId context) {
+}
+
+void SimpleElementDelegate::elementOpenDocument(
+	not_null<DocumentData*> document,
+	FullMsgId context,
+	bool showInMediaView) {
+}
+
+void SimpleElementDelegate::elementCancelUpload(const FullMsgId &context) {
+}
+
+void SimpleElementDelegate::elementShowTooltip(
+	const TextWithEntities &text,
+	Fn<void()> hiddenCallback) {
+}
+
+bool SimpleElementDelegate::elementIsGifPaused() {
+	return _controller->isGifPausedAtLeastFor(Window::GifPauseReason::Any);
+}
+
+bool SimpleElementDelegate::elementHideReply(not_null<const Element*> view) {
+	return false;
+}
+
+bool SimpleElementDelegate::elementShownUnread(
+		not_null<const Element*> view) {
+	return view->data()->unread();
+}
+
+void SimpleElementDelegate::elementSendBotCommand(
+	const QString &command,
+	const FullMsgId &context) {
+}
+
+void SimpleElementDelegate::elementHandleViaClick(not_null<UserData*> bot) {
+}
+
+bool SimpleElementDelegate::elementIsChatWide() {
+	return false;
+}
+
+auto SimpleElementDelegate::elementPathShiftGradient()
+-> not_null<Ui::PathShiftGradient*> {
+	return _pathGradient.get();
+}
+
+void SimpleElementDelegate::elementReplyTo(const FullMsgId &to) {
+}
+
+void SimpleElementDelegate::elementStartInteraction(
+	not_null<const Element*> view) {
+}
+
+void SimpleElementDelegate::elementShowSpoilerAnimation() {
 }
 
 TextSelection UnshiftItemSelection(
@@ -127,8 +236,36 @@ TextSelection ShiftItemSelection(
 	return ShiftItemSelection(selection, byText.length());
 }
 
-void UnreadBar::init() {
-	text = tr::lng_unread_bar_some(tr::now);
+QString DateTooltipText(not_null<Element*> view) {
+	const auto format = QLocale::system().dateTimeFormat(QLocale::LongFormat);
+	auto dateText = view->dateTime().toString(format);
+	if (const auto editedDate = view->displayedEditDate()) {
+		dateText += '\n' + tr::lng_edited_date(
+			tr::now,
+			lt_date,
+			base::unixtime::parse(editedDate).toString(format));
+	}
+	if (const auto forwarded = view->data()->Get<HistoryMessageForwarded>()) {
+		dateText += '\n' + tr::lng_forwarded_date(
+			tr::now,
+			lt_date,
+			base::unixtime::parse(forwarded->originalDate).toString(format));
+		if (forwarded->imported) {
+			dateText = tr::lng_forwarded_imported(tr::now)
+				+ "\n\n" + dateText;
+		}
+	}
+	if (view->isSignedAuthorElided()) {
+		if (const auto msgsigned = view->data()->Get<HistoryMessageSigned>()) {
+			dateText += '\n'
+				+ tr::lng_signed_author(tr::now, lt_user, msgsigned->author);
+		}
+	}
+	return dateText;
+}
+
+void UnreadBar::init(const QString &string) {
+	text = string;
 	width = st::semiboldFont->width(text);
 }
 
@@ -140,7 +277,13 @@ int UnreadBar::marginTop() {
 	return st::lineWidth + st::historyUnreadBarMargin;
 }
 
-void UnreadBar::paint(Painter &p, int y, int w) const {
+void UnreadBar::paint(
+		Painter &p,
+		const PaintContext &context,
+		int y,
+		int w,
+		bool chatWide) const {
+	const auto st = context.st;
 	const auto bottom = y + height();
 	y += marginTop();
 	p.fillRect(
@@ -148,19 +291,18 @@ void UnreadBar::paint(Painter &p, int y, int w) const {
 		y,
 		w,
 		height() - marginTop() - st::lineWidth,
-		st::historyUnreadBarBg);
+		st->historyUnreadBarBg());
 	p.fillRect(
 		0,
 		bottom - st::lineWidth,
 		w,
 		st::lineWidth,
-		st::historyUnreadBarBorder);
+		st->historyUnreadBarBorder());
 	p.setFont(st::historyUnreadBarFont);
-	p.setPen(st::historyUnreadBarFg);
+	p.setPen(st->historyUnreadBarFg());
 
-	int left = st::msgServiceMargin.left();
 	int maxwidth = w;
-	if (Adaptive::ChatWide()) {
+	if (chatWide) {
 		maxwidth = qMin(
 			maxwidth,
 			st::msgMaxWidth
@@ -192,20 +334,35 @@ int DateBadge::height() const {
 		+ st::msgServiceMargin.bottom();
 }
 
-void DateBadge::paint(Painter &p, int y, int w) const {
-	ServiceMessagePainter::paintDate(p, text, width, y, w);
+void DateBadge::paint(
+		Painter &p,
+		not_null<const Ui::ChatStyle*> st,
+		int y,
+		int w,
+		bool chatWide) const {
+	ServiceMessagePainter::PaintDate(p, st, text, width, y, w, chatWide);
+}
+
+ReactionAnimationArgs ReactionAnimationArgs::translated(
+		QPoint point) const {
+	return {
+		.emoji = emoji,
+		.flyIcon = flyIcon,
+		.flyFrom = flyFrom.translated(point),
+	};
 }
 
 Element::Element(
 	not_null<ElementDelegate*> delegate,
-	not_null<HistoryItem*> data)
+	not_null<HistoryItem*> data,
+	Element *replacing)
 : _delegate(delegate)
 , _data(data)
 , _isScheduledUntilOnline(IsItemScheduledUntilOnline(data))
 , _dateTime(_isScheduledUntilOnline ? QDateTime() : ItemDateTime(data))
 , _context(delegate->elementContext()) {
 	history()->owner().registerItemView(this);
-	refreshMedia();
+	refreshMedia(replacing);
 	if (_context == Context::History) {
 		history()->setHasPendingResizedItems();
 	}
@@ -246,33 +403,54 @@ void Element::setY(int y) {
 void Element::refreshDataIdHook() {
 }
 
+void Element::repaint() const {
+	history()->owner().requestViewRepaint(this);
+}
+
 void Element::paintHighlight(
 		Painter &p,
+		const PaintContext &context,
 		int geometryHeight) const {
-	const auto animms = delegate()->elementHighlightTime(this);
-	if (!animms
-		|| animms >= st::activeFadeInDuration + st::activeFadeOutDuration) {
-		return;
-	}
-
 	const auto top = marginTop();
 	const auto bottom = marginBottom();
 	const auto fill = qMin(top, bottom);
 	const auto skiptop = top - fill;
 	const auto fillheight = fill + geometryHeight + fill;
 
-	const auto dt = (animms > st::activeFadeInDuration)
+	paintCustomHighlight(p, context, skiptop, fillheight, data());
+}
+
+float64 Element::highlightOpacity(not_null<const HistoryItem*> item) const {
+	const auto animms = delegate()->elementHighlightTime(item);
+	if (!animms
+		|| animms >= st::activeFadeInDuration + st::activeFadeOutDuration) {
+		return 0.;
+	}
+
+	return (animms > st::activeFadeInDuration)
 		? (1. - (animms - st::activeFadeInDuration)
 			/ float64(st::activeFadeOutDuration))
 		: (animms / float64(st::activeFadeInDuration));
+}
+
+void Element::paintCustomHighlight(
+		Painter &p,
+		const PaintContext &context,
+		int y,
+		int height,
+		not_null<const HistoryItem*> item) const {
+	const auto opacity = highlightOpacity(item);
+	if (opacity == 0.) {
+		return;
+	}
 	const auto o = p.opacity();
-	p.setOpacity(o * dt);
+	p.setOpacity(o * opacity);
 	p.fillRect(
 		0,
-		skiptop,
+		y,
 		width(),
-		fillheight,
-		st::defaultTextPalette.selectOverlay);
+		height,
+		context.st->msgSelectOverlay());
 	p.setOpacity(o);
 }
 
@@ -281,7 +459,7 @@ bool Element::isUnderCursor() const {
 }
 
 bool Element::isLastAndSelfMessage() const {
-	if (!hasOutLayout()) {
+	if (!hasOutLayout() || data()->_history->peer->isSelf()) {
 		return false;
 	}
 	if (const auto last = data()->_history->lastMessage()) {
@@ -317,12 +495,16 @@ int Element::skipBlockHeight() const {
 	return st::msgDateFont->height - st::msgDateDelta.y();
 }
 
-QString Element::skipBlock() const {
-	return textcmdSkipBlock(skipBlockWidth(), skipBlockHeight());
-}
-
 int Element::infoWidth() const {
 	return 0;
+}
+
+int Element::bottomInfoFirstLineWidth() const {
+	return 0;
+}
+
+bool Element::bottomInfoIsWide() const {
+	return false;
 }
 
 bool Element::isHiddenByGroup() const {
@@ -333,14 +515,14 @@ bool Element::isHidden() const {
 	return isHiddenByGroup();
 }
 
-void Element::refreshMedia() {
+void Element::refreshMedia(Element *replacing) {
 	_flags &= ~Flag::HiddenByGroup;
 
 	const auto item = data();
 	const auto media = item->media();
 	if (media && media->canBeGrouped()) {
 		if (const auto group = history()->owner().groups().find(item)) {
-			if (group->items.back() != item) {
+			if (group->items.front() != item) {
 				_media = nullptr;
 				_flags |= Flag::HiddenByGroup;
 			} else {
@@ -356,9 +538,9 @@ void Element::refreshMedia() {
 	}
 	const auto session = &history()->session();
 	if (const auto media = _data->media()) {
-		_media = media->createView(this);
+		_media = media->createView(this, replacing);
 	} else if (_data->isIsolatedEmoji()
-		&& session->settings().largeEmoji()) {
+		&& Core::App().settings().largeEmoji()) {
 		const auto emoji = _data->isolatedEmoji();
 		const auto emojiStickers = &session->emojiStickersPack();
 		if (const auto sticker = emojiStickers->stickerForEmoji(emoji)) {
@@ -367,6 +549,7 @@ void Element::refreshMedia() {
 				std::make_unique<Sticker>(
 					this,
 					sticker.document,
+					replacing,
 					sticker.replacements));
 		} else {
 			_media = std::make_unique<UnwrappedMedia>(
@@ -387,6 +570,13 @@ void Element::nextInBlocksRemoved() {
 	setAttachToNext(false);
 }
 
+bool Element::markSponsoredViewed(int shownFromTop) const {
+	const auto sponsoredTextTop = height()
+		- st::msgPadding.bottom()
+		- st::historyViewButtonHeight;
+	return shownFromTop >= sponsoredTextTop;
+}
+
 void Element::refreshDataId() {
 	if (const auto media = this->media()) {
 		media->refreshParentId(data());
@@ -395,11 +585,13 @@ void Element::refreshDataId() {
 }
 
 bool Element::computeIsAttachToPrevious(not_null<Element*> previous) {
-	const auto mayBeAttached = [](not_null<HistoryItem*> item) {
-		return !item->serviceMsg()
+	const auto mayBeAttached = [](not_null<Element*> view) {
+		const auto item = view->data();
+		return !item->isService()
 			&& !item->isEmpty()
 			&& !item->isPost()
-			&& (item->from() != item->history()->peer
+			&& (!item->history()->peer->isMegagroup()
+				|| !view->hasOutLayout()
 				|| !item->from()->isChannel());
 	};
 	const auto item = data();
@@ -407,11 +599,20 @@ bool Element::computeIsAttachToPrevious(not_null<Element*> previous) {
 		const auto prev = previous->data();
 		const auto possible = (std::abs(prev->date() - item->date())
 				< kAttachMessageToPreviousSecondsDelta)
-			&& mayBeAttached(item)
-			&& mayBeAttached(prev);
+			&& mayBeAttached(this)
+			&& mayBeAttached(previous);
 		if (possible) {
-			if (item->history()->peer->isSelf()) {
-				return IsAttachedToPreviousInSavedMessages(prev, item);
+			const auto forwarded = item->Get<HistoryMessageForwarded>();
+			const auto prevForwarded = prev->Get<HistoryMessageForwarded>();
+			if (item->history()->peer->isSelf()
+				|| item->history()->peer->isRepliesChat()
+				|| (forwarded && forwarded->imported)
+				|| (prevForwarded && prevForwarded->imported)) {
+				return IsAttachedToPreviousInSavedMessages(
+					prev,
+					prevForwarded,
+					item,
+					forwarded);
 			} else {
 				return prev->from() == item->from();
 			}
@@ -420,12 +621,75 @@ bool Element::computeIsAttachToPrevious(not_null<Element*> previous) {
 	return false;
 }
 
-void Element::createUnreadBar() {
+ClickHandlerPtr Element::fromLink() const {
+	if (_fromLink) {
+		return _fromLink;
+	}
+	const auto item = data();
+	if (item->isSponsored()) {
+		const auto session = &item->history()->session();
+		_fromLink = std::make_shared<LambdaClickHandler>([=](
+				ClickContext context) {
+			if (context.button != Qt::LeftButton) {
+				return;
+			}
+			const auto my = context.other.value<ClickHandlerContext>();
+			if (const auto window = ContextOrSessionWindow(my, session)) {
+				auto &sponsored = session->data().sponsoredMessages();
+				const auto itemId = my.itemId ? my.itemId : item->fullId();
+				const auto details = sponsored.lookupDetails(itemId);
+				if (const auto &hash = details.hash) {
+					Api::CheckChatInvite(window, *hash);
+				} else if (const auto peer = details.peer) {
+					window->showPeerInfo(peer);
+				}
+			}
+		});
+		return _fromLink;
+	} else if (const auto from = item->displayFrom()) {
+		_fromLink = std::make_shared<LambdaClickHandler>([=](
+				ClickContext context) {
+			if (context.button != Qt::LeftButton) {
+				return;
+			}
+			const auto my = context.other.value<ClickHandlerContext>();
+			const auto session = &from->session();
+			if (const auto window = ContextOrSessionWindow(my, session)) {
+				window->showPeerInfo(from);
+			}
+		});
+		_fromLink->setProperty(kPeerLinkPeerIdProperty, from->id.value);
+		return _fromLink;
+	}
+	if (const auto forwarded = item->Get<HistoryMessageForwarded>()) {
+		if (forwarded->imported) {
+			static const auto imported = std::make_shared<LambdaClickHandler>([] {
+				Ui::ShowMultilineToast({
+					.text = { tr::lng_forwarded_imported(tr::now) },
+				});
+			});
+			return imported;
+		}
+	}
+	static const auto hidden = std::make_shared<LambdaClickHandler>([] {
+		Ui::Toast::Show(tr::lng_forwarded_hidden(tr::now));
+	});
+	_fromLink = hidden;
+	return _fromLink;
+}
+
+void Element::createUnreadBar(rpl::producer<QString> text) {
 	if (!AddComponents(UnreadBar::Bit())) {
 		return;
 	}
 	const auto bar = Get<UnreadBar>();
-	bar->init();
+	std::move(
+		text
+	) | rpl::start_with_next([=](const QString &text) {
+		if (const auto bar = Get<UnreadBar>()) {
+			bar->init(text);
+		}
+	}, bar->lifetime);
 	if (data()->mainView() == this) {
 		recountAttachToPreviousInBlocks();
 	}
@@ -459,8 +723,16 @@ bool Element::isInOneDayWithPrevious() const {
 }
 
 void Element::recountAttachToPreviousInBlocks() {
+	if (isHidden() || data()->isEmpty()) {
+		if (const auto next = nextDisplayedInBlocks()) {
+			next->recountAttachToPreviousInBlocks();
+		} else if (const auto previous = previousDisplayedInBlocks()) {
+			previous->setAttachToNext(false);
+		}
+		return;
+	}
 	auto attachToPrevious = false;
-	if (const auto previous = previousInBlocks()) {
+	if (const auto previous = previousDisplayedInBlocks()) {
 		attachToPrevious = computeIsAttachToPrevious(previous);
 		previous->setAttachToNext(attachToPrevious);
 	}
@@ -470,11 +742,14 @@ void Element::recountAttachToPreviousInBlocks() {
 void Element::recountDisplayDateInBlocks() {
 	setDisplayDate([&] {
 		const auto item = data();
-		if (item->isEmpty()) {
+		if (isHidden() || item->isEmpty()) {
+			return false;
+		}
+		if (item->isSponsored()) {
 			return false;
 		}
 
-		if (const auto previous = previousInBlocks()) {
+		if (const auto previous = previousDisplayedInBlocks()) {
 			const auto prev = previous->data();
 			return prev->isEmpty()
 				|| (previous->dateTime().date() != dateTime().date());
@@ -567,12 +842,13 @@ bool Element::displayFastReply() const {
 	return false;
 }
 
-bool Element::displayRightAction() const {
-	return false;
+std::optional<QSize> Element::rightActionSize() const {
+	return std::nullopt;
 }
 
 void Element::drawRightAction(
 	Painter &p,
+	const PaintContext &context,
 	int left,
 	int top,
 	int outerWidth) const {
@@ -590,6 +866,15 @@ TimeId Element::displayedEditDate() const {
 	return TimeId(0);
 }
 
+HistoryMessageReply *Element::displayedReply() const {
+	return nullptr;
+}
+
+bool Element::toggleSelectionByHandlerClick(
+	const ClickHandlerPtr &handler) const {
+	return false;
+}
+
 bool Element::hasVisibleText() const {
 	return false;
 }
@@ -601,7 +886,25 @@ auto Element::verticalRepaintRange() const -> VerticalRepaintRange {
 	};
 }
 
+bool Element::hasHeavyPart() const {
+	return false;
+}
+
+void Element::checkHeavyPart() {
+	if (!hasHeavyPart() && (!_media || !_media->hasHeavyPart())) {
+		history()->owner().unregisterHeavyViewPart(this);
+	}
+}
+
+bool Element::isSignedAuthorElided() const {
+	return false;
+}
+
+void Element::itemDataChanged() {
+}
+
 void Element::unloadHeavyPart() {
+	history()->owner().unregisterHeavyViewPart(this);
 	if (_media) {
 		_media->unloadHeavyPart();
 	}
@@ -666,6 +969,14 @@ Element *Element::previousInBlocks() const {
 	return nullptr;
 }
 
+Element *Element::previousDisplayedInBlocks() const {
+	auto result = previousInBlocks();
+	while (result && (result->data()->isEmpty() || result->isHidden())) {
+		result = result->previousInBlocks();
+	}
+	return result;
+}
+
 Element *Element::nextInBlocks() const {
 	if (_block && _indexInBlock >= 0) {
 		if (_indexInBlock + 1 < _block->messages.size()) {
@@ -679,27 +990,45 @@ Element *Element::nextInBlocks() const {
 	return nullptr;
 }
 
+Element *Element::nextDisplayedInBlocks() const {
+	auto result = nextInBlocks();
+	while (result && (result->data()->isEmpty() || result->isHidden())) {
+		result = result->nextInBlocks();
+	}
+	return result;
+}
+
 void Element::drawInfo(
 	Painter &p,
+	const PaintContext &context,
 	int right,
 	int bottom,
 	int width,
-	bool selected,
 	InfoDisplayType type) const {
 }
 
-bool Element::pointInTime(
+TextState Element::bottomInfoTextState(
 		int right,
 		int bottom,
 		QPoint point,
 		InfoDisplayType type) const {
-	return false;
+	return TextState();
 }
 
 TextSelection Element::adjustSelection(
 		TextSelection selection,
 		TextSelectType type) const {
 	return selection;
+}
+
+Reactions::ButtonParameters Element::reactionButtonParameters(
+		QPoint position,
+		const TextState &reactionState) const {
+	return {};
+}
+
+int Element::reactionsOptimalWidth() const {
+	return 0;
 }
 
 void Element::clickHandlerActiveChanged(
@@ -710,8 +1039,8 @@ void Element::clickHandlerActiveChanged(
 			keyboard->clickHandlerActiveChanged(handler, active);
 		}
 	}
-	App::hoveredLinkItem(active ? this : nullptr);
-	history()->owner().requestViewRepaint(this);
+	HoveredLink(active ? this : nullptr);
+	repaint();
 	if (const auto media = this->media()) {
 		media->clickHandlerActiveChanged(handler, active);
 	}
@@ -725,14 +1054,33 @@ void Element::clickHandlerPressedChanged(
 			keyboard->clickHandlerPressedChanged(handler, pressed);
 		}
 	}
-	App::pressedLinkItem(pressed ? this : nullptr);
-	history()->owner().requestViewRepaint(this);
+	PressedLink(pressed ? this : nullptr);
+	repaint();
 	if (const auto media = this->media()) {
 		media->clickHandlerPressedChanged(handler, pressed);
 	}
 }
 
+void Element::animateReaction(ReactionAnimationArgs &&args) {
+}
+
+void Element::animateUnreadReactions() {
+	const auto &recent = data()->recentReactions();
+	for (const auto &[emoji, list] : recent) {
+		if (ranges::contains(list, true, &Data::RecentReaction::unread)) {
+			animateReaction({ .emoji = emoji });
+		}
+	}
+}
+
+auto Element::takeReactionAnimations()
+-> base::flat_map<QString, std::unique_ptr<Reactions::Animation>> {
+	return {};
+}
+
 Element::~Element() {
+	// Delete media while owner still exists.
+	base::take(_media);
 	if (_data->mainView() == this) {
 		_data->clearMainView();
 	}
@@ -740,6 +1088,54 @@ Element::~Element() {
 		history()->owner().notifyViewRemoved(this);
 	}
 	history()->owner().unregisterItemView(this);
+}
+
+void Element::Hovered(Element *view) {
+	HoveredElement = view;
+}
+
+Element *Element::Hovered() {
+	return HoveredElement;
+}
+
+void Element::Pressed(Element *view) {
+	PressedElement = view;
+}
+
+Element *Element::Pressed() {
+	return PressedElement;
+}
+
+void Element::HoveredLink(Element *view) {
+	HoveredLinkElement = view;
+}
+
+Element *Element::HoveredLink() {
+	return HoveredLinkElement;
+}
+
+void Element::PressedLink(Element *view) {
+	PressedLinkElement = view;
+}
+
+Element *Element::PressedLink() {
+	return PressedLinkElement;
+}
+
+void Element::Moused(Element *view) {
+	MousedElement = view;
+}
+
+Element *Element::Moused() {
+	return MousedElement;
+}
+
+void Element::ClearGlobal() {
+	HoveredElement = nullptr;
+	PressedElement = nullptr;
+	HoveredLinkElement = nullptr;
+	PressedLinkElement = nullptr;
+	MousedElement = nullptr;
 }
 
 } // namespace HistoryView

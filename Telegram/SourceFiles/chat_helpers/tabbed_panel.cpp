@@ -14,7 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_session_controller.h"
 #include "mainwindow.h"
 #include "core/application.h"
-#include "app.h"
+#include "base/options.h"
 #include "styles/style_chat_helpers.h"
 
 namespace ChatHelpers {
@@ -23,7 +23,15 @@ namespace {
 constexpr auto kHideTimeoutMs = 300;
 constexpr auto kDelayedHideTimeoutMs = 3000;
 
+base::options::toggle TabbedPanelShowOnClick({
+	.id = kOptionTabbedPanelShowOnClick,
+	.name = "Show tabbed panel by click",
+	.description = "Show Emoji / Stickers / GIFs panel only after a click.",
+});
+
 } // namespace
+
+const char kOptionTabbedPanelShowOnClick[] = "tabbed-panel-show-on-click";
 
 TabbedPanel::TabbedPanel(
 	QWidget *parent,
@@ -54,7 +62,7 @@ TabbedPanel::TabbedPanel(
 	Expects(_selector != nullptr);
 
 	_selector->setParent(this);
-	_selector->setRoundRadius(st::buttonRadius);
+	_selector->setRoundRadius(st::roundRadiusSmall);
 	_selector->setAfterShownCallback([=](SelectorTab tab) {
 		if (tab == SelectorTab::Gifs || tab == SelectorTab::Stickers) {
 			_controller->enableGifPauseReason(
@@ -151,7 +159,7 @@ void TabbedPanel::updateContentHeight() {
 	auto marginsHeight = _selector->marginTop() + _selector->marginBottom();
 	auto availableHeight = _bottom - marginsHeight;
 	auto wantedContentHeight = qRound(_heightRatio * availableHeight) - addedHeight;
-	auto contentHeight = marginsHeight + snap(
+	auto contentHeight = marginsHeight + std::clamp(
 		wantedContentHeight,
 		_minContentHeight,
 		_maxContentHeight);
@@ -161,7 +169,6 @@ void TabbedPanel::updateContentHeight() {
 		return;
 	}
 
-	auto was = _contentHeight;
 	_contentHeight = contentHeight;
 
 	resize(QRect(0, 0, innerRect().width(), _contentHeight).marginsAdded(innerPadding()).size());
@@ -209,7 +216,7 @@ void TabbedPanel::moveByBottom() {
 	updateContentHeight();
 }
 
-void TabbedPanel::enterEventHook(QEvent *e) {
+void TabbedPanel::enterEventHook(QEnterEvent *e) {
 	Core::App().registerLeaveSubscription(this);
 	showAnimated();
 }
@@ -348,7 +355,7 @@ QImage TabbedPanel::grabForAnimation() {
 	_a_show = base::take(showAnimation);
 	_showAnimation = base::take(showAnimationData);
 	_a_opacity = base::take(opacityAnimation);
-	_cache = base::take(_cache);
+	_cache = base::take(cache);
 
 	return result;
 }
@@ -364,6 +371,10 @@ void TabbedPanel::hideAnimated() {
 	} else {
 		startOpacityAnimation(true);
 	}
+
+	// There is no reason to worry about the message scheduling box
+	// while it moves the user to the separate scheduled section.
+	_shouldFinishHide = _selector->hasMenu();
 }
 
 void TabbedPanel::toggleAnimated() {
@@ -380,6 +391,7 @@ void TabbedPanel::hideFinished() {
 	_showAnimation.reset();
 	_cache = QPixmap();
 	_hiding = false;
+	_shouldFinishHide = false;
 	_selector->hideFinished();
 }
 
@@ -390,6 +402,9 @@ void TabbedPanel::showAnimated() {
 }
 
 void TabbedPanel::showStarted() {
+	if (_shouldFinishHide) {
+		return;
+	}
 	if (isHidden()) {
 		_selector->showStarted();
 		moveByBottom();
@@ -402,7 +417,9 @@ void TabbedPanel::showStarted() {
 }
 
 bool TabbedPanel::eventFilter(QObject *obj, QEvent *e) {
-	if (e->type() == QEvent::Enter) {
+	if (TabbedPanelShowOnClick.value()) {
+		return false;
+	} else if (e->type() == QEvent::Enter) {
 		otherEnter();
 	} else if (e->type() == QEvent::Leave) {
 		otherLeave();
@@ -433,8 +450,8 @@ bool TabbedPanel::overlaps(const QRect &globalRect) const {
 
 	auto testRect = QRect(mapFromGlobal(globalRect.topLeft()), globalRect.size());
 	auto inner = rect().marginsRemoved(st::emojiPanMargins);
-	return inner.marginsRemoved(QMargins(st::buttonRadius, 0, st::buttonRadius, 0)).contains(testRect)
-		|| inner.marginsRemoved(QMargins(0, st::buttonRadius, 0, st::buttonRadius)).contains(testRect);
+	return inner.marginsRemoved(QMargins(st::roundRadiusSmall, 0, st::roundRadiusSmall, 0)).contains(testRect)
+		|| inner.marginsRemoved(QMargins(0, st::roundRadiusSmall, 0, st::roundRadiusSmall)).contains(testRect);
 }
 
 TabbedPanel::~TabbedPanel() {

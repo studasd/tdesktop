@@ -14,30 +14,32 @@ class Service;
 } // namespace HistoryView
 
 struct HistoryServiceDependentData {
+	PeerId peerId = 0;
 	MsgId msgId = 0;
 	HistoryItem *msg = nullptr;
 	ClickHandlerPtr lnk;
 };
 
 struct HistoryServicePinned
-	: public RuntimeComponent<HistoryServicePinned, HistoryItem>
-	, public HistoryServiceDependentData {
+: public RuntimeComponent<HistoryServicePinned, HistoryItem>
+, public HistoryServiceDependentData {
 };
 
 struct HistoryServiceGameScore
-	: public RuntimeComponent<HistoryServiceGameScore, HistoryItem>
-	, public HistoryServiceDependentData {
+: public RuntimeComponent<HistoryServiceGameScore, HistoryItem>
+, public HistoryServiceDependentData {
 	int score = 0;
 };
 
 struct HistoryServicePayment
-	: public RuntimeComponent<HistoryServicePayment, HistoryItem>
-	, public HistoryServiceDependentData {
+: public RuntimeComponent<HistoryServicePayment, HistoryItem>
+, public HistoryServiceDependentData {
 	QString amount;
+	ClickHandlerPtr invoiceLink;
 };
 
 struct HistoryServiceSelfDestruct
-	: public RuntimeComponent<HistoryServiceSelfDestruct, HistoryItem> {
+: public RuntimeComponent<HistoryServiceSelfDestruct, HistoryItem> {
 	enum class Type {
 		Photo,
 		Video,
@@ -47,6 +49,13 @@ struct HistoryServiceSelfDestruct
 	crl::time destructAt = 0;
 };
 
+struct HistoryServiceOngoingCall
+: public RuntimeComponent<HistoryServiceOngoingCall, HistoryItem> {
+	CallId id = 0;
+	ClickHandlerPtr link;
+	rpl::lifetime lifetime;
+};
+
 namespace HistoryView {
 class ServiceMessagePainter;
 } // namespace HistoryView
@@ -54,26 +63,27 @@ class ServiceMessagePainter;
 class HistoryService : public HistoryItem {
 public:
 	struct PreparedText {
-		QString text;
+		TextWithEntities text;
 		QList<ClickHandlerPtr> links;
 	};
 
 	HistoryService(
 		not_null<History*> history,
+		MsgId id,
 		const MTPDmessage &data,
-		MTPDmessage_ClientFlags clientFlags);
-	HistoryService(
-		not_null<History*> history,
-		const MTPDmessageService &data,
-		MTPDmessage_ClientFlags clientFlags);
+		MessageFlags localFlags);
 	HistoryService(
 		not_null<History*> history,
 		MsgId id,
-		MTPDmessage_ClientFlags clientFlags,
+		const MTPDmessageService &data,
+		MessageFlags localFlags);
+	HistoryService(
+		not_null<History*> history,
+		MsgId id,
+		MessageFlags flags,
 		TimeId date,
 		const PreparedText &message,
-		MTPDmessage::Flags flags = 0,
-		UserId from = 0,
+		PeerId from = 0,
 		PhotoData *photo = nullptr);
 
 	bool updateDependencyItem() override;
@@ -95,17 +105,22 @@ public:
 
 	Storage::SharedMediaTypesMask sharedMediaTypes() const override;
 
-	bool needCheck() const override {
-		return false;
-	}
-	bool serviceMsg() const override {
+	void dependencyItemRemoved(HistoryItem *dependency) override;
+
+	bool needCheck() const override;
+	bool isService() const override {
 		return true;
 	}
-	QString inDialogsText(DrawInDialog way) const override;
-	QString inReplyText() const override;
+	ItemPreview toPreview(ToPreviewOptions options) const override;
+	TextWithEntities inReplyText() const override;
 
 	std::unique_ptr<HistoryView::Element> createView(
-		not_null<HistoryView::ElementDelegate*> delegate) override;
+		not_null<HistoryView::ElementDelegate*> delegate,
+		HistoryView::Element *replacing = nullptr) override;
+
+	void setServiceText(const PreparedText &prepared);
+
+	void hideSpoilers() override;
 
 	~HistoryService();
 
@@ -114,9 +129,7 @@ protected:
 
 	void markMediaAsReadHook() override;
 
-	void setServiceText(const PreparedText &prepared);
-
-	QString fromLinkText() const;
+	TextWithEntities fromLinkText() const;
 	ClickHandlerPtr fromLink() const;
 
 	void removeMedia();
@@ -137,6 +150,7 @@ private:
 	}
 	bool updateDependent(bool force = false);
 	void updateDependentText();
+	void updateText(PreparedText &&text);
 	void clearDependency();
 
 	void createFromMtp(const MTPDmessage &message);
@@ -150,13 +164,21 @@ private:
 	PreparedText preparePinnedText();
 	PreparedText prepareGameScoreText();
 	PreparedText preparePaymentSentText();
+	PreparedText prepareInvitedToCallText(
+		const QVector<MTPlong> &users,
+		CallId linkCallId);
+	PreparedText prepareCallScheduledText(
+		TimeId scheduleDate);
 
 	friend class HistoryView::Service;
 
 };
 
-not_null<HistoryService*> GenerateJoinedMessage(
+[[nodiscard]] not_null<HistoryService*> GenerateJoinedMessage(
 	not_null<History*> history,
 	TimeId inviteDate,
 	not_null<UserData*> inviter,
-	MTPDmessage::Flags flags);
+	bool viaRequest);
+[[nodiscard]] std::optional<bool> PeerHasThisCall(
+	not_null<PeerData*> peer,
+	CallId id);

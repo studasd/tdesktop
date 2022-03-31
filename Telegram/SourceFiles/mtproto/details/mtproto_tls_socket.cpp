@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 #include "base/unixtime.h"
+#include "base/qt/qt_common_adapters.h"
 
 #include <QtCore/QtEndian>
 #include <range/v3/algorithm/reverse.hpp>
@@ -82,12 +83,12 @@ using BigNumContext = openssl::Context;
 	Z(32);
 	S(qstr("\x20"));
 	R(32);
-	S(qstr("\x00\x22"));
+	S(qstr("\x00\x20"));
 	G(0);
 	S(qstr(""
 		"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
-		"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x00\x0a"
-		"\x01\x00\x01\x91"));
+		"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35\x01\x00"
+		"\x01\x93"));
 	G(2);
 	S(qstr("\x00\x00\x00\x00"));
 	Open();
@@ -103,9 +104,9 @@ using BigNumContext = openssl::Context;
 	S(qstr(""
 		"\x00\x1d\x00\x17\x00\x18\x00\x0b\x00\x02\x01\x00\x00\x23\x00\x00"
 		"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70\x2f\x31"
-		"\x2e\x31\x00\x05\x00\x05\x01\x00\x00\x00\x00\x00\x0d\x00\x14\x00"
-		"\x12\x04\x03\x08\x04\x04\x01\x05\x03\x08\x05\x05\x01\x08\x06\x06"
-		"\x01\x02\x01\x00\x12\x00\x00\x00\x33\x00\x2b\x00\x29"));
+		"\x2e\x31\x00\x05\x00\x05\x01\x00\x00\x00\x00\x00\x0d\x00\x12\x00"
+		"\x10\x04\x03\x08\x04\x04\x01\x05\x03\x08\x05\x05\x01\x08\x06\x06"
+		"\x01\x00\x12\x00\x00\x00\x33\x00\x2b\x00\x29"));
 	G(4);
 	S(qstr("\x00\x01\x00\x00\x1d\x00\x20"));
 	K();
@@ -445,13 +446,22 @@ void ClientHelloGenerator::writeTimestamp() {
 TlsSocket::TlsSocket(
 	not_null<QThread*> thread,
 	const bytes::vector &secret,
-	const QNetworkProxy &proxy)
+	const QNetworkProxy &proxy,
+	bool protocolForFiles)
 : AbstractSocket(thread)
 , _secret(secret) {
 	Expects(_secret.size() >= 21 && _secret[0] == bytes::type(0xEE));
 
 	_socket.moveToThread(thread);
 	_socket.setProxy(proxy);
+	if (protocolForFiles) {
+		_socket.setSocketOption(
+			QAbstractSocket::SendBufferSizeSocketOption,
+			kFilesSendBufferSize);
+		_socket.setSocketOption(
+			QAbstractSocket::ReceiveBufferSizeSocketOption,
+			kFilesReceiveBufferSize);
+	}
 	const auto wrap = [&](auto handler) {
 		return [=](auto &&...args) {
 			InvokeQueued(this, [=] { handler(args...); });
@@ -470,12 +480,9 @@ TlsSocket::TlsSocket(
 		&_socket,
 		&QTcpSocket::readyRead,
 		wrap([=] { plainReadyRead(); }));
-
-	using ErrorSignal = void(QTcpSocket::*)(QAbstractSocket::SocketError);
-	const auto QTcpSocket_error = ErrorSignal(&QAbstractSocket::error);
 	connect(
 		&_socket,
-		QTcpSocket_error,
+		base::QTcpSocket_error,
 		wrap([=](Error e) { handleError(e); }));
 }
 
@@ -498,7 +505,7 @@ void TlsSocket::plainConnected() {
 		domainFromSecret(),
 		keyFromSecret());
 	if (hello.data.isEmpty()) {
-		LOG(("TLS Error: Could not generate Client Hello!"));
+		logError(888, "Could not generate Client Hello.");
 		_state = State::Error;
 		_error.fire({});
 	} else {
@@ -556,7 +563,7 @@ void TlsSocket::checkHelloParts12(int parts1Size) {
 			- kLengthSize
 			- kServerHelloPart1.size();
 		if (!CheckPart(data.subspan(part1Offset), kServerHelloPart1)) {
-			LOG(("TLS Error: Bad Server Hello part1."));
+			logError(888, "Bad Server Hello part1.");
 			handleError();
 			return;
 		}
@@ -580,7 +587,7 @@ void TlsSocket::checkHelloParts34(int parts123Size) {
 			- kLengthSize
 			- kServerHelloPart3.size();
 		if (!CheckPart(data.subspan(part3Offset), kServerHelloPart3)) {
-			LOG(("TLS Error: Bad Server Hello part."));
+			logError(888, "Bad Server Hello part.");
 			handleError();
 			return;
 		}
@@ -604,7 +611,7 @@ void TlsSocket::checkHelloDigest() {
 	bytes::set_with_const(digest, bytes::type(0));
 	const auto check = openssl::HmacSha256(keyFromSecret(), fulldata);
 	if (bytes::compare(digestCopy, check) != 0) {
-		LOG(("TLS Error: Bad Server Hello digest."));
+		logError(888, "Bad Server Hello digest.");
 		handleError();
 		return;
 	}
@@ -642,7 +649,7 @@ bool TlsSocket::checkNextPacket() {
 			return true;
 		}
 		if (!CheckPart(incoming.subspan(offset), kServerHeader)) {
-			LOG(("TLS Error: Bad packet header."));
+			logError(888, "Bad packet header.");
 			return false;
 		}
 		const auto length = ReadPartLength(
@@ -703,11 +710,11 @@ int64 TlsSocket::read(bytes::span buffer) {
 	while (_incomingGoodDataLimit) {
 		const auto available = std::min(
 			_incomingGoodDataLimit,
-			_incoming.size() - _incomingGoodDataOffset);
+			int(_incoming.size()) - _incomingGoodDataOffset);
 		if (available <= 0) {
 			return written;
 		}
-		const auto write = std::min(index_type(available), buffer.size());
+		const auto write = std::min(std::size_t(available), buffer.size());
 		if (write <= 0) {
 			return written;
 		}
@@ -766,12 +773,16 @@ int32 TlsSocket::debugState() {
 	return _socket.state();
 }
 
+QString TlsSocket::debugPostfix() const {
+	return u"_ee"_q;
+}
+
 void TlsSocket::handleError(int errorCode) {
 	if (_state != State::Connected) {
 		_syncTimeRequests.fire({});
 	}
 	if (errorCode) {
-		TcpSocket::LogError(errorCode, _socket.errorString());
+		logError(errorCode, _socket.errorString());
 	}
 	_state = State::Error;
 	_error.fire({});

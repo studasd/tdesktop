@@ -24,7 +24,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "history/history.h"
 #include "history/history_item.h"
-#include "apiwrap.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
 #include "styles/style_info.h"
@@ -58,7 +57,6 @@ public:
 	void peerListSetAdditionalTitle(rpl::producer<QString> title) override;
 	bool peerListIsRowChecked(not_null<PeerListRow*> row) override;
 	int peerListSelectedRowsCount() override;
-	std::vector<not_null<PeerData*>> peerListCollectSelectedRows() override;
 	void peerListScrollToTop() override;
 	void peerListAddSelectedPeerInBunch(
 		not_null<PeerData*> peer) override;
@@ -67,6 +65,11 @@ public:
 	void peerListFinishSelectedRowsBunch() override;
 	void peerListSetDescription(
 		object_ptr<Ui::FlatLabel> description) override;
+	void peerListShowBox(
+		object_ptr<Ui::BoxContent> content,
+		Ui::LayerOptions options = Ui::LayerOption::KeepOther) override;
+	void peerListHideLayer() override;
+	not_null<QWidget*> peerListToastParent() override;
 
 };
 
@@ -131,11 +134,6 @@ int ListDelegate::peerListSelectedRowsCount() {
 	return 0;
 }
 
-auto ListDelegate::peerListCollectSelectedRows()
--> std::vector<not_null<PeerData*>> {
-	return {};
-}
-
 void ListDelegate::peerListScrollToTop() {
 }
 
@@ -153,6 +151,18 @@ void ListDelegate::peerListFinishSelectedRowsBunch() {
 void ListDelegate::peerListSetDescription(
 		object_ptr<Ui::FlatLabel> description) {
 	description.destroy();
+}
+
+void ListDelegate::peerListShowBox(
+	object_ptr<Ui::BoxContent> content,
+	Ui::LayerOptions options) {
+}
+
+void ListDelegate::peerListHideLayer() {
+}
+
+not_null<QWidget*> ListDelegate::peerListToastParent() {
+	Unexpected("...ListDelegate::peerListToastParent");
 }
 
 } // namespace
@@ -233,7 +243,7 @@ ListController::ListController(
 , _poll(poll)
 , _context(context)
 , _option(option)
-, _api(_session->api().instance()) {
+, _api(&_session->mtp()) {
 	const auto i = ranges::find(poll->answers, option, &PollAnswer::option);
 	Assert(i != poll->answers.end());
 	_fullCount = i->votes;
@@ -256,7 +266,7 @@ void ListController::loadMoreRows() {
 		return;
 	}
 	const auto item = session().data().message(_context);
-	if (!item || !IsServerMsgId(item->id)) {
+	if (!item || !item->isRegular()) {
 		_leftToLoad = 0;
 		return;
 	}
@@ -282,7 +292,7 @@ void ListController::loadMoreRows() {
 			for (const auto &vote : data.vvotes().v) {
 				vote.match([&](const auto &data) {
 					const auto user = owner.user(data.vuser_id().v);
-					if (user->loadedStatus != PeerData::NotLoaded) {
+					if (user->isMinimalLoaded()) {
 						if (add) {
 							appendRow(user);
 							--add;
@@ -305,7 +315,7 @@ void ListController::loadMoreRows() {
 			delegate()->peerListRefreshRows();
 		}
 		_loadRequestId = 0;
-	}).fail([=](const RPCError &error) {
+	}).fail([=] {
 		_loadRequestId = 0;
 	}).send();
 }
@@ -324,14 +334,14 @@ void ListController::collapse() {
 		return;
 	}
 	const auto remove = count - (kFirstPage - kLeavePreloaded);
-	ranges::action::reverse(_preloaded);
+	ranges::actions::reverse(_preloaded);
 	_preloaded.reserve(_preloaded.size() + remove);
 	for (auto i = 0; i != remove; ++i) {
 		const auto row = delegate()->peerListRowAt(count - i - 1);
 		_preloaded.push_back(row->peer()->asUser());
 		delegate()->peerListRemoveRow(row);
 	}
-	ranges::action::reverse(_preloaded);
+	ranges::actions::reverse(_preloaded);
 
 	delegate()->peerListRefreshRows();
 	const auto now = count - remove;
@@ -445,7 +455,7 @@ void ListController::rowClicked(not_null<PeerListRow*> row) {
 }
 
 bool ListController::appendRow(not_null<UserData*> user) {
-	if (delegate()->peerListFindRow(user->id)) {
+	if (delegate()->peerListFindRow(user->id.value)) {
 		return false;
 	}
 	delegate()->peerListAppendRow(createRow(user));
@@ -502,10 +512,10 @@ ListController *CreateAnswerRows(
 		container,
 		st::boxLittleSkip));
 
+	controller->setStyleOverrides(&st::infoCommonGroupsList);
 	const auto content = container->add(object_ptr<PeerListContent>(
 		container,
-		controller,
-		st::infoCommonGroupsList));
+		controller));
 	delegate->setContent(content);
 	controller->setDelegate(delegate);
 
@@ -579,6 +589,9 @@ ListController *CreateAnswerRows(
 		headerWrap->resize(headerWrap->width(), height);
 	}, header->lifetime());
 
+	auto moreTopWidget = object_ptr<Ui::RpWidget>(container);
+	moreTopWidget->resize(0, 0);
+	const auto moreTop = container->add(std::move(moreTopWidget));
 	const auto more = container->add(
 		object_ptr<Ui::SlideWrap<Ui::SettingsButton>>(
 			container,
@@ -604,7 +617,7 @@ ListController *CreateAnswerRows(
 	rpl::combine(
 		std::move(visibleTop),
 		headerWrap->geometryValue(),
-		more->topValue()
+		moreTop->topValue()
 	) | rpl::filter([=](int, QRect headerRect, int moreTop) {
 		return moreTop >= headerRect.y() + headerRect.height();
 	}) | rpl::start_with_next([=](
@@ -672,7 +685,6 @@ int InnerWidget::desiredHeight() const {
 }
 
 void InnerWidget::setupContent() {
-	const auto quiz = _poll->quiz();
 	_content->add(
 		object_ptr<Ui::FlatLabel>(
 			_content,
@@ -684,7 +696,7 @@ void InnerWidget::setupContent() {
 			st::boxRowPadding.right(),
 			st::boxMediumSkip });
 	for (const auto &answer : _poll->answers) {
-		const auto session = &_controller->parentController()->session();
+		const auto session = &_controller->session();
 		const auto controller = CreateAnswerRows(
 			_content,
 			_visibleTop.value(),

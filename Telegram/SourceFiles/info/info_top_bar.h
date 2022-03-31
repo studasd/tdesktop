@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "ui/rp_widget.h"
+#include "ui/round_rect.h"
 #include "ui/wrap/fade_wrap.h"
 #include "ui/effects/animations.h"
 #include "ui/effects/numbers_animation.h"
@@ -82,7 +83,8 @@ public:
 	void setSelectedItems(SelectedItems &&items);
 	SelectedItems takeSelectedItems();
 
-	rpl::producer<> cancelSelectionRequests() const;
+	[[nodiscard]] auto selectionActionRequests() const
+		-> rpl::producer<SelectionAction>;
 
 	void finishAnimating() {
 		updateControlsVisibility(anim::type::instant);
@@ -111,11 +113,10 @@ private:
 	bool searchMode() const;
 	Ui::StringWithNumbers generateSelectedText() const;
 	[[nodiscard]] bool computeCanDelete() const;
+	[[nodiscard]] bool computeCanForward() const;
 	void updateSelectionState();
 	void createSelectionControls();
-	void clearSelectionControls();
 
-	MessageIdsList collectItems() const;
 	void performForward();
 	void performDelete();
 
@@ -138,6 +139,7 @@ private:
 	const not_null<Window::SessionNavigation*> _navigation;
 
 	const style::InfoTopBar &_st;
+	std::optional<Ui::RoundRect> _roundRect;
 	Ui::Animations::Simple _a_highlight;
 	bool _highlight = false;
 	QPointer<Ui::FadeWrap<Ui::IconButton>> _back;
@@ -153,11 +155,12 @@ private:
 
 	SelectedItems _selectedItems;
 	bool _canDelete = false;
+	bool _canForward = false;
 	QPointer<Ui::FadeWrap<Ui::IconButton>> _cancelSelection;
 	QPointer<Ui::FadeWrap<Ui::LabelWithNumbers>> _selectionText;
 	QPointer<Ui::FadeWrap<Ui::IconButton>> _forward;
 	QPointer<Ui::FadeWrap<Ui::IconButton>> _delete;
-	rpl::event_stream<> _cancelSelectionClicks;
+	rpl::event_stream<SelectionAction> _selectionActionRequests;
 
 	using UpdateCallback = Fn<bool(anim::type)>;
 	std::map<QObject*, UpdateCallback> _updateControlCallbacks;

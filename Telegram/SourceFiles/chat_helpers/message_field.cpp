@@ -13,8 +13,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qthelp_regex.h"
 #include "base/qthelp_url.h"
 #include "base/event_filter.h"
-#include "boxes/abstract_box.h"
+#include "ui/layers/generic_box.h"
 #include "core/shortcuts.h"
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/ui_utility.h"
@@ -27,7 +29,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
-#include "styles/style_history.h"
+#include "styles/style_chat.h"
+#include "base/qt/qt_common_adapters.h"
 
 #include <QtCore/QMimeData>
 #include <QtCore/QStack>
@@ -38,6 +41,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace {
 
+using namespace Ui::Text;
+
 using EditLinkAction = Ui::InputField::EditLinkAction;
 using EditLinkSelection = Ui::InputField::EditLinkSelection;
 
@@ -46,42 +51,33 @@ constexpr auto kParseLinksTimeout = crl::time(1000);
 // For mention tags save and validate userId, ignore tags for different userId.
 class FieldTagMimeProcessor : public Ui::InputField::TagMimeProcessor {
 public:
-	QString tagFromMimeTag(const QString &mimeTag) override {
-		if (TextUtilities::IsMentionLink(mimeTag)) {
-			auto match = QRegularExpression(":(\\d+)$").match(mimeTag);
-			if (!match.hasMatch()
-				|| match.capturedRef(1).toInt() != Auth().userId()) {
-				return QString();
-			}
-			return mimeTag.mid(0, mimeTag.size() - match.capturedLength());
-		}
-		return mimeTag;
-	}
+	explicit FieldTagMimeProcessor(
+		not_null<Window::SessionController*> controller);
 
-};
-
-class EditLinkBox : public Ui::BoxContent {
-public:
-	EditLinkBox(
-		QWidget*,
-		not_null<Main::Session*> session,
-		const QString &text,
-		const QString &link,
-		Fn<void(QString, QString)> callback);
-
-	void setInnerFocus() override;
-
-protected:
-	void prepare() override;
+	QString tagFromMimeTag(const QString &mimeTag) override;
 
 private:
-	const not_null<Main::Session*> _session;
-	QString _startText;
-	QString _startLink;
-	Fn<void(QString, QString)> _callback;
-	Fn<void()> _setInnerFocus;
+	const not_null<Window::SessionController*> _controller;
 
 };
+
+FieldTagMimeProcessor::FieldTagMimeProcessor(
+	not_null<Window::SessionController*> controller)
+: _controller(controller) {
+}
+
+QString FieldTagMimeProcessor::tagFromMimeTag(const QString &mimeTag) {
+	if (TextUtilities::IsMentionLink(mimeTag)) {
+		const auto userId = _controller->session().userId();
+		auto match = QRegularExpression(":(\\d+)$").match(mimeTag);
+		if (!match.hasMatch()
+			|| match.capturedView(1).toULongLong() != userId.bare) {
+			return QString();
+		}
+		return mimeTag.mid(0, mimeTag.size() - match.capturedLength());
+	}
+	return mimeTag;
+}
 
 //bool ValidateUrl(const QString &value) {
 //	const auto match = qthelp::RegExpDomain().match(value);
@@ -93,51 +89,55 @@ private:
 //		&& IsGoodProtocol(protocolMatch.captured(1));
 //}
 
-EditLinkBox::EditLinkBox(
-	QWidget*,
-	not_null<Main::Session*> session,
-	const QString &text,
-	const QString &link,
-	Fn<void(QString, QString)> callback)
-: _session(session)
-, _startText(text)
-, _startLink(link)
-, _callback(std::move(callback)) {
-	Expects(_callback != nullptr);
-}
+void EditLinkBox(
+		not_null<Ui::GenericBox*> box,
+		std::shared_ptr<Ui::Show> show,
+		not_null<Main::Session*> session,
+		const QString &startText,
+		const QString &startLink,
+		Fn<void(QString, QString)> callback,
+		const style::InputField *fieldStyle) {
+	Expects(callback != nullptr);
 
-void EditLinkBox::setInnerFocus() {
-	Expects(_setInnerFocus != nullptr);
-
-	_setInnerFocus();
-}
-
-void EditLinkBox::prepare() {
-	const auto content = Ui::CreateChild<Ui::VerticalLayout>(this);
+	const auto &fieldSt = fieldStyle ? *fieldStyle : st::defaultInputField;
+	const auto content = box->verticalLayout();
 
 	const auto text = content->add(
 		object_ptr<Ui::InputField>(
 			content,
-			st::defaultInputField,
+			fieldSt,
 			tr::lng_formatting_link_text(),
-			_startText),
+			startText),
 		st::markdownLinkFieldPadding);
 	text->setInstantReplaces(Ui::InstantReplaces::Default());
 	text->setInstantReplacesEnabled(
-		_session->settings().replaceEmojiValue());
+		Core::App().settings().replaceEmojiValue());
 	Ui::Emoji::SuggestionsController::Init(
-		getDelegate()->outerContainer(),
+		box->getDelegate()->outerContainer(),
 		text,
-		_session);
-	InitSpellchecker(_session, text);
+		session);
+	InitSpellchecker(std::move(show), session, text, fieldStyle != nullptr);
 
-	const auto url = content->add(
+	const auto placeholder = content->add(
+		object_ptr<Ui::RpWidget>(content),
+		st::markdownLinkFieldPadding);
+	placeholder->setAttribute(Qt::WA_TransparentForMouseEvents);
+	const auto url = Ui::AttachParentChild(
+		content,
 		object_ptr<Ui::InputField>(
 			content,
-			st::defaultInputField,
+			fieldSt,
 			tr::lng_formatting_link_url(),
-			_startLink.trimmed()),
-		st::markdownLinkFieldPadding);
+			startLink.trimmed()));
+	url->heightValue(
+	) | rpl::start_with_next([placeholder](int height) {
+		placeholder->resize(placeholder->width(), height);
+	}, placeholder->lifetime());
+	placeholder->widthValue(
+	) | rpl::start_with_next([=](int width) {
+		url->resize(width, url->height());
+	}, placeholder->lifetime());
+	url->move(placeholder->pos());
 
 	const auto submit = [=] {
 		const auto linkText = text->getLastText();
@@ -149,17 +149,17 @@ void EditLinkBox::prepare() {
 			url->showError();
 			return;
 		}
-		const auto weak = Ui::MakeWeak(this);
-		_callback(linkText, linkUrl);
+		const auto weak = Ui::MakeWeak(box);
+		callback(linkText, linkUrl);
 		if (weak) {
-			closeBox();
+			box->closeBox();
 		}
 	};
 
-	connect(text, &Ui::InputField::submitted, [=] {
+	QObject::connect(text, &Ui::InputField::submitted, [=] {
 		url->setFocusFast();
 	});
-	connect(url, &Ui::InputField::submitted, [=] {
+	QObject::connect(url, &Ui::InputField::submitted, [=] {
 		if (text->getLastText().isEmpty()) {
 			text->setFocusFast();
 		} else {
@@ -167,20 +167,30 @@ void EditLinkBox::prepare() {
 		}
 	});
 
-	setTitle(url->getLastText().isEmpty()
+	box->setTitle(url->getLastText().isEmpty()
 		? tr::lng_formatting_link_create_title()
 		: tr::lng_formatting_link_edit_title());
 
-	addButton(tr::lng_formatting_link_create(), submit);
-	addButton(tr::lng_cancel(), [=] { closeBox(); });
+	box->addButton(tr::lng_formatting_link_create(), submit);
+	box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
 
 	content->resizeToWidth(st::boxWidth);
 	content->moveToLeft(0, 0);
-	setDimensions(st::boxWidth, content->height());
+	box->setWidth(st::boxWidth);
 
-	_setInnerFocus = [=] {
-		(_startText.isEmpty() ? text : url)->setFocusFast();
-	};
+	box->setFocusCallback([=] {
+		if (startText.isEmpty()) {
+			text->setFocusFast();
+		} else {
+			url->setFocusFast();
+		}
+	});
+
+	url->customTab(true);
+	text->customTab(true);
+
+	QObject::connect(url, &Ui::InputField::tabbed, [=] { text->setFocus(); });
+	QObject::connect(text, &Ui::InputField::tabbed, [=] { url->setFocus(); });
 }
 
 TextWithEntities StripSupportHashtag(TextWithEntities &&text) {
@@ -213,7 +223,7 @@ TextWithEntities StripSupportHashtag(TextWithEntities &&text) {
 
 QString PrepareMentionTag(not_null<UserData*> user) {
 	return TextUtilities::kMentionTagStart
-		+ QString::number(user->bareId())
+		+ QString::number(user->id.value)
 		+ '.'
 		+ QString::number(user->accessHash());
 }
@@ -233,8 +243,10 @@ Fn<bool(
 	QString text,
 	QString link,
 	EditLinkAction action)> DefaultEditLinkCallback(
+		std::shared_ptr<Ui::Show> show,
 		not_null<Main::Session*> session,
-		not_null<Ui::InputField*> field) {
+		not_null<Ui::InputField*> field,
+		const style::InputField *fieldStyle) {
 	const auto weak = Ui::MakeWeak(field);
 	return [=](
 			EditLinkSelection selection,
@@ -245,13 +257,21 @@ Fn<bool(
 			return Ui::InputField::IsValidMarkdownLink(link)
 				&& !TextUtilities::IsMentionLink(link);
 		}
-		Ui::show(Box<EditLinkBox>(session, text, link, [=](
-				const QString &text,
-				const QString &link) {
+		auto callback = [=](const QString &text, const QString &link) {
 			if (const auto strong = weak.data()) {
 				strong->commitMarkdownLinkEdit(selection, text, link);
 			}
-		}), Ui::LayerOption::KeepOther);
+		};
+		show->showBox(
+			Box(
+				EditLinkBox,
+				show,
+				session,
+				text,
+				link,
+				std::move(callback),
+				fieldStyle),
+			Ui::LayerOption::KeepOther);
 		return true;
 	};
 }
@@ -262,7 +282,8 @@ void InitMessageField(
 	field->setMinHeight(st::historySendSize.height() - 2 * st::historySendPadding);
 	field->setMaxHeight(st::historyComposeFieldMaxHeight);
 
-	field->setTagMimeProcessor(std::make_unique<FieldTagMimeProcessor>());
+	field->setTagMimeProcessor(
+		std::make_unique<FieldTagMimeProcessor>(controller));
 
 	field->document()->setDocumentMargin(4.);
 	field->setAdditionalMargin(style::ConvertScale(4) - 4);
@@ -270,42 +291,62 @@ void InitMessageField(
 	field->customTab(true);
 	field->setInstantReplaces(Ui::InstantReplaces::Default());
 	field->setInstantReplacesEnabled(
-		controller->session().settings().replaceEmojiValue());
+		Core::App().settings().replaceEmojiValue());
 	field->setMarkdownReplacesEnabled(rpl::single(true));
 	field->setEditLinkCallback(
-		DefaultEditLinkCallback(&controller->session(), field));
+		DefaultEditLinkCallback(
+			std::make_shared<Window::Show>(controller),
+			&controller->session(),
+			field));
 }
 
 void InitSpellchecker(
+		std::shared_ptr<Ui::Show> show,
 		not_null<Main::Session*> session,
-		not_null<Ui::InputField*> field) {
+		not_null<Ui::InputField*> field,
+		bool skipDictionariesManager) {
 #ifndef TDESKTOP_DISABLE_SPELLCHECK
-	const auto s = Ui::CreateChild<Spellchecker::SpellingHighlighter>(
-		field.get(),
-		session->settings().spellcheckerEnabledValue(),
-		Spellchecker::SpellingHighlighter::CustomContextMenuItem{
+	using namespace Spellchecker;
+	const auto menuItem = skipDictionariesManager
+		? std::nullopt
+		: std::make_optional(SpellingHighlighter::CustomContextMenuItem{
 			tr::lng_settings_manage_dictionaries(tr::now),
-			[=] { Ui::show(Box<Ui::ManageDictionariesBox>(session)); }
+			[=] { show->showBox(Box<Ui::ManageDictionariesBox>(session)); }
 		});
+	const auto s = Ui::CreateChild<SpellingHighlighter>(
+		field.get(),
+		Core::App().settings().spellcheckerEnabledValue(),
+		menuItem);
 	field->setExtendedContextMenu(s->contextMenuCreated());
 #endif // TDESKTOP_DISABLE_SPELLCHECK
 }
 
+void InitSpellchecker(
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::InputField*> field) {
+	InitSpellchecker(
+		std::make_shared<Window::Show>(controller),
+		&controller->session(),
+		field);
+}
+
 bool HasSendText(not_null<const Ui::InputField*> field) {
 	const auto &text = field->getTextWithTags().text;
-	for (const auto ch : text) {
+	for (const auto &ch : text) {
 		const auto code = ch.unicode();
 		if (code != ' '
 			&& code != '\n'
 			&& code != '\r'
-			&& !chReplacedBySpace(code)) {
+			&& !IsReplacedBySpace(code)) {
 			return true;
 		}
 	}
 	return false;
 }
 
-InlineBotQuery ParseInlineBotQuery(not_null<const Ui::InputField*> field) {
+InlineBotQuery ParseInlineBotQuery(
+		not_null<Main::Session*> session,
+		not_null<const Ui::InputField*> field) {
 	auto result = InlineBotQuery();
 
 	const auto &full = field->getTextWithTags();
@@ -340,10 +381,10 @@ InlineBotQuery ParseInlineBotQuery(not_null<const Ui::InputField*> field) {
 					< inlineUsernameStart + inlineUsernameLength)) {
 				return InlineBotQuery();
 			}
-			auto username = text.midRef(inlineUsernameStart, inlineUsernameLength);
+			auto username = base::StringViewMid(text, inlineUsernameStart, inlineUsernameLength);
 			if (username != result.username) {
 				result.username = username.toString();
-				if (const auto peer = Auth().data().peerByUsername(result.username)) {
+				if (const auto peer = session->data().peerByUsername(result.username)) {
 					if (const auto user = peer->asUser()) {
 						result.bot = peer->asUser();
 					} else {
@@ -463,6 +504,11 @@ MessageLinksParser::MessageLinksParser(not_null<Ui::InputField*> field)
 	_field->installEventFilter(this);
 }
 
+void MessageLinksParser::parseNow() {
+	_timer.cancel();
+	parse();
+}
+
 bool MessageLinksParser::eventFilter(QObject *object, QEvent *event) {
 	if (object == _field) {
 		if (event->type() == QEvent::KeyPress) {
@@ -501,7 +547,8 @@ void MessageLinksParser::parse() {
 		return (tag == Ui::InputField::kTagBold)
 			|| (tag == Ui::InputField::kTagItalic)
 			|| (tag == Ui::InputField::kTagUnderline)
-			|| (tag == Ui::InputField::kTagStrikeOut);
+			|| (tag == Ui::InputField::kTagStrikeOut)
+			|| (tag == Ui::InputField::kTagSpoiler);
 	};
 
 	auto ranges = QVector<LinkRange>();
@@ -585,13 +632,14 @@ void MessageLinksParser::parse() {
 		const QChar *domainEnd = start + m.capturedEnd(), *p = domainEnd;
 		for (; p < end; ++p) {
 			QChar ch(*p);
-			if (chIsLinkEnd(ch)) break; // link finished
-			if (chIsAlmostLinkEnd(ch)) {
+			if (IsLinkEnd(ch)) {
+				break; // link finished
+			} else if (IsAlmostLinkEnd(ch)) {
 				const QChar *endTest = p + 1;
-				while (endTest < end && chIsAlmostLinkEnd(*endTest)) {
+				while (endTest < end && IsAlmostLinkEnd(*endTest)) {
 					++endTest;
 				}
-				if (endTest >= end || chIsLinkEnd(*endTest)) {
+				if (endTest >= end || IsLinkEnd(*endTest)) {
 					break; // link finished at p
 				}
 				p = endTest;
@@ -615,7 +663,7 @@ void MessageLinksParser::parse() {
 			}
 		}
 		const auto range = LinkRange {
-			domainOffset,
+			int(domainOffset),
 			static_cast<int>(p - start - domainOffset),
 			QString()
 		};
@@ -639,8 +687,8 @@ void MessageLinksParser::apply(
 	const auto current = _list.current();
 	const auto computeLink = [&](const LinkRange &range) {
 		return range.custom.isEmpty()
-			? text.midRef(range.start, range.length)
-			: range.custom.midRef(0);
+			? base::StringViewMid(text, range.start, range.length)
+			: QStringView(range.custom);
 	};
 	const auto changed = [&] {
 		if (current.size() != count) {
@@ -662,84 +710,4 @@ void MessageLinksParser::apply(
 		parsed.push_back(computeLink(range).toString());
 	}
 	_list = std::move(parsed);
-}
-
-void SetupSendMenuAndShortcuts(
-		not_null<Ui::RpWidget*> button,
-		Fn<SendMenuType()> type,
-		Fn<void()> silent,
-		Fn<void()> schedule) {
-	if (!silent && !schedule) {
-		return;
-	}
-	const auto menu = std::make_shared<base::unique_qptr<Ui::PopupMenu>>();
-	const auto showMenu = [=] {
-		const auto now = type();
-		if (now == SendMenuType::Disabled
-			|| (!silent && now == SendMenuType::SilentOnly)) {
-			return false;
-		}
-
-		*menu = base::make_unique_q<Ui::PopupMenu>(button);
-		if (silent && now != SendMenuType::Reminder) {
-			(*menu)->addAction(tr::lng_send_silent_message(tr::now), silent);
-		}
-		if (schedule && now != SendMenuType::SilentOnly) {
-			(*menu)->addAction(
-				(now == SendMenuType::Reminder
-					? tr::lng_reminder_message(tr::now)
-					: tr::lng_schedule_message(tr::now)),
-				schedule);
-		}
-		(*menu)->popup(QCursor::pos());
-		return true;
-	};
-	base::install_event_filter(button, [=](not_null<QEvent*> e) {
-		if (e->type() == QEvent::ContextMenu && showMenu()) {
-			return base::EventFilterResult::Cancel;
-		}
-		return base::EventFilterResult::Continue;
-	});
-
-	Shortcuts::Requests(
-	) | rpl::start_with_next([=](not_null<Shortcuts::Request*> request) {
-		using Command = Shortcuts::Command;
-
-		const auto now = type();
-		if (now == SendMenuType::Disabled
-			|| (!silent && now == SendMenuType::SilentOnly)) {
-			return;
-		}
-		(silent
-			&& (now != SendMenuType::Reminder)
-			&& request->check(Command::SendSilentMessage)
-			&& request->handle([=] {
-				silent();
-				return true;
-			}))
-		||
-		(schedule
-			&& (now != SendMenuType::SilentOnly)
-			&& request->check(Command::ScheduleMessage)
-			&& request->handle([=] {
-				schedule();
-				return true;
-			}))
-		||
-		(request->check(Command::JustSendMessage) && request->handle([=] {
-			const auto post = [&](QEvent::Type type) {
-				QApplication::postEvent(
-					button,
-					new QMouseEvent(
-						type,
-						QPointF(0, 0),
-						Qt::LeftButton,
-						Qt::LeftButton,
-						Qt::NoModifier));
-			};
-			post(QEvent::MouseButtonPress);
-			post(QEvent::MouseButtonRelease);
-			return true;
-		}));
-	}, button->lifetime());
 }

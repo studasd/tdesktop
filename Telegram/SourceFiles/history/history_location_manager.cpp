@@ -8,19 +8,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_location_manager.h"
 
 #include "mainwidget.h"
+#include "core/click_handler_types.h"
 #include "lang/lang_keys.h"
 #include "ui/image/image.h"
 #include "data/data_file_origin.h"
 #include "platform/platform_specific.h"
-
-#include <QtGui/QDesktopServices>
-
-namespace {
-
-constexpr auto kCoordPrecision = 8;
-constexpr auto kMaxHttpRedirects = 5;
-
-} // namespace
 
 QString LocationClickHandler::copyToClipboardText() const {
 	return _text;
@@ -32,7 +24,7 @@ QString LocationClickHandler::copyToClipboardContextItemText() const {
 
 void LocationClickHandler::onClick(ClickContext context) const {
 	if (!psLaunchMaps(_point)) {
-		QDesktopServices::openUrl(_text);
+		UrlClickHandler::Open(_text);
 	}
 }
 

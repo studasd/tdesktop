@@ -7,7 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_groups.h"
 
+#include "history/history.h"
 #include "history/history_item.h"
+#include "dialogs/ui/dialogs_message_view.h"
 #include "data/data_media_types.h"
 #include "data/data_session.h"
 
@@ -21,7 +23,7 @@ constexpr auto kMaxItemsInGroup = 10;
 Groups::Groups(not_null<Session*> data) : _data(data) {
 }
 
-bool Groups::isGrouped(not_null<HistoryItem*> item) const {
+bool Groups::isGrouped(not_null<const HistoryItem*> item) const {
 	if (!item->groupId()) {
 		return false;
 	}
@@ -65,13 +67,13 @@ void Groups::unregisterMessage(not_null<const HistoryItem*> item) {
 }
 
 void Groups::refreshMessage(
-	not_null<HistoryItem*> item,
-	bool justRefreshViews) {
+		not_null<HistoryItem*> item,
+		bool justRefreshViews) {
 	if (!isGrouped(item)) {
 		unregisterMessage(item);
 		return;
 	}
-	if (!IsServerMsgId(item->id)) {
+	if (!item->isRegular() && !item->isScheduled()) {
 		return;
 	}
 	const auto groupId = item->groupId();
@@ -110,21 +112,17 @@ void Groups::refreshMessage(
 HistoryItemsList::const_iterator Groups::findPositionForItem(
 		const HistoryItemsList &group,
 		not_null<HistoryItem*> item) {
-	const auto itemId = item->id;
 	const auto last = end(group);
-	if (!IsServerMsgId(itemId)) {
-		return last;
-	}
+	const auto itemId = item->id;
 	for (auto result = begin(group); result != last; ++result) {
-		const auto alreadyId = (*result)->id;
-		if (IsServerMsgId(alreadyId) && alreadyId > itemId) {
+		if ((*result)->id > itemId) {
 			return result;
 		}
 	}
 	return last;
 }
 
-const Group *Groups::find(not_null<HistoryItem*> item) const {
+const Group *Groups::find(not_null<const HistoryItem*> item) const {
 	const auto groupId = item->groupId();
 	if (!groupId) {
 		return nullptr;
@@ -140,9 +138,30 @@ const Group *Groups::find(not_null<HistoryItem*> item) const {
 }
 
 void Groups::refreshViews(const HistoryItemsList &items) {
-	for (const auto item : items) {
-		_data->requestItemViewRefresh(item);
+	if (items.empty()) {
+		return;
 	}
+	const auto history = items.front()->history();
+	for (const auto &item : items) {
+		_data->requestItemViewRefresh(item);
+		history->lastItemDialogsView.itemInvalidated(item);
+	}
+}
+
+not_null<HistoryItem*> Groups::findItemToEdit(
+		not_null<HistoryItem*> item) const {
+	const auto group = find(item);
+	if (!group) {
+		return item;
+	}
+	const auto &list = group->items;
+	const auto it = ranges::find_if(
+		list,
+		ranges::not_fn(&HistoryItem::emptyText));
+	if (it == end(list)) {
+		return list.front();
+	}
+	return (*it);
 }
 
 } // namespace Data

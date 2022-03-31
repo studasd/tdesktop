@@ -8,11 +8,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/mtproto_proxy_data.h"
+#include "base/qt/qt_common_adapters.h"
 
 #include <QtWidgets/QApplication>
 #include <QtNetwork/QLocalServer>
 #include <QtNetwork/QLocalSocket>
 #include <QtCore/QAbstractNativeEventFilter>
+
+class QLockFile;
 
 namespace Core {
 
@@ -59,6 +62,7 @@ public:
 
 		return *static_cast<Sandbox*>(QCoreApplication::instance());
 	}
+	static void QuitWhenStarted();
 
 	~Sandbox();
 
@@ -78,13 +82,14 @@ private:
 
 	void closeApplication(); // will be done in aboutToQuit()
 	void checkForQuit(); // will be done in exec()
+	void checkForEmptyLoopNestingLevel();
 	void registerEnterFromEventLoop();
 	void incrementEventNestingLevel();
 	void decrementEventNestingLevel();
 	bool nativeEventFilter(
 		const QByteArray &eventType,
 		void *message,
-		long *result) override;
+		base::NativeEventResult *result) override;
 	void processPostponedCalls(int level);
 	void singleInstanceChecked();
 	void launchApplication();
@@ -116,7 +121,10 @@ private:
 	QLocalServer _localServer;
 	QLocalSocket _localSocket;
 	LocalClients _localClients;
+	std::unique_ptr<QLockFile> _lockFile;
 	bool _secondInstance = false;
+	bool _started = false;
+	static bool QuitOnStartRequested;
 
 	std::unique_ptr<UpdateChecker> _updateChecker;
 

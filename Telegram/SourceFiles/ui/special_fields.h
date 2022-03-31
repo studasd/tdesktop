@@ -12,18 +12,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Ui {
 
 class CountryCodeInput : public MaskedInputField {
-	Q_OBJECT
-
 public:
 	CountryCodeInput(QWidget *parent, const style::InputField &st);
 
-public slots:
 	void startErasing(QKeyEvent *e);
-	void codeSelected(const QString &code);
 
-signals:
-	void codeChanged(const QString &code);
-	void addedToNumber(const QString &added);
+	[[nodiscard]] rpl::producer<QString> addedToNumber() const {
+		return _addedToNumber.events();
+	}
+	[[nodiscard]] rpl::producer<QString> codeChanged() const {
+		return _codeChanged.events();
+	}
+
+	void codeSelected(const QString &code);
 
 protected:
 	void correctValue(
@@ -33,22 +34,28 @@ protected:
 		int &nowCursor) override;
 
 private:
-	bool _nosignal;
+	bool _nosignal = false;
+	rpl::event_stream<QString> _addedToNumber;
+	rpl::event_stream<QString> _codeChanged;
 
 };
 
 class PhonePartInput : public MaskedInputField {
-	Q_OBJECT
-
 public:
-	PhonePartInput(QWidget *parent, const style::InputField &st);
+	using GroupsCallback = Fn<QVector<int>(const QString &)>;
 
-public slots:
+	PhonePartInput(
+		QWidget *parent,
+		const style::InputField &st,
+		GroupsCallback groupsCallback);
+
+	[[nodiscard]] auto frontBackspaceEvent() const
+	-> rpl::producer<not_null<QKeyEvent*>> {
+		return _frontBackspaceEvent.events();
+	}
+
 	void addedToNumber(const QString &added);
-	void onChooseCode(const QString &code);
-
-signals:
-	void voidBackspace(QKeyEvent *e);
+	void chooseCode(const QString &code);
 
 protected:
 	void keyPressEvent(QKeyEvent *e) override;
@@ -63,6 +70,8 @@ protected:
 private:
 	QVector<int> _pattern;
 	QString _additionalPlaceholder;
+	rpl::event_stream<not_null<QKeyEvent*>> _frontBackspaceEvent;
+	GroupsCallback _groupsCallback;
 
 };
 
@@ -73,7 +82,7 @@ public:
 		const style::InputField &st,
 		rpl::producer<QString> placeholder,
 		const QString &val,
-		bool isLink);
+		const QString &linkPlaceholder);
 
 	void setLinkPlaceholder(const QString &placeholder);
 
@@ -92,12 +101,15 @@ private:
 
 class PhoneInput : public MaskedInputField {
 public:
+	using GroupsCallback = Fn<QVector<int>(const QString &)>;
+
 	PhoneInput(
 		QWidget *parent,
 		const style::InputField &st,
 		rpl::producer<QString> placeholder,
 		const QString &defaultValue,
-		QString value);
+		QString value,
+		GroupsCallback groupsCallback);
 
 	void clearText();
 
@@ -115,6 +127,8 @@ private:
 	QString _defaultValue;
 	QVector<int> _pattern;
 	QString _additionalPlaceholder;
+
+	GroupsCallback _groupsCallback;
 
 };
 

@@ -11,6 +11,10 @@ namespace Data {
 class Session;
 } // namespace Data
 
+namespace Main {
+class Session;
+} // namespace Main
+
 struct PollAnswer {
 	QString text;
 	QByteArray option;
@@ -31,6 +35,9 @@ inline bool operator!=(const PollAnswer &a, const PollAnswer &b) {
 struct PollData {
 	PollData(not_null<Data::Session*> owner, PollId id);
 
+	[[nodiscard]] Data::Session &owner() const;
+	[[nodiscard]] Main::Session &session() const;
+
 	enum class Flag {
 		Closed      = 0x01,
 		PublicVotes = 0x02,
@@ -40,9 +47,10 @@ struct PollData {
 	friend inline constexpr bool is_flag_type(Flag) { return true; };
 	using Flags = base::flags<Flag>;
 
+	bool closeByTimer();
 	bool applyChanges(const MTPDpoll &poll);
 	bool applyResults(const MTPPollResults &results);
-	void checkResultsReload(not_null<HistoryItem*> item, crl::time now);
+	[[nodiscard]] bool checkResultsReload(crl::time now);
 
 	[[nodiscard]] PollAnswer *answerByOption(const QByteArray &option);
 	[[nodiscard]] const PollAnswer *answerByOption(
@@ -60,10 +68,11 @@ struct PollData {
 	QString question;
 	std::vector<PollAnswer> answers;
 	std::vector<not_null<UserData*>> recentVoters;
-	int totalVoters = 0;
 	std::vector<QByteArray> sendingVotes;
-	crl::time lastResultsUpdate = 0;
-
+	TextWithEntities solution;
+	TimeId closePeriod = 0;
+	TimeId closeDate = 0;
+	int totalVoters = 0;
 	int version = 0;
 
 	static constexpr auto kMaxOptions = 10;
@@ -73,9 +82,15 @@ private:
 		const MTPPollAnswerVoters &result,
 		bool isMinResults);
 
-	not_null<Data::Session*> _owner;
+	const not_null<Data::Session*> _owner;
 	Flags _flags = Flags();
+	crl::time _lastResultsUpdate = 0; // < 0 means force reload.
 
 };
 
-MTPPoll PollDataToMTP(not_null<const PollData*> poll, bool close = false);
+[[nodiscard]] MTPPoll PollDataToMTP(
+	not_null<const PollData*> poll,
+	bool close = false);
+[[nodiscard]] MTPInputMedia PollDataToInputMedia(
+	not_null<const PollData*> poll,
+	bool close = false);

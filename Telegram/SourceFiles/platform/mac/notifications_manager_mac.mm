@@ -7,13 +7,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "platform/mac/notifications_manager_mac.h"
 
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "base/platform/base_platform_info.h"
 #include "platform/platform_specific.h"
 #include "base/platform/mac/base_utilities_mac.h"
+#include "base/random.h"
 #include "history/history.h"
+#include "history/history_item.h"
 #include "ui/empty_userpic.h"
+#include "main/main_session.h"
 #include "mainwindow.h"
-#include "facades.h"
 #include "styles/style_window.h"
 
 #include <thread>
@@ -32,20 +36,19 @@ void queryDoNotDisturbState() {
 	}
 	LastSettingsQueryMs = ms;
 
-	auto userDefaults = [NSUserDefaults alloc];
-	if ([userDefaults respondsToSelector:@selector(initWithSuiteName:)]) {
-		id userDefaultsValue = [[[NSUserDefaults alloc] initWithSuiteName:@"com.apple.notificationcenterui_test"] objectForKey:@"doNotDisturb"];
-		DoNotDisturbEnabled = ([userDefaultsValue boolValue] == YES);
-	} else {
-		DoNotDisturbEnabled = false;
-	}
+	Boolean isKeyValid;
+	const auto doNotDisturb = CFPreferencesGetAppBooleanValue(
+		CFSTR("doNotDisturb"),
+		CFSTR("com.apple.notificationcenterui"),
+		&isKeyValid);
+	DoNotDisturbEnabled = isKeyValid
+		? doNotDisturb
+		: false;
 }
 
 using Manager = Platform::Notifications::Manager;
 
 } // namespace
-
-NSImage *qt_mac_create_nsimage(const QPixmap &pm);
 
 @interface NotificationDelegate : NSObject<NSUserNotificationCenterDelegate> {
 }
@@ -91,28 +94,39 @@ NSImage *qt_mac_create_nsimage(const QPixmap &pm);
 		return;
 	}
 
+	NSNumber *sessionObject = [notificationUserInfo objectForKey:@"session"];
+	const auto notificationSessionId = sessionObject ? [sessionObject unsignedLongLongValue] : 0;
+	if (!notificationSessionId) {
+		LOG(("App Error: A notification with unknown session was received"));
+		return;
+	}
 	NSNumber *peerObject = [notificationUserInfo objectForKey:@"peer"];
-	auto notificationPeerId = peerObject ? [peerObject unsignedLongLongValue] : 0ULL;
+	const auto notificationPeerId = peerObject ? [peerObject unsignedLongLongValue] : 0ULL;
 	if (!notificationPeerId) {
 		LOG(("App Error: A notification with unknown peer was received"));
 		return;
 	}
 
 	NSNumber *msgObject = [notificationUserInfo objectForKey:@"msgid"];
-	auto notificationMsgId = msgObject ? [msgObject intValue] : 0;
+	const auto notificationMsgId = msgObject ? [msgObject longLongValue] : 0LL;
+
+	const auto my = Window::Notifications::Manager::NotificationId{
+		.full = Manager::FullPeer{
+			.sessionId = notificationSessionId,
+			.peerId = PeerId(notificationPeerId)
+		},
+		.msgId = notificationMsgId
+	};
 	if (notification.activationType == NSUserNotificationActivationTypeReplied) {
 		const auto notificationReply = QString::fromUtf8([[[notification response] string] UTF8String]);
 		const auto manager = _manager;
 		crl::on_main(manager, [=] {
-			manager->notificationReplied(
-				notificationPeerId,
-				notificationMsgId,
-				{ notificationReply, {} });
+			manager->notificationReplied(my, { notificationReply, {} });
 		});
 	} else if (notification.activationType == NSUserNotificationActivationTypeContentsClicked) {
 		const auto manager = _manager;
 		crl::on_main(manager, [=] {
-			manager->notificationActivated(notificationPeerId, notificationMsgId);
+			manager->notificationActivated(my);
 		});
 	}
 
@@ -128,50 +142,54 @@ NSImage *qt_mac_create_nsimage(const QPixmap &pm);
 namespace Platform {
 namespace Notifications {
 
-bool SkipAudio() {
-	queryDoNotDisturbState();
-	return DoNotDisturbEnabled;
+bool SkipAudioForCustom() {
+	return false;
 }
 
-bool SkipToast() {
-	if (Supported()) {
-		// Do not skip native notifications because of Do not disturb.
-		// They respect this setting anyway.
-		return false;
-	}
-	queryDoNotDisturbState();
-	return DoNotDisturbEnabled;
+bool SkipToastForCustom() {
+	return false;
+}
+
+bool SkipFlashBounceForCustom() {
+	return false;
 }
 
 bool Supported() {
-	return Platform::IsMac10_8OrGreater();
+	return true;
 }
 
-std::unique_ptr<Window::Notifications::Manager> Create(Window::Notifications::System *system) {
+bool Enforced() {
+	return Supported();
+}
+
+bool ByDefault() {
+	return Supported();
+}
+
+void Create(Window::Notifications::System *system) {
 	if (Supported()) {
-		return std::make_unique<Manager>(system);
+		system->setManager(std::make_unique<Manager>(system));
+	} else {
+		system->setManager(nullptr);
 	}
-	return nullptr;
 }
 
-void FlashBounce() {
-	[NSApp requestUserAttention:NSInformationalRequest];
-}
-
-class Manager::Private : public QObject, private base::Subscriber {
+class Manager::Private : public QObject {
 public:
 	Private(Manager *manager);
 
 	void showNotification(
 		not_null<PeerData*> peer,
+		std::shared_ptr<Data::CloudImageView> &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
 		const QString &msg,
-		bool hideNameAndPhoto,
-		bool hideReplyButton);
+		DisplayOptions options);
 	void clearAll();
+	void clearFromItem(not_null<HistoryItem*> item);
 	void clearFromHistory(not_null<History*> history);
+	void clearFromSession(not_null<Main::Session*> session);
 	void updateDelegate();
 
 	~Private();
@@ -191,62 +209,93 @@ private:
 	std::mutex _clearingMutex;
 	std::condition_variable _clearingCondition;
 
+	struct ClearFromItem {
+		NotificationId id;
+	};
 	struct ClearFromHistory {
-		PeerId peerId;
+		FullPeer fullPeer;
+	};
+	struct ClearFromSession {
+		uint64 sessionId = 0;
 	};
 	struct ClearAll {
 	};
 	struct ClearFinish {
 	};
-	using ClearTask = base::variant<ClearFromHistory, ClearAll, ClearFinish>;
+	using ClearTask = std::variant<
+		ClearFromItem,
+		ClearFromHistory,
+		ClearFromSession,
+		ClearAll,
+		ClearFinish>;
 	std::vector<ClearTask> _clearingTasks;
+
+	rpl::lifetime _lifetime;
 
 };
 
 Manager::Private::Private(Manager *manager)
-: _managerId(rand_value<uint64>())
+: _managerId(base::RandomValue<uint64>())
 , _managerIdString(QString::number(_managerId))
 , _delegate([[NotificationDelegate alloc] initWithManager:manager managerId:_managerId]) {
-	updateDelegate();
-	subscribe(Global::RefWorkMode(), [this](DBIWorkMode mode) {
+	Core::App().settings().workModeValue(
+	) | rpl::start_with_next([=](Core::Settings::WorkMode mode) {
 		// We need to update the delegate _after_ the tray icon change was done in Qt.
 		// Because Qt resets the delegate.
 		crl::on_main(this, [=] {
 			updateDelegate();
 		});
-	});
+	}, _lifetime);
 }
 
 void Manager::Private::showNotification(
 		not_null<PeerData*> peer,
+		std::shared_ptr<Data::CloudImageView> &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
 		const QString &msg,
-		bool hideNameAndPhoto,
-		bool hideReplyButton) {
+		DisplayOptions options) {
 	@autoreleasepool {
 
 	NSUserNotification *notification = [[[NSUserNotification alloc] init] autorelease];
 	if ([notification respondsToSelector:@selector(setIdentifier:)]) {
-		auto identifier = _managerIdString + '_' + QString::number(peer->id) + '_' + QString::number(msgId);
+		auto identifier = _managerIdString
+			+ '_'
+			+ QString::number(peer->id.value)
+			+ '_'
+			+ QString::number(msgId.bare);
 		auto identifierValue = Q2NSString(identifier);
 		[notification setIdentifier:identifierValue];
 	}
-	[notification setUserInfo:[NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithUnsignedLongLong:peer->id],@"peer",[NSNumber numberWithInt:msgId],@"msgid",[NSNumber numberWithUnsignedLongLong:_managerId],@"manager",nil]];
+	[notification setUserInfo:
+		[NSDictionary dictionaryWithObjectsAndKeys:
+			[NSNumber numberWithUnsignedLongLong:peer->session().uniqueId()],
+			@"session",
+			[NSNumber numberWithUnsignedLongLong:peer->id.value],
+			@"peer",
+			[NSNumber numberWithLongLong:msgId.bare],
+			@"msgid",
+			[NSNumber numberWithUnsignedLongLong:_managerId],
+			@"manager",
+			nil]];
 
 	[notification setTitle:Q2NSString(title)];
 	[notification setSubtitle:Q2NSString(subtitle)];
 	[notification setInformativeText:Q2NSString(msg)];
-	if (!hideNameAndPhoto && [notification respondsToSelector:@selector(setContentImage:)]) {
+	if (!options.hideNameAndPhoto
+		&& [notification respondsToSelector:@selector(setContentImage:)]) {
 		auto userpic = peer->isSelf()
 			? Ui::EmptyUserpic::GenerateSavedMessages(st::notifyMacPhotoSize)
-			: peer->genUserpic(st::notifyMacPhotoSize);
-		NSImage *img = [qt_mac_create_nsimage(userpic) autorelease];
+			: peer->isRepliesChat()
+			? Ui::EmptyUserpic::GenerateRepliesMessages(st::notifyMacPhotoSize)
+			: peer->genUserpic(userpicView, st::notifyMacPhotoSize);
+		NSImage *img = Q2NSImage(userpic.toImage());
 		[notification setContentImage:img];
 	}
 
-	if (!hideReplyButton && [notification respondsToSelector:@selector(setHasReplyButton:)]) {
+	if (!options.hideReplyButton
+		&& [notification respondsToSelector:@selector(setHasReplyButton:)]) {
 		[notification setHasReplyButton:YES];
 	}
 
@@ -262,34 +311,54 @@ void Manager::Private::clearingThreadLoop() {
 	auto finished = false;
 	while (!finished) {
 		auto clearAll = false;
-		auto clearFromPeers = std::set<PeerId>(); // Better to use flatmap.
+		auto clearFromItems = base::flat_set<NotificationId>();
+		auto clearFromPeers = base::flat_set<FullPeer>();
+		auto clearFromSessions = base::flat_set<uint64>();
 		{
 			std::unique_lock<std::mutex> lock(_clearingMutex);
-
 			while (_clearingTasks.empty()) {
 				_clearingCondition.wait(lock);
 			}
 			for (auto &task : _clearingTasks) {
-				if (base::get_if<ClearFinish>(&task)) {
+				v::match(task, [&](ClearFinish) {
 					finished = true;
 					clearAll = true;
-				} else if (base::get_if<ClearAll>(&task)) {
+				}, [&](ClearAll) {
 					clearAll = true;
-				} else if (auto fromHistory = base::get_if<ClearFromHistory>(&task)) {
-					clearFromPeers.insert(fromHistory->peerId);
-				}
+				}, [&](const ClearFromItem &value) {
+					clearFromItems.emplace(value.id);
+				}, [&](const ClearFromHistory &value) {
+					clearFromPeers.emplace(value.fullPeer);
+				}, [&](const ClearFromSession &value) {
+					clearFromSessions.emplace(value.sessionId);
+				});
 			}
 			_clearingTasks.clear();
 		}
 
-		auto clearByPeer = [&clearFromPeers](NSDictionary *notificationUserInfo) {
-			if (NSNumber *peerObject = [notificationUserInfo objectForKey:@"peer"]) {
-				auto notificationPeerId = [peerObject unsignedLongLongValue];
-				if (notificationPeerId) {
-					return (clearFromPeers.find(notificationPeerId) != clearFromPeers.cend());
-				}
+		@autoreleasepool {
+
+		auto clearBySpecial = [&](NSDictionary *notificationUserInfo) {
+			NSNumber *sessionObject = [notificationUserInfo objectForKey:@"session"];
+			const auto notificationSessionId = sessionObject ? [sessionObject unsignedLongLongValue] : 0;
+			if (!notificationSessionId) {
+				return true;
 			}
-			return true;
+			NSNumber *peerObject = [notificationUserInfo objectForKey:@"peer"];
+			const auto notificationPeerId = peerObject ? [peerObject unsignedLongLongValue] : 0;
+			if (!notificationPeerId) {
+				return true;
+			}
+			NSNumber *msgObject = [notificationUserInfo objectForKey:@"msgid"];
+			const auto msgId = msgObject ? [msgObject longLongValue] : 0LL;
+			const auto full = FullPeer{
+				.sessionId = notificationSessionId,
+				.peerId = PeerId(notificationPeerId)
+			};
+			const auto id = NotificationId{ full, MsgId(msgId) };
+			return clearFromSessions.contains(notificationSessionId)
+				|| clearFromPeers.contains(full)
+				|| (msgId && clearFromItems.contains(id));
 		};
 
 		NSUserNotificationCenter *center = [NSUserNotificationCenter defaultUserNotificationCenter];
@@ -299,10 +368,12 @@ void Manager::Private::clearingThreadLoop() {
 			NSNumber *managerIdObject = [notificationUserInfo objectForKey:@"manager"];
 			auto notificationManagerId = managerIdObject ? [managerIdObject unsignedLongLongValue] : 0ULL;
 			if (notificationManagerId == _managerId) {
-				if (clearAll || clearByPeer(notificationUserInfo)) {
+				if (clearAll || clearBySpecial(notificationUserInfo)) {
 					[center removeDeliveredNotification:notification];
 				}
 			}
+		}
+
 		}
 	}
 }
@@ -322,8 +393,22 @@ void Manager::Private::clearAll() {
 	putClearTask(ClearAll());
 }
 
+void Manager::Private::clearFromItem(not_null<HistoryItem*> item) {
+	putClearTask(ClearFromItem { FullPeer{
+		.sessionId = item->history()->session().uniqueId(),
+		.peerId = item->history()->peer->id
+	}, item->id });
+}
+
 void Manager::Private::clearFromHistory(not_null<History*> history) {
-	putClearTask(ClearFromHistory { history->peer->id });
+	putClearTask(ClearFromHistory { FullPeer{
+		.sessionId = history->session().uniqueId(),
+		.peerId = history->peer->id
+	} });
+}
+
+void Manager::Private::clearFromSession(not_null<Main::Session*> session) {
+	putClearTask(ClearFromSession { session->uniqueId() });
 }
 
 void Manager::Private::updateDelegate() {
@@ -349,28 +434,53 @@ Manager::~Manager() = default;
 
 void Manager::doShowNativeNotification(
 		not_null<PeerData*> peer,
+		std::shared_ptr<Data::CloudImageView> &userpicView,
 		MsgId msgId,
 		const QString &title,
 		const QString &subtitle,
 		const QString &msg,
-		bool hideNameAndPhoto,
-		bool hideReplyButton) {
+		DisplayOptions options) {
 	_private->showNotification(
 		peer,
+		userpicView,
 		msgId,
 		title,
 		subtitle,
 		msg,
-		hideNameAndPhoto,
-		hideReplyButton);
+		options);
 }
 
 void Manager::doClearAllFast() {
 	_private->clearAll();
 }
 
+void Manager::doClearFromItem(not_null<HistoryItem*> item) {
+	_private->clearFromItem(item);
+}
+
 void Manager::doClearFromHistory(not_null<History*> history) {
 	_private->clearFromHistory(history);
+}
+
+void Manager::doClearFromSession(not_null<Main::Session*> session) {
+	_private->clearFromSession(session);
+}
+
+QString Manager::accountNameSeparator() {
+	return QString::fromUtf8(" \xE2\x86\x92 ");
+}
+
+bool Manager::doSkipAudio() const {
+	queryDoNotDisturbState();
+	return DoNotDisturbEnabled;
+}
+
+bool Manager::doSkipToast() const {
+	return false;
+}
+
+bool Manager::doSkipFlashBounce() const {
+	return doSkipAudio();
 }
 
 } // namespace Notifications

@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Data {
 class Media;
+class PhotoMedia;
 } // namespace Data
 
 namespace HistoryView {
@@ -23,7 +24,7 @@ public:
 
 	void refreshParentId(not_null<HistoryItem*> realParent) override;
 
-	void draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const override;
+	void draw(Painter &p, const PaintContext &context) const override;
 	TextState textState(QPoint point, StateRequest request) const override;
 
 	bool hideMessageText() const override {
@@ -62,8 +63,8 @@ public:
 	void stopAnimation() override {
 		if (_attach) _attach->stopAnimation();
 	}
-	int checkAnimationCount() override {
-		return _attach ? _attach->checkAnimationCount() : 0;
+	void checkAnimation() override {
+		if (_attach) _attach->checkAnimation();
 	}
 
 	not_null<WebPageData*> webpage() {
@@ -85,12 +86,17 @@ public:
 		return _attach.get();
 	}
 
+	bool hasHeavyPart() const override;
+	void unloadHeavyPart() override;
+
 	~WebPage();
 
 private:
 	void playAnimation(bool autoplay) override;
 	QSize countOptimalSize() override;
 	QSize countCurrentSize(int newWidth) override;
+
+	void ensurePhotoMediaCreated() const;
 
 	TextSelection toTitleSelection(TextSelection selection) const;
 	TextSelection fromTitleSelection(TextSelection selection) const;
@@ -108,8 +114,10 @@ private:
 	std::vector<std::unique_ptr<Data::Media>> _collage;
 	ClickHandlerPtr _openl;
 	std::unique_ptr<Media> _attach;
+	mutable std::shared_ptr<Data::PhotoMedia> _photoMedia;
 
 	bool _asArticle = false;
+	bool _hasViewButton = false;
 	int _dataVersion = -1;
 	int _siteNameLines = 0;
 	int _titleLines = 0;

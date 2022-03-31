@@ -8,8 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "passport/passport_panel_edit_document.h"
 
 #include "passport/passport_panel_controller.h"
-#include "passport/passport_panel_details_row.h"
 #include "passport/passport_panel_edit_scans.h"
+#include "passport/ui/passport_details_row.h"
 #include "ui/widgets/input_fields.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/widgets/labels.h"
@@ -19,9 +19,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/fade_wrap.h"
 #include "ui/wrap/slide_wrap.h"
+#include "countries/countries_instance.h"
+#include "data/data_user.h" // ->bot()->session()
+#include "main/main_session.h" // ->session().user()
 #include "ui/text/text_utilities.h" // Ui::Text::ToUpper
 #include "boxes/abstract_box.h"
-#include "boxes/confirm_box.h"
+#include "ui/boxes/confirm_box.h"
 #include "lang/lang_keys.h"
 #include "styles/style_widgets.h"
 #include "styles/style_layers.h"
@@ -286,7 +289,7 @@ void PanelEditDocument::setupControls(
 		ScanListData &&scans,
 		std::optional<ScanListData> &&translations,
 		std::map<FileType, ScanInfo> &&specialFiles) {
-	const auto inner = setupContent(
+	setupContent(
 		error,
 		data,
 		scansError,
@@ -363,7 +366,7 @@ not_null<Ui::RpWidget*> PanelEditDocument::setupContent(
 			const ValueMap &fields) {
 		accumulate_max(
 			maxLabelWidth,
-			PanelDetailsRow::LabelWidth(row.label));
+			Ui::PanelDetailsRow::LabelWidth(row.label));
 	});
 	if (maxLabelWidth > 0) {
 		if (error && !error->isEmpty()) {
@@ -422,25 +425,42 @@ not_null<Ui::RpWidget*> PanelEditDocument::setupContent(
 					showIfError = true;
 				}
 			});
-			const auto shown = [=](const QString &code) {
+			const auto shown = [=](const Scheme::CountryInfo &info) {
 				using Result = Scheme::AdditionalVisibility;
-				const auto value = _scheme.additionalShown(code);
+				const auto value = _scheme.additionalShown(info);
 				return (value == Result::Shown)
 					|| (value == Result::OnlyIfError && showIfError);
 			};
 
-			auto title = row->value(
-			) | rpl::filter(
+			auto langValue = row->value(
+			) | rpl::map(
+				_scheme.preferredLanguage
+			) | rpl::flatten_latest();
+
+			auto title = rpl::duplicate(langValue) | rpl::filter(
 				shown
-			) | rpl::map([=](const QString &code) {
-				return _scheme.additionalHeader(code);
+			) | rpl::map([=](const Scheme::CountryInfo &info) {
+				return _scheme.additionalHeader(info);
 			});
-			added->add(
+			const auto headerLabel = added->add(
 				object_ptr<Ui::FlatLabel>(
 					added,
-					std::move(title),
+					rpl::duplicate(title),
 					st::passportFormHeader),
 				st::passportNativeNameHeaderPadding);
+			std::move(
+				title
+			) | rpl::start_with_next([=] {
+				const auto &padding = st::passportNativeNameHeaderPadding;
+				const auto available = added->width()
+					- padding.left()
+					- padding.right();
+				headerLabel->resizeToNaturalWidth(available);
+				headerLabel->moveToLeft(
+					padding.left(),
+					padding.top(),
+					available);
+			}, headerLabel->lifetime());
 
 			enumerateRows([&](
 					int i,
@@ -451,11 +471,10 @@ not_null<Ui::RpWidget*> PanelEditDocument::setupContent(
 				}
 			});
 
-			auto description = row->value(
-			) | rpl::filter(
+			auto description = rpl::duplicate(langValue) | rpl::filter(
 				shown
-			) | rpl::map([=](const QString &code) {
-				return _scheme.additionalDescription(code);
+			) | rpl::map([=](const Scheme::CountryInfo &info) {
+				return _scheme.additionalDescription(info);
 			});
 			added->add(
 				object_ptr<Ui::DividerLabel>(
@@ -467,11 +486,10 @@ not_null<Ui::RpWidget*> PanelEditDocument::setupContent(
 					st::passportFormLabelPadding),
 				st::passportNativeNameAboutMargin);
 
-			wrap->toggleOn(row->value() | rpl::map(shown));
+			wrap->toggleOn(rpl::duplicate(langValue) | rpl::map(shown));
 			wrap->finishAnimating();
 
-			row->value(
-			) | rpl::map(
+			std::move(langValue) | rpl::map(
 				shown
 			) | rpl::start_with_next([=](bool visible) {
 				_additionalShown = visible;
@@ -513,12 +531,20 @@ void PanelEditDocument::createDetailsRow(
 	};
 
 	const auto current = valueOrEmpty(fields, row.key);
+	const auto showBox = [controller = _controller](
+			object_ptr<Ui::BoxContent> box) {
+		controller->show(std::move(box));
+	};
+	const auto isoByPhone = Countries::Instance().countryISO2ByPhone(
+		_controller->bot()->session().user()->phone());
+
 	const auto [it, ok] = _details.emplace(
 		i,
-		container->add(PanelDetailsRow::Create(
+		container->add(Ui::PanelDetailsRow::Create(
 			container,
+			showBox,
+			isoByPhone,
 			row.inputType,
-			_controller,
 			row.label,
 			maxLabelWidth,
 			current.text,
@@ -537,7 +563,7 @@ void PanelEditDocument::createDetailsRow(
 	}, it->second->lifetime());
 }
 
-not_null<PanelDetailsRow*> PanelEditDocument::findRow(
+not_null<Ui::PanelDetailsRow*> PanelEditDocument::findRow(
 		const QString &key) const {
 	for (auto i = 0, count = int(_scheme.rows.size()); i != count; ++i) {
 		const auto &row = _scheme.rows[i];
@@ -558,7 +584,7 @@ void PanelEditDocument::updateCommonError() {
 
 void PanelEditDocument::focusInEvent(QFocusEvent *e) {
 	crl::on_main(this, [=] {
-		for (const auto [index, row] : _details) {
+		for (const auto &[index, row] : _details) {
 			if (row->setFocusFast()) {
 				return;
 			}
@@ -590,7 +616,7 @@ void PanelEditDocument::updateControlsGeometry() {
 
 PanelEditDocument::Result PanelEditDocument::collect() const {
 	auto result = Result();
-	for (const auto [i, field] : _details) {
+	for (const auto &[i, field] : _details) {
 		const auto &row = _scheme.rows[i];
 		auto &fields = (row.valueClass == Scheme::ValueClass::Scans)
 			? result.filesData
@@ -636,8 +662,8 @@ bool PanelEditDocument::validate() {
 		_scroll->scrollToY(_scroll->scrollTop() + scrolldelta);
 		error = firsttop.y();
 	}
-	auto first = QPointer<PanelDetailsRow>();
-	for (const auto [i, field] : ranges::view::reverse(_details)) {
+	auto first = QPointer<Ui::PanelDetailsRow>();
+	for (const auto &[i, field] : ranges::views::reverse(_details)) {
 		const auto &row = _scheme.rows[i];
 		if (row.valueClass == Scheme::ValueClass::Additional
 			&& !_additionalShown) {

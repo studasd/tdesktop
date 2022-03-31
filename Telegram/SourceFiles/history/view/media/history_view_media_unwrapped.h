@@ -23,7 +23,10 @@ public:
 	public:
 		[[nodiscard]] virtual QSize size() = 0;
 
-		virtual void draw(Painter &p, const QRect &r, bool selected) = 0;
+		virtual void draw(
+			Painter &p,
+			const PaintContext &context,
+			const QRect &r) = 0;
 
 		[[nodiscard]] virtual ClickHandlerPtr link() {
 			return nullptr;
@@ -32,26 +35,29 @@ public:
 		[[nodiscard]] virtual DocumentData *document() {
 			return nullptr;
 		}
-		virtual void clearStickerLoopPlayed() {
+		virtual void stickerClearLoopPlayed() {
+		}
+		virtual std::unique_ptr<Lottie::SinglePlayer> stickerTakeLottie(
+			not_null<DocumentData*> data,
+			const Lottie::ColorReplacements *replacements);
+		virtual bool hasHeavyPart() const {
+			return false;
 		}
 		virtual void unloadHeavyPart() {
 		}
 		virtual void refreshLink() {
 		}
-		[[nodiscard]] virtual bool hidesForwardedInfo() {
-			return true;
-		}
 		[[nodiscard]] virtual bool alwaysShowOutTimestamp() {
 			return false;
 		}
-		virtual ~Content() = 0;
+		virtual ~Content() = default;
 	};
 
 	UnwrappedMedia(
 		not_null<Element*> parent,
 		std::unique_ptr<Content> content);
 
-	void draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const override;
+	void draw(Painter &p, const PaintContext &context) const override;
 	PointState pointState(QPoint point) const override;
 	TextState textState(QPoint point, StateRequest request) const override;
 
@@ -75,13 +81,20 @@ public:
 	bool customInfoLayout() const override {
 		return true;
 	}
-	bool hidesForwardedInfo() const override {
-		return _content->hidesForwardedInfo();
-	}
-	void clearStickerLoopPlayed() override {
-		_content->clearStickerLoopPlayed();
-	}
+	QRect contentRectForReactions() const override;
+	std::optional<int> reactionButtonCenterOverride() const override;
+	QPoint resolveCustomInfoRightBottom() const override;
 
+	void stickerClearLoopPlayed() override {
+		_content->stickerClearLoopPlayed();
+	}
+	std::unique_ptr<Lottie::SinglePlayer> stickerTakeLottie(
+		not_null<DocumentData*> data,
+		const Lottie::ColorReplacements *replacements) override;
+
+	bool hasHeavyPart() const override {
+		return _content->hasHeavyPart();
+	}
 	void unloadHeavyPart() override {
 		_content->unloadHeavyPart();
 	}
@@ -104,7 +117,7 @@ private:
 	void drawSurrounding(
 		Painter &p,
 		const QRect &inner,
-		bool selected,
+		const PaintContext &context,
 		const HistoryMessageVia *via,
 		const HistoryMessageReply *reply,
 		const HistoryMessageForwarded *forwarded) const;
@@ -118,11 +131,12 @@ private:
 		const HistoryMessageReply *reply,
 		const HistoryMessageForwarded *forwarded) const;
 
-	inline int calculateFullRight(const QRect &inner) const;
-	inline QPoint calculateFastActionPosition(
+	int calculateFullRight(const QRect &inner) const;
+	QPoint calculateFastActionPosition(
 		int fullBottom,
 		int replyRight,
-		int fullRight) const;
+		int fullRight,
+		QSize size) const;
 
 	const HistoryMessageForwarded *getDisplayedForwardedInfo() const;
 

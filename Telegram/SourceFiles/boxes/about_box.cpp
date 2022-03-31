@@ -10,20 +10,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "mainwidget.h"
 #include "mainwindow.h"
-#include "boxes/confirm_box.h"
+#include "ui/boxes/confirm_box.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/text/text_utilities.h"
-#include "platform/platform_file_utilities.h"
 #include "base/platform/base_platform_info.h"
 #include "core/click_handler_types.h"
 #include "core/update_checker.h"
+#include "core/application.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QClipboard>
-#include <QtGui/QDesktopServices>
 
 namespace {
 
@@ -81,24 +80,28 @@ void AboutBox::prepare() {
 void AboutBox::resizeEvent(QResizeEvent *e) {
 	BoxContent::resizeEvent(e);
 
+	const auto available = width()
+		- st::boxPadding.left()
+		- st::boxPadding.right();
 	_version->moveToLeft(st::boxPadding.left(), st::aboutVersionTop);
+	_text1->resizeToWidth(available);
 	_text1->moveToLeft(st::boxPadding.left(), st::aboutTextTop);
+	_text2->resizeToWidth(available);
 	_text2->moveToLeft(st::boxPadding.left(), _text1->y() + _text1->height() + st::aboutSkip);
+	_text3->resizeToWidth(available);
 	_text3->moveToLeft(st::boxPadding.left(), _text2->y() + _text2->height() + st::aboutSkip);
 }
 
 void AboutBox::showVersionHistory() {
 	if (cRealAlphaVersion()) {
 		auto url = qsl("https://tdesktop.com/");
-		if (Platform::IsWindows()) {
+		if (Platform::IsWindows32Bit()) {
 			url += qsl("win/%1.zip");
-		} else if (Platform::IsOSXBuild()) {
-			url += qsl("osx/%1.zip");
+		} else if (Platform::IsWindows64Bit()) {
+			url += qsl("win64/%1.zip");
 		} else if (Platform::IsMac()) {
 			url += qsl("mac/%1.zip");
-		} else if (Platform::IsLinux32Bit()) {
-			url += qsl("linux32/%1.tar.xz");
-		} else if (Platform::IsLinux64Bit()) {
+		} else if (Platform::IsLinux()) {
 			url += qsl("linux/%1.tar.xz");
 		} else {
 			Unexpected("Platform value.");
@@ -107,9 +110,13 @@ void AboutBox::showVersionHistory() {
 
 		QGuiApplication::clipboard()->setText(url);
 
-		Ui::show(Box<InformBox>("The link to the current private alpha version of Telegram Desktop was copied to the clipboard."));
+		getDelegate()->show(
+			Ui::MakeInformBox(
+				"The link to the current private alpha "
+				"version of Telegram Desktop was copied to the clipboard."),
+			Ui::LayerOption::CloseOther);
 	} else {
-		QDesktopServices::openUrl(qsl("https://desktop.telegram.org/changelog"));
+		UrlClickHandler::Open(Core::App().changelogLink());
 	}
 }
 
@@ -126,7 +133,7 @@ QString telegramFaqLink() {
 	const auto langpacked = [&](const char *language) {
 		return result + '/' + language;
 	};
-	const auto current = Lang::Current().id();
+	const auto current = Lang::Id();
 	for (const auto language : { "de", "es", "it", "ko" }) {
 		if (current.startsWith(QLatin1String(language))) {
 			return langpacked(language);
@@ -144,6 +151,9 @@ QString currentVersionText() {
 		result += qsl(" alpha %1").arg(cAlphaVersion() % 1000);
 	} else if (AppBetaVersion) {
 		result += " beta";
+	}
+	if (Platform::IsWindows64Bit()) {
+		result += " x64";
 	}
 	return result;
 }

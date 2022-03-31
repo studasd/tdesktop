@@ -9,32 +9,36 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "boxes/abstract_box.h"
 #include "base/binary_guard.h"
-#include "window/themes/window_theme.h"
 #include "history/admin_log/history_admin_log_item.h"
 #include "history/view/history_view_element.h"
 #include "ui/effects/animations.h"
 #include "ui/effects/radial_animation.h"
+#include "data/data_wall_paper.h"
 
-namespace Main {
-class Session;
-} // namespace Main
+namespace Data {
+class DocumentMedia;
+} // namespace Data
+
+namespace Window {
+class SessionController;
+} // namespace Window
 
 namespace Ui {
 class Checkbox;
+class ChatStyle;
 } // namespace Ui
 
 class BackgroundPreviewBox
 	: public Ui::BoxContent
-	, private HistoryView::SimpleElementDelegate
-	, private base::Subscriber {
+	, private HistoryView::SimpleElementDelegate {
 public:
 	BackgroundPreviewBox(
 		QWidget*,
-		not_null<Main::Session*> session,
+		not_null<Window::SessionController*> controller,
 		const Data::WallPaper &paper);
 
 	static bool Start(
-		not_null<Main::Session*> session,
+		not_null<Window::SessionController*> controller,
 		const QString &slug,
 		const QMap<QString, QString> &params);
 
@@ -53,11 +57,11 @@ private:
 	void radialAnimationCallback(crl::time now);
 	QRect radialRect() const;
 
+	void generateBackground();
 	void checkLoadedDocument();
-	bool setScaledFromThumb();
+	void setScaledFromThumb();
 	void setScaledFromImage(QImage &&image, QImage &&blurred);
-	void updateServiceBg(std::optional<QColor> background);
-	std::optional<QColor> patternBackgroundColor() const;
+	void updateServiceBg(const std::vector<QColor> &bg);
 	void paintImage(Painter &p);
 	void paintRadial(Painter &p);
 	void paintTexts(Painter &p, crl::time ms);
@@ -67,12 +71,14 @@ private:
 	void startFadeInFrom(QPixmap previous);
 	void checkBlurAnimationStart();
 
-	const not_null<Main::Session*> _session;
+	const not_null<Window::SessionController*> _controller;
+	std::unique_ptr<Ui::ChatStyle> _chatStyle;
 	AdminLog::OwnedItem _text1;
 	AdminLog::OwnedItem _text2;
 	Data::WallPaper _paper;
+	std::shared_ptr<Data::DocumentMedia> _media;
 	QImage _full;
-	QPixmap _scaled, _blurred, _fadeOutThumbnail;
+	QPixmap _generated, _scaled, _blurred, _fadeOutThumbnail;
 	Ui::Animations::Simple _fadeIn;
 	Ui::RadialAnimation _radial;
 	base::binary_guard _generating;

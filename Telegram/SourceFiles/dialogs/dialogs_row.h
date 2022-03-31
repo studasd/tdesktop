@@ -10,18 +10,25 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/text.h"
 #include "ui/effects/animations.h"
 #include "dialogs/dialogs_key.h"
+#include "dialogs/ui/dialogs_message_view.h"
 
 class History;
 class HistoryItem;
+
+namespace Data {
+class CloudImageView;
+} // namespace Data
 
 namespace Ui {
 class RippleAnimation;
 } // namespace Ui
 
-namespace Dialogs {
-namespace Layout {
+namespace Dialogs::Ui {
+using namespace ::Ui;
 class RowPainter;
-} // namespace Layout
+} // namespace Dialogs::Ui
+
+namespace Dialogs {
 
 enum class SortMode;
 
@@ -30,11 +37,14 @@ public:
 	BasicRow();
 	~BasicRow();
 
-	void setOnline(bool online, Fn<void()> updateCallback = nullptr) const;
+	void updateCornerBadgeShown(
+		not_null<PeerData*> peer,
+		Fn<void()> updateCallback = nullptr) const;
 	void paintUserpic(
 		Painter &p,
 		not_null<PeerData*> peer,
-		bool allowOnline,
+		History *historyForCornerBadge,
+		crl::time now,
 		bool active,
 		int fullWidth) const;
 
@@ -48,23 +58,32 @@ public:
 		int outerWidth,
 		const QColor *colorOverride = nullptr) const;
 
+	std::shared_ptr<Data::CloudImageView> &userpicView() const {
+		return _userpic;
+	}
+
 private:
-	struct OnlineUserpic {
+	struct CornerBadgeUserpic {
 		InMemoryKey key;
-		float64 online = 0.;
+		float64 shown = 0.;
 		bool active = false;
 		QImage frame;
 		Ui::Animations::Simple animation;
 	};
 
-	void ensureOnlineUserpic() const;
-	static void PaintOnlineFrame(
-		not_null<OnlineUserpic*> data,
-		not_null<PeerData*> peer);
+	void setCornerBadgeShown(
+		bool shown,
+		Fn<void()> updateCallback) const;
+	void ensureCornerBadgeUserpic() const;
+	static void PaintCornerBadgeFrame(
+		not_null<CornerBadgeUserpic*> data,
+		not_null<PeerData*> peer,
+		std::shared_ptr<Data::CloudImageView> &view);
 
+	mutable std::shared_ptr<Data::CloudImageView> _userpic;
 	mutable std::unique_ptr<Ui::RippleAnimation> _ripple;
-	mutable std::unique_ptr<OnlineUserpic> _onlineUserpic;
-	mutable bool _online = false;
+	mutable std::unique_ptr<CornerBadgeUserpic> _cornerBadgeUserpic;
+	mutable bool _cornerBadgeShown = false;
 
 };
 
@@ -75,25 +94,25 @@ public:
 	}
 	Row(Key key, int pos);
 
-	Key key() const {
+	[[nodiscard]] Key key() const {
 		return _id;
 	}
-	History *history() const {
+	[[nodiscard]] History *history() const {
 		return _id.history();
 	}
-	Data::Folder *folder() const {
+	[[nodiscard]] Data::Folder *folder() const {
 		return _id.folder();
 	}
-	not_null<Entry*> entry() const {
+	[[nodiscard]] not_null<Entry*> entry() const {
 		return _id.entry();
 	}
-	int pos() const {
+	[[nodiscard]] int pos() const {
 		return _pos;
 	}
-	uint64 sortKey(FilterId filterId) const;
+	[[nodiscard]] uint64 sortKey(FilterId filterId) const;
 
 	void validateListEntryCache() const;
-	const Ui::Text::String &listEntryCache() const {
+	[[nodiscard]] const Ui::Text::String &listEntryCache() const {
 		return _listEntryCache;
 	}
 
@@ -114,20 +133,22 @@ class FakeRow : public BasicRow {
 public:
 	FakeRow(Key searchInChat, not_null<HistoryItem*> item);
 
-	Key searchInChat() const {
+	[[nodiscard]] Key searchInChat() const {
 		return _searchInChat;
 	}
-	not_null<HistoryItem*> item() const {
+	[[nodiscard]] not_null<HistoryItem*> item() const {
 		return _item;
+	}
+	[[nodiscard]] Ui::MessageView &itemView() const {
+		return _itemView;
 	}
 
 private:
-	friend class Layout::RowPainter;
+	friend class Ui::RowPainter;
 
 	Key _searchInChat;
 	not_null<HistoryItem*> _item;
-	mutable const HistoryItem *_cacheFor = nullptr;
-	mutable Ui::Text::String _cache;
+	mutable Ui::MessageView _itemView;
 
 };
 

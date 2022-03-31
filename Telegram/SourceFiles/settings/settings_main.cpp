@@ -11,34 +11,195 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "settings/settings_codes.h"
 #include "settings/settings_chat.h"
 #include "boxes/language_box.h"
-#include "boxes/confirm_box.h"
+#include "boxes/username_box.h"
+#include "ui/boxes/confirm_box.h"
 #include "boxes/about_box.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/slide_wrap.h"
+#include "ui/wrap/padding_wrap.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/discrete_sliders.h"
 #include "ui/widgets/buttons.h"
+#include "ui/text/text_utilities.h"
+#include "ui/toast/toast.h"
+#include "ui/special_buttons.h"
 #include "info/profile/info_profile_cover.h"
 #include "data/data_user.h"
 #include "data/data_session.h"
 #include "data/data_cloud_themes.h"
 #include "data/data_chat_filters.h"
 #include "lang/lang_keys.h"
+#include "lang/lang_instance.h"
 #include "storage/localstorage.h"
 #include "main/main_session.h"
+#include "main/main_session_settings.h"
 #include "main/main_account.h"
 #include "main/main_app_config.h"
 #include "apiwrap.h"
+#include "api/api_peer_photo.h"
+#include "api/api_cloud_password.h"
+#include "api/api_global_privacy.h"
+#include "api/api_sensitive_content.h"
+#include "info/profile/info_profile_values.h"
+#include "window/window_controller.h"
 #include "window/window_session_controller.h"
-#include "core/file_utilities.h"
+#include "core/click_handler_types.h"
+#include "core/application.h"
 #include "base/call_delayed.h"
+#include "base/platform/base_platform_info.h"
 #include "facades.h"
-#include "app.h"
 #include "styles/style_settings.h"
+#include "styles/style_boxes.h"
+#include "styles/style_info.h"
 
-#include <QtGui/QDesktopServices>
+#include <QtGui/QGuiApplication>
+#include <QtGui/QClipboard>
 
 namespace Settings {
+namespace {
+
+class Cover final : public Ui::FixedHeightWidget {
+public:
+	Cover(
+		QWidget *parent,
+		not_null<Window::SessionController*> controller,
+		not_null<UserData*> user);
+	~Cover();
+
+private:
+	void setupChildGeometry();
+	void initViewers();
+	void refreshStatusText();
+	void refreshNameGeometry(int newWidth);
+	void refreshPhoneGeometry(int newWidth);
+	void refreshUsernameGeometry(int newWidth);
+
+	const not_null<Window::SessionController*> _controller;
+	const not_null<UserData*> _user;
+
+	object_ptr<Ui::UserpicButton> _userpic;
+	object_ptr<Ui::FlatLabel> _name = { nullptr };
+	object_ptr<Ui::FlatLabel> _phone = { nullptr };
+	object_ptr<Ui::FlatLabel> _username = { nullptr };
+
+};
+
+Cover::Cover(
+	QWidget *parent,
+	not_null<Window::SessionController*> controller,
+	not_null<UserData*> user)
+: FixedHeightWidget(
+	parent,
+	st::settingsPhotoTop
+		+ st::infoProfilePhoto.size.height()
+		+ st::settingsPhotoBottom)
+, _controller(controller)
+, _user(user)
+, _userpic(
+	this,
+	controller,
+	_user,
+	Ui::UserpicButton::Role::OpenPhoto,
+	st::infoProfilePhoto)
+, _name(this, st::infoProfileNameLabel)
+, _phone(this, st::defaultFlatLabel)
+, _username(this, st::infoProfileMegagroupStatusLabel) {
+	_user->updateFull();
+
+	_name->setSelectable(true);
+	_name->setContextCopyText(tr::lng_profile_copy_fullname(tr::now));
+
+	initViewers();
+	setupChildGeometry();
+
+	_userpic->switchChangePhotoOverlay(_user->isSelf());
+	_userpic->uploadPhotoRequests(
+	) | rpl::start_with_next([=] {
+		_user->session().api().peerPhoto().upload(
+			_user,
+			_userpic->takeResultImage());
+	}, _userpic->lifetime());
+}
+
+Cover::~Cover() = default;
+
+void Cover::setupChildGeometry() {
+	using namespace rpl::mappers;
+	widthValue(
+	) | rpl::start_with_next([=](int newWidth) {
+		_userpic->moveToLeft(
+			st::settingsPhotoLeft,
+			st::settingsPhotoTop,
+			newWidth);
+		refreshNameGeometry(newWidth);
+		refreshPhoneGeometry(newWidth);
+		refreshUsernameGeometry(newWidth);
+	}, lifetime());
+}
+
+void Cover::initViewers() {
+	Info::Profile::NameValue(
+		_user
+	) | rpl::start_with_next([=](const TextWithEntities &value) {
+		_name->setText(value.text);
+		refreshNameGeometry(width());
+	}, lifetime());
+
+	Info::Profile::PhoneValue(
+		_user
+	) | rpl::start_with_next([=](const TextWithEntities &value) {
+		_phone->setText(value.text);
+		refreshPhoneGeometry(width());
+	}, lifetime());
+
+	Info::Profile::UsernameValue(
+		_user
+	) | rpl::start_with_next([=](const TextWithEntities &value) {
+		_username->setMarkedText(Ui::Text::Link(value.text.isEmpty()
+			? tr::lng_settings_username_add(tr::now)
+			: value.text));
+		refreshUsernameGeometry(width());
+	}, lifetime());
+
+	_username->setClickHandlerFilter([=](auto&&...) {
+		const auto username = _user->userName();
+		if (username.isEmpty()) {
+			_controller->show(Box<UsernameBox>(&_user->session()));
+		} else {
+			QGuiApplication::clipboard()->setText(
+				_user->session().createInternalLinkFull(username));
+			Ui::Toast::Show(tr::lng_username_copied(tr::now));
+		}
+		return false;
+	});
+}
+
+void Cover::refreshNameGeometry(int newWidth) {
+	const auto nameLeft = st::settingsNameLeft;
+	const auto nameTop = st::settingsNameTop;
+	const auto nameWidth = newWidth - nameLeft - st::infoProfileNameRight;
+	_name->resizeToNaturalWidth(nameWidth);
+	_name->moveToLeft(nameLeft, nameTop, newWidth);
+}
+
+void Cover::refreshPhoneGeometry(int newWidth) {
+	const auto phoneLeft = st::settingsPhoneLeft;
+	const auto phoneTop = st::settingsPhoneTop;
+	const auto phoneWidth = newWidth - phoneLeft - st::infoProfileNameRight;
+	_phone->resizeToWidth(phoneWidth);
+	_phone->moveToLeft(phoneLeft, phoneTop, newWidth);
+}
+
+void Cover::refreshUsernameGeometry(int newWidth) {
+	const auto usernameLeft = st::settingsUsernameLeft;
+	const auto usernameTop = st::settingsUsernameTop;
+	const auto usernameRight = st::infoProfileNameRight;
+	const auto usernameWidth = newWidth - usernameLeft - usernameRight;
+	_username->resizeToWidth(usernameWidth);
+	_username->moveToLeft(usernameLeft, usernameTop, newWidth);
+}
+
+} // namespace
 
 void SetupLanguageButton(
 		not_null<Ui::VerticalLayout*> container,
@@ -47,12 +208,12 @@ void SetupLanguageButton(
 		container,
 		tr::lng_settings_language(),
 		rpl::single(
-			Lang::Current().id()
+			Lang::GetInstance().id()
 		) | rpl::then(
-			Lang::Current().idChanges()
-		) | rpl::map([] { return Lang::Current().nativeName(); }),
-		icon ? st::settingsSectionButton : st::settingsButton,
-		icon ? &st::settingsIconLanguage : nullptr);
+			Lang::GetInstance().idChanges()
+		) | rpl::map([] { return Lang::GetInstance().nativeName(); }),
+		icon ? st::settingsButton : st::settingsButtonNoIcon,
+		{ icon ? &st::settingsIconLanguage : nullptr, kIconDarkOrange });
 	const auto guard = Ui::CreateChild<base::binary_guard>(button.get());
 	button->addClickHandler([=] {
 		const auto m = button->clickModifiers();
@@ -74,12 +235,12 @@ void SetupSections(
 	const auto addSection = [&](
 			rpl::producer<QString> label,
 			Type type,
-			const style::icon *icon) {
+			IconDescriptor &&descriptor) {
 		AddButton(
 			container,
 			std::move(label),
-			st::settingsSectionButton,
-			icon
+			st::settingsButton,
+			std::move(descriptor)
 		)->addClickHandler([=] { showOther(type); });
 	};
 	if (controller->session().supportMode()) {
@@ -91,20 +252,20 @@ void SetupSections(
 		addSection(
 			tr::lng_settings_information(),
 			Type::Information,
-			&st::settingsIconInformation);
+			{ &st::settingsIconAccount, kIconLightOrange });
 	}
 	addSection(
 		tr::lng_settings_section_notify(),
 		Type::Notifications,
-		&st::settingsIconNotifications);
+		{ &st::settingsIconNotifications, kIconRed });
 	addSection(
 		tr::lng_settings_section_privacy(),
 		Type::PrivacySecurity,
-		&st::settingsIconPrivacySecurity);
+		{ &st::settingsIconLock, kIconGreen });
 	addSection(
 		tr::lng_settings_section_chat_settings(),
 		Type::Chat,
-		&st::settingsIconChat);
+		{ &st::settingsIconChat, kIconLightBlue });
 
 	const auto preload = [=] {
 		controller->session().data().chatsFilters().requestSuggested();
@@ -116,10 +277,11 @@ void SetupSections(
 			CreateButton(
 				container,
 				tr::lng_settings_section_filters(),
-				st::settingsSectionButton,
-				&st::settingsIconFolders)))->setDuration(0);
+				st::settingsButton,
+				{ &st::settingsIconFolders, kIconDarkBlue }))
+	)->setDuration(0);
 	if (!controller->session().data().chatsFilters().list().empty()
-		|| Global::DialogsFiltersEnabled()) {
+		|| controller->session().settings().dialogsFiltersEnabled()) {
 		slided->show(anim::type::instant);
 		preload();
 	} else {
@@ -138,9 +300,7 @@ void SetupSections(
 			}
 		};
 		slided->toggleOn(
-			rpl::single(
-				rpl::empty_value()
-			) | rpl::then(
+			rpl::single(rpl::empty) | rpl::then(
 				account->appConfig().refreshed()
 			) | rpl::map(
 				enabled
@@ -153,7 +313,11 @@ void SetupSections(
 	addSection(
 		tr::lng_settings_advanced(),
 		Type::Advanced,
-		&st::settingsIconGeneral);
+		{ &st::settingsIconGeneral, kIconPurple });
+	addSection(
+		tr::lng_settings_section_call_settings(),
+		Type::Calls,
+		{ &st::settingsIconCalls, kIconGreen });
 
 	SetupLanguageButton(container);
 
@@ -165,6 +329,7 @@ bool HasInterfaceScale() {
 }
 
 void SetupInterfaceScale(
+		not_null<Window::Controller*> window,
 		not_null<Ui::VerticalLayout*> container,
 		bool icon) {
 	if (!HasInterfaceScale()) {
@@ -178,8 +343,8 @@ void SetupInterfaceScale(
 	const auto button = AddButton(
 		container,
 		tr::lng_settings_default_scale(),
-		icon ? st::settingsSectionButton : st::settingsButton,
-		icon ? &st::settingsIconInterfaceScale : nullptr
+		icon ? st::settingsButton : st::settingsButtonNoIcon,
+		{ icon ? &st::settingsIconInterfaceScale : nullptr, kIconLightBlue }
 	)->toggleOn(toggled->events_starting_with_copy(switched));
 
 	const auto slider = container->add(
@@ -210,10 +375,11 @@ void SetupInterfaceScale(
 		}
 		return (result == ScaleValues.size()) ? (result - 1) : result;
 	};
-	const auto inSetScale = Ui::CreateChild<bool>(container.get());
-	const auto setScale = std::make_shared<Fn<void(int)>>();
-	*setScale = [=](int scale) {
-		if (*inSetScale) return;
+	const auto inSetScale = container->lifetime().make_state<bool>();
+	const auto setScale = [=](int scale, const auto &repeatSetScale) -> void {
+		if (*inSetScale) {
+			return;
+		}
 		*inSetScale = true;
 		const auto guard = gsl::finally([=] { *inSetScale = false; });
 
@@ -223,19 +389,21 @@ void SetupInterfaceScale(
 			const auto confirmed = crl::guard(button, [=] {
 				cSetConfigScale(scale);
 				Local::writeSettings();
-				App::restart();
+				Core::Restart();
 			});
-			const auto cancelled = crl::guard(button, [=] {
+			const auto cancelled = crl::guard(button, [=](Fn<void()> close) {
 				base::call_delayed(
 					st::defaultSettingsSlider.duration,
 					button,
-					[=] { (*setScale)(cConfigScale()); });
+					[=] { repeatSetScale(cConfigScale(), repeatSetScale); });
+				close();
 			});
-			Ui::show(Box<ConfirmBox>(
-				tr::lng_settings_need_restart(tr::now),
-				tr::lng_settings_restart_now(tr::now),
-				confirmed,
-				cancelled));
+			window->show(Ui::MakeConfirmBox({
+				.text = tr::lng_settings_need_restart(),
+				.confirmed = confirmed,
+				.cancelled = cancelled,
+				.confirmText = tr::lng_settings_restart_now(),
+			}));
 		} else if (scale != cConfigScale()) {
 			cSetConfigScale(scale);
 			Local::writeSettings();
@@ -243,7 +411,11 @@ void SetupInterfaceScale(
 	};
 
 	const auto label = [](int scale) {
-		return QString::number(scale) + '%';
+		if constexpr (Platform::IsMac()) {
+			return QString::number(scale) + '%';
+		} else {
+			return QString::number(scale * cIntRetinaFactor()) + '%';
+		}
 	};
 	const auto scaleByIndex = [](int index) {
 		return *(ScaleValues.begin() + index);
@@ -256,30 +428,32 @@ void SetupInterfaceScale(
 	slider->sectionActivated(
 	) | rpl::map([=](int section) {
 		return scaleByIndex(section);
+	}) | rpl::filter([=](int scale) {
+		return cEvalScale(scale) != cEvalScale(cConfigScale());
 	}) | rpl::start_with_next([=](int scale) {
-		(*setScale)((scale == cScreenScale())
-			? style::kScaleAuto
-			: scale);
+		setScale(
+			(scale == cScreenScale()) ? style::kScaleAuto : scale,
+			setScale);
 	}, slider->lifetime());
 
 	button->toggledValue(
 	) | rpl::map([](bool checked) {
 		return checked ? style::kScaleAuto : cEvalScale(cConfigScale());
 	}) | rpl::start_with_next([=](int scale) {
-		(*setScale)(scale);
+		setScale(scale, setScale);
 	}, button->lifetime());
 }
 
 void OpenFaq() {
-	QDesktopServices::openUrl(telegramFaqLink());
+	UrlClickHandler::Open(telegramFaqLink());
 }
 
 void SetupFaq(not_null<Ui::VerticalLayout*> container, bool icon) {
 	AddButton(
 		container,
 		tr::lng_settings_faq(),
-		icon ? st::settingsSectionButton : st::settingsButton,
-		icon ? &st::settingsIconFaq : nullptr
+		icon ? st::settingsButton : st::settingsButtonNoIcon,
+		{ icon ? &st::settingsIconFaq : nullptr, kIconLightBlue }
 	)->addClickHandler(OpenFaq);
 }
 
@@ -291,10 +465,20 @@ void SetupHelp(
 
 	SetupFaq(container);
 
+	AddButton(
+		container,
+		tr::lng_settings_features(),
+		st::settingsButton,
+		{ &st::settingsIconTips, kIconLightOrange }
+	)->setClickedCallback([=] {
+		UrlClickHandler::Open(tr::lng_telegram_features_url(tr::now));
+	});
+
 	const auto button = AddButton(
 		container,
 		tr::lng_settings_ask_question(),
-		st::settingsSectionButton);
+		st::settingsButton,
+		{ &st::settingsIconAskQuestion, kIconGreen });
 	const auto requestId = button->lifetime().make_state<mtpRequestId>();
 	button->lifetime().add([=] {
 		if (*requestId) {
@@ -316,21 +500,20 @@ void SetupHelp(
 						Ui::showPeerHistory(user, ShowAtUnreadMsgId);
 					}
 				});
-			}).fail([=](const RPCError &error) {
+			}).fail([=] {
 				*requestId = 0;
 			}).send();
 		});
-		auto box = Box<ConfirmBox>(
-			tr::lng_settings_ask_sure(tr::now),
-			tr::lng_settings_ask_ok(tr::now),
-			tr::lng_settings_faq_button(tr::now),
-			sure,
-			OpenFaq);
-		box->setStrictCancel(true);
-		Ui::show(std::move(box));
+		auto box = Ui::MakeConfirmBox({
+			.text = tr::lng_settings_ask_sure(),
+			.confirmed = sure,
+			.cancelled = OpenFaq,
+			.confirmText = tr::lng_settings_ask_ok(),
+			.cancelText = tr::lng_settings_faq_button(),
+			.strictCancel = true,
+		});
+		controller->show(std::move(box));
 	});
-
-	AddSkip(container);
 }
 
 Main::Main(
@@ -351,11 +534,10 @@ void Main::keyPressEvent(QKeyEvent *e) {
 void Main::setupContent(not_null<Window::SessionController*> controller) {
 	const auto content = Ui::CreateChild<Ui::VerticalLayout>(this);
 
-	const auto cover = content->add(object_ptr<Info::Profile::Cover>(
+	content->add(object_ptr<Cover>(
 		content,
-		controller->session().user(),
-		controller));
-	cover->setOnlineCount(rpl::single(0));
+		controller,
+		controller->session().user()));
 
 	SetupSections(controller, content, [=](Type type) {
 		_showOther.fire_copy(type);
@@ -363,7 +545,7 @@ void Main::setupContent(not_null<Window::SessionController*> controller) {
 	if (HasInterfaceScale()) {
 		AddDivider(content);
 		AddSkip(content);
-		SetupInterfaceScale(content);
+		SetupInterfaceScale(&controller->window(), content);
 		AddSkip(content);
 	}
 	SetupHelp(controller, content);
@@ -371,8 +553,10 @@ void Main::setupContent(not_null<Window::SessionController*> controller) {
 	Ui::ResizeFitChild(this, content);
 
 	// If we load this in advance it won't jump when we open its' section.
-	controller->session().api().reloadPasswordState();
+	controller->session().api().cloudPassword().reload();
 	controller->session().api().reloadContactSignupSilent();
+	controller->session().api().sensitiveContent().reload();
+	controller->session().api().globalPrivacy().reload();
 	controller->session().data().cloudThemes().refresh();
 }
 

@@ -19,13 +19,13 @@ namespace Streaming {
 namespace {
 
 constexpr auto kBufferFor = 3 * crl::time(1000);
-constexpr auto kLoadInAdvanceForRemote = 64 * crl::time(1000);
+constexpr auto kLoadInAdvanceForRemote = 32 * crl::time(1000);
 constexpr auto kLoadInAdvanceForLocal = 5 * crl::time(1000);
 constexpr auto kMsFrequency = 1000; // 1000 ms per second.
 
 // If we played for 3 seconds and got stuck it looks like we're loading
 // slower than we're playing, so load full file in that case.
-constexpr auto kLoadFullIfStuckAfterPlayback = 3 * crl::time(1000);
+//constexpr auto kLoadFullIfStuckAfterPlayback = 3 * crl::time(1000);
 
 [[nodiscard]] bool FullTrackReceived(const TrackState &state) {
 	return (state.duration != kTimeUnknown)
@@ -63,6 +63,7 @@ void SaveValidVideoInformation(
 	to.size = from.size;
 	to.cover = std::move(from.cover);
 	to.rotation = from.rotation;
+	to.alpha = from.alpha;
 }
 
 void SaveValidStartInformation(Information &to, Information &&from) {
@@ -79,10 +80,8 @@ void SaveValidStartInformation(Information &to, Information &&from) {
 
 } // namespace
 
-Player::Player(
-	not_null<Data::Session*> owner,
-	std::shared_ptr<Reader> reader)
-: _file(std::make_unique<File>(owner, std::move(reader)))
+Player::Player(std::shared_ptr<Reader> reader)
+: _file(std::make_unique<File>(std::move(reader)))
 , _remoteLoader(_file->isRemoteLoader())
 , _renderFrameTimer([=] { checkNextFrameRender(); }) {
 }
@@ -235,6 +234,10 @@ void Player::videoPlayedTill(crl::time position) {
 	trackPlayedTill(*_video, _information.video.state, position);
 }
 
+Mode Player::fileOpenMode() {
+	return _options.mode;
+}
+
 bool Player::fileReady(int headerSize, Stream &&video, Stream &&audio) {
 	_waitingForData = false;
 
@@ -350,8 +353,6 @@ void Player::fileWaitingForData() {
 bool Player::fileProcessPackets(
 		base::flat_map<int, std::vector<FFmpeg::Packet>> &packets) {
 	_waitingForData = false;
-	auto audioTill = kTimeUnknown;
-	auto videoTill = kTimeUnknown;
 	for (auto &[index, list] : packets) {
 		if (list.empty()) {
 			continue;
@@ -543,7 +544,7 @@ void Player::play(const PlaybackOptions &options) {
 		_options.speed = 1.;
 	}
 	_stage = Stage::Initializing;
-	_file->start(delegate(), _options.position);
+	_file->start(delegate(), _options.position, _options.hwAllowed);
 }
 
 void Player::savePreviousReceivedTill(
@@ -881,6 +882,26 @@ QImage Player::frame(
 	Expects(_video != nullptr);
 
 	return _video->frame(request, instance);
+}
+
+FrameWithInfo Player::frameWithInfo(
+		const FrameRequest &request,
+		const Instance *instance) const {
+	Expects(_video != nullptr);
+
+	return _video->frameWithInfo(request, instance);
+}
+
+FrameWithInfo Player::frameWithInfo(const Instance *instance) const {
+	Expects(_video != nullptr);
+
+	return _video->frameWithInfo(instance);
+}
+
+QImage Player::currentFrameImage() const {
+	Expects(_video != nullptr);
+
+	return _video->currentFrameImage();
 }
 
 void Player::unregisterInstance(not_null<const Instance*> instance) {

@@ -8,8 +8,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "ui/rp_widget.h"
+#include "chat_helpers/bot_command.h"
 #include "dialogs/dialogs_key.h"
+#include "media/player/media_player_float.h" // FloatSectionDelegate
 #include "base/object_ptr.h"
+#include "window/window_section_common.h"
+
+class PeerData;
 
 namespace Main {
 class Session;
@@ -17,6 +22,7 @@ class Session;
 
 namespace Ui {
 class LayerWidget;
+class ChatTheme;
 } // namespace Ui
 
 namespace Window {
@@ -34,40 +40,30 @@ enum class Column {
 
 class AbstractSectionWidget
 	: public Ui::RpWidget
-	, protected base::Subscriber {
+	, public Media::Player::FloatSectionDelegate {
 public:
 	AbstractSectionWidget(
 		QWidget *parent,
-		not_null<Window::SessionController*> controller)
-	: RpWidget(parent)
-	, _controller(controller) {
-	}
+		not_null<SessionController*> controller,
+		rpl::producer<PeerData*> peerForBackground);
 
 	[[nodiscard]] Main::Session &session() const;
+	[[nodiscard]] not_null<SessionController*> controller() const {
+		return _controller;
+	}
 
 	// Tabbed selector management.
-	virtual void pushTabbedSelectorToThirdSection(
-		const Window::SectionShow &params) {
+	virtual bool pushTabbedSelectorToThirdSection(
+			not_null<PeerData*> peer,
+			const SectionShow &params) {
+		return false;
 	}
 	virtual bool returnTabbedSelector() {
 		return false;
 	}
 
-	// Float player interface.
-	virtual bool wheelEventFromFloatPlayer(QEvent *e) {
-		return false;
-	}
-	[[nodiscard]] virtual QRect rectForFloatPlayer() const {
-		return mapToGlobal(rect());
-	}
-
-protected:
-	[[nodiscard]] not_null<Window::SessionController*> controller() const {
-		return _controller;
-	}
-
 private:
-	const not_null<Window::SessionController*> _controller;
+	const not_null<SessionController*> _controller;
 
 };
 
@@ -75,6 +71,7 @@ class SectionMemento;
 
 struct SectionSlideParams {
 	QPixmap oldContentCache;
+	int topSkip = 0;
 	bool withTopBarShadow = false;
 	bool withTabs = false;
 	bool withFade = false;
@@ -86,7 +83,14 @@ struct SectionSlideParams {
 
 class SectionWidget : public AbstractSectionWidget {
 public:
-	SectionWidget(QWidget *parent, not_null<Window::SessionController*> controller);
+	SectionWidget(
+		QWidget *parent,
+		not_null<SessionController*> controller,
+		rpl::producer<PeerData*> peerForBackground = nullptr);
+	SectionWidget(
+		QWidget *parent,
+		not_null<SessionController*> controller,
+		not_null<PeerData*> peerForBackground);
 
 	virtual Dialogs::RowDescriptor activeChat() const {
 		return {};
@@ -107,6 +111,7 @@ public:
 		SlideDirection direction,
 		const SectionSlideParams &params);
 	void showFast();
+	[[nodiscard]] bool animatingShow() const;
 
 	// This can be used to grab with or without top bar shadow.
 	// This will be protected when animation preparation will be done inside.
@@ -122,9 +127,26 @@ public:
 		not_null<SectionMemento*> memento,
 		const SectionShow &params) = 0;
 
+	virtual bool showMessage(
+			PeerId peerId,
+			const SectionShow &params,
+			MsgId messageId) {
+		return false;
+	}
+
+	virtual bool preventsClose(Fn<void()> &&continueCallback) const {
+		return false;
+	}
+
+	// Send bot command from peer info or media viewer.
+	virtual SectionActionResult sendBotCommand(
+			Bot::SendCommandRequest request) {
+		return SectionActionResult::Ignore;
+	}
+
 	// Create a memento of that section to store it in the history stack.
 	// This method may modify the section ("take" heavy items).
-	virtual std::unique_ptr<SectionMemento> createMemento();
+	virtual std::shared_ptr<SectionMemento> createMemento();
 
 	void setInnerFocus() {
 		doSetInnerFocus();
@@ -138,7 +160,11 @@ public:
 		return nullptr;
 	}
 
-	static void PaintBackground(not_null<QWidget*> widget, QRect clip);
+	static void PaintBackground(
+		not_null<SessionController*> controller,
+		not_null<Ui::ChatTheme*> theme,
+		not_null<QWidget*> widget,
+		QRect clip);
 
 protected:
 	void paintEvent(QPaintEvent *e) override;
@@ -151,7 +177,7 @@ protected:
 
 	// Called after the hideChildren() call in showAnimated().
 	virtual void showAnimatedHook(
-		const Window::SectionSlideParams &params) {
+		const SectionSlideParams &params) {
 	}
 
 	// Called after the showChildren() call in showFinished().
@@ -160,10 +186,6 @@ protected:
 
 	virtual void doSetInnerFocus() {
 		setFocus();
-	}
-
-	bool animating() const {
-		return _showAnimation != nullptr;
 	}
 
 	~SectionWidget();
@@ -177,5 +199,10 @@ private:
 	int _topDelta = 0;
 
 };
+
+[[nodiscard]] auto ChatThemeValueFromPeer(
+	not_null<SessionController*> controller,
+	not_null<PeerData*> peer)
+-> rpl::producer<std::shared_ptr<Ui::ChatTheme>>;
 
 } // namespace Window

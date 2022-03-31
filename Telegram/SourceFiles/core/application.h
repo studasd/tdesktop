@@ -10,7 +10,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/core_settings.h"
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/mtproto_proxy_data.h"
-#include "base/observer.h"
 #include "base/timer.h"
 
 class MainWindow;
@@ -18,36 +17,46 @@ class MainWidget;
 class FileUploader;
 class Translator;
 
+namespace Platform {
+class Integration;
+} // namespace Platform
+
 namespace Storage {
 class Databases;
 } // namespace Storage
 
 namespace Window {
-struct TermsLock;
 class Controller;
+} // namespace Window
+
+namespace Window {
+namespace Notifications {
+class System;
+} // namespace Notifications
 } // namespace Window
 
 namespace ChatHelpers {
 class EmojiKeywords;
 } // namespace ChatHelpers
 
-namespace App {
-void quit();
-} // namespace App
-
 namespace Main {
+class Domain;
 class Account;
+class Session;
 } // namespace Main
 
 namespace Ui {
 namespace Animations {
 class Manager;
 } // namespace Animations
+namespace Emoji {
+class UniversalImages;
+} // namespace Emoji
 class BoxContent;
 } // namespace Ui
 
 namespace MTP {
-class DcOptions;
+class Config;
 class Instance;
 class AuthKey;
 using AuthKeyPtr = std::shared_ptr<AuthKey>;
@@ -61,6 +70,10 @@ class Instance;
 namespace View {
 class OverlayWidget;
 } // namespace View
+namespace Player {
+class FloatController;
+class FloatDelegate;
+} // namespace Player
 } // namespace Media
 
 namespace Lang {
@@ -71,70 +84,101 @@ class CloudManager;
 
 namespace Data {
 struct CloudTheme;
+class DownloadManager;
 } // namespace Data
+
+namespace Stickers {
+class EmojiImageLoader;
+} // namespace Stickers
+
+namespace Export {
+class Manager;
+} // namespace Export
+
+namespace Calls {
+class Instance;
+} // namespace Calls
 
 namespace Core {
 
 class Launcher;
 struct LocalUrlHandler;
 
-class Application final : public QObject, private base::Subscriber {
+enum class LaunchState {
+	Running,
+	QuitRequested,
+	QuitProcessed,
+};
+
+enum class QuitReason {
+	Default,
+	QtQuitEvent,
+};
+
+class Application final : public QObject {
 public:
+	struct ProxyChange {
+		MTP::ProxyData was;
+		MTP::ProxyData now;
+	};
+
 	Application(not_null<Launcher*> launcher);
 	Application(const Application &other) = delete;
 	Application &operator=(const Application &other) = delete;
 	~Application();
 
-	not_null<Launcher*> launcher() const {
-		return _launcher;
+	[[nodiscard]] Launcher &launcher() const {
+		return *_launcher;
+	}
+	[[nodiscard]] Platform::Integration &platformIntegration() const {
+		return *_platformIntegration;
 	}
 
 	void run();
 
-	Ui::Animations::Manager &animationManager() const {
+	[[nodiscard]] Ui::Animations::Manager &animationManager() const {
 		return *_animationsManager;
+	}
+	[[nodiscard]] Window::Notifications::System &notifications() const {
+		Expects(_notifications != nullptr);
+
+		return *_notifications;
+	}
+	[[nodiscard]] Data::DownloadManager &downloadManager() const {
+		return *_downloadManager;
 	}
 
 	// Windows interface.
-	Window::Controller *activeWindow() const;
+	bool hasActiveWindow(not_null<Main::Session*> session) const;
+	void saveCurrentDraftsToHistories();
+	[[nodiscard]] Window::Controller *primaryWindow() const;
+	[[nodiscard]] Window::Controller *activeWindow() const;
+	[[nodiscard]] Window::Controller *separateWindowForPeer(
+		not_null<PeerData*> peer) const;
+	Window::Controller *ensureSeparateWindowForPeer(
+		not_null<PeerData*> peer,
+		MsgId showAtMsgId);
 	bool closeActiveWindow();
 	bool minimizeActiveWindow();
-	QWidget *getFileDialogParent();
+	[[nodiscard]] QWidget *getFileDialogParent();
 	void notifyFileDialogShown(bool shown);
+	void checkSystemDarkMode();
 
 	// Media view interface.
 	void checkMediaViewActivation();
 	bool hideMediaView();
-	void showPhoto(not_null<const PhotoOpenClickHandler*> link);
-	void showPhoto(not_null<PhotoData*> photo, HistoryItem *item);
-	void showPhoto(not_null<PhotoData*> photo, not_null<PeerData*> item);
-	void showDocument(not_null<DocumentData*> document, HistoryItem *item);
-	void showTheme(
-		not_null<DocumentData*> document,
-		const Data::CloudTheme &cloud);
-	PeerData *ui_getPeerForMouseAction();
 
-	QPoint getPointForCallPanelCenter() const;
-	QImage logo() const {
-		return _logo;
-	}
-	QImage logoNoMargin() const {
-		return _logoNoMargin;
-	}
+	[[nodiscard]] QPoint getPointForCallPanelCenter() const;
 
-	[[nodiscard]] Settings &settings() {
-		return _settings;
-	}
+	void startSettingsAndBackground();
+	[[nodiscard]] Settings &settings();
 	void saveSettingsDelayed(crl::time delay = kDefaultSaveDelay);
+	void saveSettings();
 
-	// Dc options and proxy.
-	not_null<MTP::DcOptions*> dcOptions() {
-		return _dcOptions.get();
-	}
-	struct ProxyChange {
-		MTP::ProxyData was;
-		MTP::ProxyData now;
-	};
+	// Fallback config and proxy.
+	[[nodiscard]] MTP::Config &fallbackProductionConfig() const;
+	void refreshFallbackProductionConfig(const MTP::Config &config);
+	void constructFallbackProductionConfig(const QByteArray &serialized);
 	void setCurrentProxy(
 		const MTP::ProxyData &proxy,
 		MTP::ProxyData::Settings settings);
@@ -146,41 +190,72 @@ public:
 		return *_databases;
 	}
 
-	// Account component.
-	[[nodiscard]] Main::Account &activeAccount() const {
-		return *_account;
+	// Domain component.
+	[[nodiscard]] Main::Domain &domain() const {
+		return *_domain;
+	}
+	[[nodiscard]] Main::Account &activeAccount() const;
+	[[nodiscard]] bool someSessionExists() const;
+	[[nodiscard]] Export::Manager &exportManager() const {
+		return *_exportManager;
 	}
 	[[nodiscard]] bool exportPreventsQuit();
 
 	// Main::Session component.
+	Main::Session *maybeActiveSession() const;
 	[[nodiscard]] int unreadBadge() const;
-	bool unreadBadgeMuted() const;
+	[[nodiscard]] bool unreadBadgeMuted() const;
+	[[nodiscard]] rpl::producer<> unreadBadgeChanges() const;
 
 	// Media component.
-	Media::Audio::Instance &audio() {
+	[[nodiscard]] Media::Audio::Instance &audio() {
 		return *_audio;
 	}
 
 	// Langpack and emoji keywords.
-	Lang::Instance &langpack() {
+	[[nodiscard]] Lang::Instance &langpack() {
 		return *_langpack;
 	}
-	Lang::CloudManager *langCloudManager() {
+	[[nodiscard]] Lang::CloudManager *langCloudManager() {
 		return _langCloudManager.get();
 	}
-	ChatHelpers::EmojiKeywords &emojiKeywords() {
+	[[nodiscard]] bool offerLegacyLangPackSwitch() const;
+	[[nodiscard]] bool canApplyLangPackWithoutRestart() const;
+	[[nodiscard]] ChatHelpers::EmojiKeywords &emojiKeywords() {
 		return *_emojiKeywords;
+	}
+	[[nodiscard]] auto emojiImageLoader() const
+	-> const crl::object_on_queue<Stickers::EmojiImageLoader> & {
+		return _emojiImageLoader;
 	}
 
 	// Internal links.
-	void setInternalLinkDomain(const QString &domain) const;
-	QString createInternalLink(const QString &query) const;
-	QString createInternalLinkFull(const QString &query) const;
 	void checkStartUrl();
 	bool openLocalUrl(const QString &url, QVariant context);
 	bool openInternalUrl(const QString &url, QVariant context);
+	[[nodiscard]] QString changelogLink() const;
 
-	void forceLogOut(const TextWithEntities &explanation);
+	// Float player.
+	void setDefaultFloatPlayerDelegate(
+		not_null<Media::Player::FloatDelegate*> delegate);
+	void replaceFloatPlayerDelegate(
+		not_null<Media::Player::FloatDelegate*> replacement);
+	void restoreFloatPlayerDelegate(
+		not_null<Media::Player::FloatDelegate*> replacement);
+	[[nodiscard]] rpl::producer<FullMsgId> floatPlayerClosed() const;
+
+	// Calls.
+	Calls::Instance &calls() const {
+		return *_calls;
+	}
+
+	void logout(Main::Account *account = nullptr);
+	void logoutWithChecks(Main::Account *account);
+	void forceLogOut(
+		not_null<Main::Account*> account,
+		const TextWithEntities &explanation);
+	[[nodiscard]] bool uploadPreventsQuit();
+	[[nodiscard]] bool downloadPreventsQuit();
 	void checkLocalTime();
 	void lockByPasscode();
 	void unlockPasscode();
@@ -188,15 +263,11 @@ public:
 	rpl::producer<bool> passcodeLockChanges() const;
 	rpl::producer<bool> passcodeLockValue() const;
 
-	void lockByTerms(const Window::TermsLock &data);
-	void unlockTerms();
-	[[nodiscard]] std::optional<Window::TermsLock> termsLocked() const;
-	rpl::producer<bool> termsLockChanges() const;
-	rpl::producer<bool> termsLockValue() const;
+	void checkAutoLock(crl::time lastNonIdleTime = 0);
+	void checkAutoLockIn(crl::time time);
+	void localPasscodeChanged();
 
-	[[nodiscard]] bool locked() const;
-	rpl::producer<bool> lockChanges() const;
-	rpl::producer<bool> lockValue() const;
+	[[nodiscard]] bool preventsQuit(QuitReason reason);
 
 	[[nodiscard]] crl::time lastNonIdleTime() const;
 	void updateNonIdle();
@@ -212,14 +283,21 @@ public:
 
 	void handleAppActivated();
 	void handleAppDeactivated();
+	[[nodiscard]] rpl::producer<bool> appDeactivatedValue() const;
 
 	void switchDebugMode();
-	void switchTestMode();
+	void switchFreeType();
 	void writeInstallBetaVersionsSetting();
 
-	void call_handleUnreadCounterUpdate();
-	void call_handleDelayedPeerUpdates();
+	void preventOrInvoke(Fn<void()> &&callback);
+
 	void call_handleObservables();
+
+	// Global runtime variables.
+	void setScreenIsLocked(bool locked);
+	bool screenIsLocked() const;
+
+	static void RegisterUrlScheme();
 
 protected:
 	bool eventFilter(QObject *object, QEvent *event) override;
@@ -230,15 +308,20 @@ private:
 	friend bool IsAppLaunched();
 	friend Application &App();
 
+	void clearEmojiSourceImages();
+	[[nodiscard]] auto prepareEmojiSourceImages()
+		-> std::shared_ptr<Ui::Emoji::UniversalImages>;
 	void startLocalStorage();
 	void startShortcuts();
+	void startDomain();
+	void startEmojiImageLoader();
+	void startSystemDarkModeViewer();
 
-	void stateChanged(Qt::ApplicationState state);
-
-	friend void App::quit();
-	static void QuitAttempt();
+	friend void QuitAttempt();
 	void quitDelayed();
+	[[nodiscard]] bool readyToQuit();
 
+	void showOpenGLCrashNotification();
 	void clearPasscodeLock();
 
 	bool openCustomUrl(
@@ -257,48 +340,59 @@ private:
 	};
 	InstanceSetter _setter = { this };
 
-	not_null<Launcher*> _launcher;
+	const not_null<Launcher*> _launcher;
 	rpl::event_stream<ProxyChange> _proxyChanges;
 
 	// Some fields are just moved from the declaration.
 	struct Private;
 	const std::unique_ptr<Private> _private;
-	Settings _settings;
+	const std::unique_ptr<Platform::Integration> _platformIntegration;
 
 	const std::unique_ptr<Storage::Databases> _databases;
 	const std::unique_ptr<Ui::Animations::Manager> _animationsManager;
-	const std::unique_ptr<MTP::DcOptions> _dcOptions;
-	const std::unique_ptr<Main::Account> _account;
-	std::unique_ptr<Window::Controller> _window;
+	crl::object_on_queue<Stickers::EmojiImageLoader> _emojiImageLoader;
+	base::Timer _clearEmojiImageLoaderTimer;
+	const std::unique_ptr<Media::Audio::Instance> _audio;
+	mutable std::unique_ptr<MTP::Config> _fallbackProductionConfig;
+
+	// Notifications should be destroyed before _audio, after _domain.
+	// Mutable because is created in run() after OpenSSL is inited.
+	std::unique_ptr<Window::Notifications::System> _notifications;
+
+	const std::unique_ptr<Data::DownloadManager> _downloadManager;
+	const std::unique_ptr<Main::Domain> _domain;
+	const std::unique_ptr<Export::Manager> _exportManager;
+	const std::unique_ptr<Calls::Instance> _calls;
+	std::unique_ptr<Window::Controller> _primaryWindow;
+	base::flat_map<
+		not_null<History*>,
+		std::unique_ptr<Window::Controller>> _secondaryWindows;
+	Window::Controller *_lastActiveWindow = nullptr;
+
 	std::unique_ptr<Media::View::OverlayWidget> _mediaView;
 	const std::unique_ptr<Lang::Instance> _langpack;
 	const std::unique_ptr<Lang::CloudManager> _langCloudManager;
 	const std::unique_ptr<ChatHelpers::EmojiKeywords> _emojiKeywords;
 	std::unique_ptr<Lang::Translator> _translator;
-	base::Observable<void> _passcodedChanged;
 	QPointer<Ui::BoxContent> _badProxyDisableBox;
 
-	const std::unique_ptr<Media::Audio::Instance> _audio;
-	const QImage _logo;
-	const QImage _logoNoMargin;
+	std::unique_ptr<Media::Player::FloatController> _floatPlayers;
+	Media::Player::FloatDelegate *_defaultFloatPlayerDelegate = nullptr;
+	Media::Player::FloatDelegate *_replacementFloatPlayerDelegate = nullptr;
 
 	rpl::variable<bool> _passcodeLock;
-	rpl::event_stream<bool> _termsLockChanges;
-	std::unique_ptr<Window::TermsLock> _termsLock;
+	bool _screenIsLocked = false;
 
-	base::Timer _saveSettingsTimer;
+	crl::time _shouldLockAt = 0;
+	base::Timer _autoLockTimer;
 
-	struct LeaveSubscription {
-		LeaveSubscription(
-			QPointer<QWidget> pointer,
-			rpl::lifetime &&subscription)
-		: pointer(pointer), subscription(std::move(subscription)) {
-		}
+	std::optional<base::Timer> _saveSettingsTimer;
 
-		QPointer<QWidget> pointer;
-		rpl::lifetime subscription;
+	struct LeaveFilter {
+		std::vector<QPointer<QWidget>> registered;
+		QPointer<QObject> filter;
 	};
-	std::vector<LeaveSubscription> _leaveSubscriptions;
+	base::flat_map<not_null<QWidget*>, LeaveFilter> _leaveFilters;
 
 	rpl::lifetime _lifetime;
 
@@ -308,5 +402,13 @@ private:
 
 [[nodiscard]] bool IsAppLaunched();
 [[nodiscard]] Application &App();
+
+[[nodiscard]] LaunchState CurrentLaunchState();
+void SetLaunchState(LaunchState state);
+
+void Quit(QuitReason reason = QuitReason::Default);
+[[nodiscard]] bool Quitting();
+
+void Restart();
 
 } // namespace Core

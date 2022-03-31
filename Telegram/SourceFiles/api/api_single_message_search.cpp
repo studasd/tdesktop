@@ -37,7 +37,7 @@ Key ExtractKey(const QString &query) {
 		const auto params = parse();
 		const auto channel = params.value("channel");
 		const auto post = params.value("post").toInt();
-		return (channel.toInt() && post) ? Key{ channel, post } : Key();
+		return (channel.toULongLong() && post) ? Key{ channel, post } : Key();
 	} else if (check.startsWith(qstr("tg://resolve"), Qt::CaseInsensitive)) {
 		const auto params = parse();
 		const auto domain = params.value("domain");
@@ -87,7 +87,7 @@ std::optional<HistoryItem*> SingleMessageSearch::performLookupByChannel(
 	Expects(!_requestKey.empty());
 
 	const auto postId = _requestKey.postId;
-	if (const auto item = _session->data().message(channel, postId)) {
+	if (const auto item = _session->data().message(channel->id, postId)) {
 		_cache.emplace(_requestKey, item->fullId());
 		return item;
 	} else if (!ready) {
@@ -112,12 +112,12 @@ std::optional<HistoryItem*> SingleMessageSearch::performLookupByChannel(
 			&& received.messageIds.front() == postId) {
 			_cache.emplace(
 				_requestKey,
-				FullMsgId(channel->bareId(), postId));
+				FullMsgId(channel->id, postId));
 			ready();
 		} else {
 			fail();
 		}
-	}).fail([=](const RPCError &error) {
+	}).fail([=] {
 		fail();
 	}).send();
 
@@ -142,7 +142,7 @@ std::optional<HistoryItem*> SingleMessageSearch::performLookupById(
 	_requestId = _session->api().request(MTPchannels_GetChannels(
 		MTP_vector<MTPInputChannel>(
 			1,
-			MTP_inputChannel(MTP_int(channelId), MTP_long(0)))
+			MTP_inputChannel(MTP_long(channelId.bare), MTP_long(0)))
 	)).done([=](const MTPmessages_Chats &result) {
 		result.match([&](const auto &data) {
 			const auto peer = _session->data().processChats(data.vchats());
@@ -154,7 +154,7 @@ std::optional<HistoryItem*> SingleMessageSearch::performLookupById(
 				fail();
 			}
 		});
-	}).fail([=](const RPCError &error) {
+	}).fail([=] {
 		fail();
 	}).send();
 
@@ -198,7 +198,7 @@ std::optional<HistoryItem*> SingleMessageSearch::performLookupByUsername(
 				fail();
 			}
 		});
-	}).fail([=](const RPCError &error) {
+	}).fail([=] {
 		fail();
 	}).send();
 
@@ -212,7 +212,7 @@ std::optional<HistoryItem*> SingleMessageSearch::performLookup(
 	if (!_requestKey.domainOrId[0].isDigit()) {
 		return performLookupByUsername(_requestKey.domainOrId, ready);
 	}
-	const auto channelId = _requestKey.domainOrId.toInt();
+	const auto channelId = ChannelId(_requestKey.domainOrId.toULongLong());
 	return performLookupById(channelId, ready);
 }
 

@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "mtproto/dc_options.h"
+#include "mtproto/mtproto_dc_options.h"
 #include "mtproto/mtproto_proxy_data.h"
 #include "base/bytes.h"
 
@@ -23,6 +23,8 @@ namespace details {
 struct ConnectionOptions;
 
 class AbstractConnection;
+
+inline constexpr auto kTestModeDcIdShift = 10000;
 
 class ConnectionPointer {
 public:
@@ -81,7 +83,8 @@ public:
 		const QString &ip,
 		int port,
 		const bytes::vector &protocolSecret,
-		int16 protocolDcId) = 0;
+		int16 protocolDcId,
+		bool protocolForFiles) = 0;
 	virtual void timedOut() {
 	}
 	[[nodiscard]] virtual bool isConnected() const = 0;
@@ -89,9 +92,6 @@ public:
 		return false;
 	}
 	[[nodiscard]] virtual bool needHttpWait() {
-		return false;
-	}
-	[[nodiscard]] virtual bool requiresExtendedPadding() const {
 		return false;
 	}
 
@@ -124,10 +124,17 @@ public:
 	[[nodiscard]] gsl::span<const mtpPrime> parseNotSecureResponse(
 		const mtpBuffer &buffer) const;
 
+	[[nodiscard]] static QString ProtocolDcDebugId(int16 protocolDcId);
+	[[nodiscard]] QString debugId() const {
+		return _debugId;
+	}
+	void logInfo(const QString &message);
+	void logError(const QString &message);
+
 	// Used to emit error(...) with no real code from the server.
 	static constexpr auto kErrorCodeOther = -499;
 
-signals:
+Q_SIGNALS:
 	void receivedData();
 	void receivedSome(); // to stop restart timer
 
@@ -142,6 +149,8 @@ protected:
 	BuffersQueue _receivedQueue; // list of received packets, not processed yet
 	int _pingTime = 0;
 	ProxyData _proxy;
+
+	QString _debugId;
 
 	// first we always send fake MTPReq_pq to see if connection works at all
 	// we send them simultaneously through TCP/HTTP/IPv4/IPv6 to choose the working one
@@ -194,6 +203,9 @@ mtpBuffer AbstractConnection::prepareNotSecurePacket(
 
 	return result;
 }
+
+#define CONNECTION_LOG_INFO(x) if (Logs::DebugEnabled()) { logInfo(x); }
+#define CONNECTION_LOG_ERROR(x) if (Logs::DebugEnabled()) { logError(x); }
 
 } // namespace details
 } // namespace MTP

@@ -20,13 +20,13 @@ constexpr auto kSkipInvalidDataPackets = 10;
 } // namespace
 
 crl::time FramePosition(const Stream &stream) {
-	const auto pts = !stream.frame
+	const auto pts = !stream.decodedFrame
 		? AV_NOPTS_VALUE
-		: (stream.frame->best_effort_timestamp != AV_NOPTS_VALUE)
-		? stream.frame->best_effort_timestamp
-		: (stream.frame->pts != AV_NOPTS_VALUE)
-		? stream.frame->pts
-		: stream.frame->pkt_dts;
+		: (stream.decodedFrame->best_effort_timestamp != AV_NOPTS_VALUE)
+		? stream.decodedFrame->best_effort_timestamp
+		: (stream.decodedFrame->pts != AV_NOPTS_VALUE)
+		? stream.decodedFrame->pts
+		: stream.decodedFrame->pkt_dts;
 	return FFmpeg::PtsToTime(pts, stream.timeBase);
 }
 
@@ -59,19 +59,21 @@ FFmpeg::AvErrorWrap ProcessPacket(Stream &stream, FFmpeg::Packet &&packet) {
 				return FFmpeg::AvErrorWrap(); // Try to skip a bad packet.
 			}
 		}
+	} else {
+		stream.invalidDataPackets = 0;
 	}
 	return error;
 }
 
 FFmpeg::AvErrorWrap ReadNextFrame(Stream &stream) {
-	Expects(stream.frame != nullptr);
+	Expects(stream.decodedFrame != nullptr);
 
 	auto error = FFmpeg::AvErrorWrap();
 
 	do {
 		error = avcodec_receive_frame(
 			stream.codec.get(),
-			stream.frame.get());
+			stream.decodedFrame.get());
 		if (!error
 			|| error.code() != AVERROR(EAGAIN)
 			|| stream.queue.empty()) {
@@ -87,9 +89,14 @@ FFmpeg::AvErrorWrap ReadNextFrame(Stream &stream) {
 
 bool GoodForRequest(
 		const QImage &image,
+		bool hasAlpha,
 		int rotation,
 		const FrameRequest &request) {
-	if (request.resize.isEmpty()) {
+	if (image.isNull()
+		|| (hasAlpha && !request.keepAlpha)
+		|| request.colored.alpha() != 0) {
+		return false;
+	} else if (request.resize.isEmpty()) {
 		return true;
 	} else if (rotation != 0) {
 		return false;
@@ -101,13 +108,27 @@ bool GoodForRequest(
 		&& (request.resize == image.size());
 }
 
+bool TransferFrame(
+		Stream &stream,
+		not_null<AVFrame*> decodedFrame,
+		not_null<AVFrame*> transferredFrame) {
+	Expects(decodedFrame->hw_frames_ctx != nullptr);
+
+	const auto error = FFmpeg::AvErrorWrap(
+		av_hwframe_transfer_data(transferredFrame, decodedFrame, 0));
+	if (error) {
+		LogError(qstr("av_hwframe_transfer_data"), error);
+		return false;
+	}
+	FFmpeg::ClearFrameMemory(decodedFrame);
+	return true;
+}
+
 QImage ConvertFrame(
 		Stream &stream,
-		AVFrame *frame,
+		not_null<AVFrame*> frame,
 		QSize resize,
 		QImage storage) {
-	Expects(frame != nullptr);
-
 	const auto frameSize = QSize(frame->width, frame->height);
 	if (frameSize.isEmpty()) {
 		LOG(("Streaming Error: Bad frame size %1,%2"
@@ -127,6 +148,7 @@ QImage ConvertFrame(
 	if (!FFmpeg::GoodStorageForFrame(storage, resize)) {
 		storage = FFmpeg::CreateFrameStorage(resize);
 	}
+
 	const auto format = AV_PIX_FMT_BGRA;
 	const auto hasDesiredFormat = (frame->format == format);
 	if (frameSize == storage.size() && hasDesiredFormat) {
@@ -137,8 +159,8 @@ QImage ConvertFrame(
 			- storage.width();
 		const auto deltaFrom = (frame->linesize[0] / sizeof(uint32))
 			- frame->width;
-		for (const auto y : ranges::view::ints(0, frame->height)) {
-			for (const auto x : ranges::view::ints(0, frame->width)) {
+		for ([[maybe_unused]] const auto y : ranges::views::ints(0, frame->height)) {
+			for ([[maybe_unused]] const auto x : ranges::views::ints(0, frame->width)) {
 				// Wipe out possible alpha values.
 				*to++ = 0xFF000000U | *from++;
 			}
@@ -156,9 +178,9 @@ QImage ConvertFrame(
 
 		// AV_NUM_DATA_POINTERS defined in AVFrame struct
 		uint8_t *data[AV_NUM_DATA_POINTERS] = { storage.bits(), nullptr };
-		int linesize[AV_NUM_DATA_POINTERS] = { storage.bytesPerLine(), 0 };
+		int linesize[AV_NUM_DATA_POINTERS] = { int(storage.bytesPerLine()), 0 };
 
-		const auto lines = sws_scale(
+		sws_scale(
 			stream.swscale.get(),
 			frame->data,
 			frame->linesize,
@@ -166,17 +188,27 @@ QImage ConvertFrame(
 			frame->height,
 			data,
 			linesize);
-		if (lines != resize.height()) {
-			LOG(("Streaming Error: "
-				"Unable to sws_scale to good size %1, got %2."
-				).arg(resize.height()
-				).arg(lines));
-			return QImage();
+
+		if (frame->format == AV_PIX_FMT_YUVA420P) {
+			FFmpeg::PremultiplyInplace(storage);
 		}
 	}
 
 	FFmpeg::ClearFrameMemory(frame);
 	return storage;
+}
+
+FrameYUV ExtractYUV(Stream &stream, AVFrame *frame) {
+	return {
+		.size = { frame->width, frame->height },
+		.chromaSize = {
+			AV_CEIL_RSHIFT(frame->width, 1), // SWScale does that.
+			AV_CEIL_RSHIFT(frame->height, 1)
+		},
+		.y = { .data = frame->data[0], .stride = frame->linesize[0] },
+		.u = { .data = frame->data[1], .stride = frame->linesize[1] },
+		.v = { .data = frame->data[2], .stride = frame->linesize[2] },
+	};
 }
 
 void PaintFrameOuter(QPainter &p, const QRect &inner, QSize outer) {
@@ -264,8 +296,11 @@ void PaintFrameContent(
 		(full.height() - size.height()) / 2,
 		size.width(),
 		size.height());
-	PaintFrameOuter(p, to, full);
-	PaintFrameInner(p, to, original, alpha, rotation);
+	if (!alpha || !request.keepAlpha) {
+		PaintFrameOuter(p, to, full);
+	}
+	const auto deAlpha = alpha && !request.keepAlpha;
+	PaintFrameInner(p, to, original, deAlpha, rotation);
 }
 
 void ApplyFrameRounding(QImage &storage, const FrameRequest &request) {
@@ -273,7 +308,10 @@ void ApplyFrameRounding(QImage &storage, const FrameRequest &request) {
 		|| (request.radius == ImageRoundRadius::None)) {
 		return;
 	}
-	Images::prepareRound(storage, request.radius, request.corners);
+	storage = Images::Round(
+		std::move(storage),
+		request.radius,
+		request.corners);
 }
 
 QImage PrepareByRequest(
@@ -291,11 +329,18 @@ QImage PrepareByRequest(
 		storage = FFmpeg::CreateFrameStorage(outer);
 	}
 
+	if (alpha && request.keepAlpha) {
+		storage.fill(Qt::transparent);
+	}
+
 	QPainter p(&storage);
 	PaintFrameContent(p, original, alpha, rotation, request);
 	p.end();
 
 	ApplyFrameRounding(storage, request);
+	if (request.colored.alpha() != 0) {
+		storage = Images::Colored(std::move(storage), request.colored);
+	}
 	return storage;
 }
 

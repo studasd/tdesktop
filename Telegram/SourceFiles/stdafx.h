@@ -73,24 +73,31 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtGui/QFontInfo>
 
 #include <QtWidgets/QWidget>
-
-#ifndef OS_MAC_OLD
-#include <QtWidgets/QOpenGLWidget>
-#endif // OS_MAC_OLD
+#include <QOpenGLWidget>
 
 // Fix Google Breakpad build for Mac App Store and Linux version
-#if defined Q_OS_MAC || defined Q_OS_LINUX
+#ifdef Q_OS_UNIX
 #define __STDC_FORMAT_MACROS
-#endif // Q_OS_MAC || Q_OS_LINUX
+#endif // Q_OS_UNIX
+
+// Remove 'small' macro definition.
+#ifdef Q_OS_WIN
+#include <rpc.h>
+#ifdef small
+#undef small
+#endif // small
+#endif // Q_OS_WIN
 
 #include <array>
 #include <vector>
+#include <deque>
 #include <set>
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
 #include <memory>
+#include <any>
 #include <optional>
 
 #include <range/v3/all.hpp>
@@ -109,7 +116,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/flat_set.h"
 #include "base/flat_map.h"
 #include "base/weak_ptr.h"
-#include "base/observer.h"
 
 #include "base/basic_types.h"
 #include "logs.h"

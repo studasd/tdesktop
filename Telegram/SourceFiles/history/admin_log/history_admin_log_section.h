@@ -12,10 +12,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/admin_log/history_admin_log_item.h"
 #include "mtproto/sender.h"
 
-namespace Notify {
-struct PeerUpdate;
-} // namespace Notify
-
 namespace Ui {
 class ScrollArea;
 class PlainShadow;
@@ -33,8 +29,31 @@ class InnerWidget;
 class SectionMemento;
 
 struct FilterValue {
+	enum class Flag : uint32 {
+		Join = (1U << 0),
+		Leave = (1U << 1),
+		Invite = (1U << 2),
+		Ban = (1U << 3),
+		Unban = (1U << 4),
+		Kick = (1U << 5),
+		Unkick = (1U << 6),
+		Promote = (1U << 7),
+		Demote = (1U << 8),
+		Info = (1U << 9),
+		Settings = (1U << 10),
+		Pinned = (1U << 11),
+		Edit = (1U << 12),
+		Delete = (1U << 13),
+		GroupCall = (1U << 14),
+		Invites = (1U << 15),
+
+		MAX_FIELD = (1U << 15),
+	};
+	using Flags = base::flags<Flag>;
+	friend inline constexpr bool is_flag_type(Flag) { return true; };
+
 	// Empty "flags" means all events.
-	MTPDchannelAdminLogEventsFilter::Flags flags = 0;
+	Flags flags = 0;
 	std::vector<not_null<UserData*>> admins;
 	bool allUsers = true;
 };
@@ -49,7 +68,10 @@ inline bool operator!=(const FilterValue &a, const FilterValue &b) {
 
 class Widget final : public Window::SectionWidget {
 public:
-	Widget(QWidget *parent, not_null<Window::SessionController*> controller, not_null<ChannelData*> channel);
+	Widget(
+		QWidget *parent,
+		not_null<Window::SessionController*> controller,
+		not_null<ChannelData*> channel);
 
 	not_null<ChannelData*> channel() const;
 	Dialogs::RowDescriptor activeChat() const override;
@@ -63,13 +85,13 @@ public:
 	bool showInternal(
 		not_null<Window::SectionMemento*> memento,
 		const Window::SectionShow &params) override;
-	std::unique_ptr<Window::SectionMemento> createMemento() override;
+	std::shared_ptr<Window::SectionMemento> createMemento() override;
 
 	void setInternalState(const QRect &geometry, not_null<SectionMemento*> memento);
 
 	// Float player interface.
-	bool wheelEventFromFloatPlayer(QEvent *e) override;
-	QRect rectForFloatPlayer() const override;
+	bool floatPlayerHandleWheelEvent(QEvent *e) override;
+	QRect floatPlayerAvailableRect() override;
 
 	void applyFilter(FilterValue &&value);
 

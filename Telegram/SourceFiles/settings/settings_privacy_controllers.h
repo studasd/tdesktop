@@ -10,13 +10,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/peer_list_box.h"
 #include "boxes/edit_privacy_box.h"
 #include "history/view/history_view_element.h"
-#include "mtproto/sender.h"
+#include "api/api_blocked_peers.h"
+
+namespace Window {
+class SessionController;
+} // namespace Window
+
+namespace Ui {
+class ChatStyle;
+} // namespace Ui
 
 namespace Settings {
 
-class BlockedBoxController
-	: public PeerListController
-	, private base::Subscriber {
+class BlockedBoxController : public PeerListController {
 public:
 	explicit BlockedBoxController(
 		not_null<Window::SessionController*> window);
@@ -24,25 +30,25 @@ public:
 	Main::Session &session() const override;
 	void prepare() override;
 	void rowClicked(not_null<PeerListRow*> row) override;
-	void rowActionClicked(not_null<PeerListRow*> row) override;
+	void rowRightActionClicked(not_null<PeerListRow*> row) override;
 	void loadMoreRows() override;
 
-	static void BlockNewUser(not_null<Window::SessionController*> window);
+	static void BlockNewPeer(not_null<Window::SessionController*> window);
 
 private:
-	void receivedUsers(const QVector<MTPContactBlocked> &result);
-	void handleBlockedEvent(not_null<UserData*> user);
+	void applySlice(const Api::BlockedPeers::Slice &slice);
+	void handleBlockedEvent(not_null<PeerData*> peer);
 
-	bool appendRow(not_null<UserData*> user);
-	bool prependRow(not_null<UserData*> user);
-	std::unique_ptr<PeerListRow> createRow(not_null<UserData*> user) const;
+	bool appendRow(not_null<PeerData*> peer);
+	bool prependRow(not_null<PeerData*> peer);
+	std::unique_ptr<PeerListRow> createRow(not_null<PeerData*> peer) const;
 
 	const not_null<Window::SessionController*> _window;
-	MTP::Sender _api;
 
 	int _offset = 0;
-	mtpRequestId _loadRequestId = 0;
 	bool _allLoaded = false;
+
+	base::has_weak_ptr _guard;
 
 };
 
@@ -51,12 +57,15 @@ public:
 	using Option = EditPrivacyBox::Option;
 	using Exception = EditPrivacyBox::Exception;
 
+	explicit PhoneNumberPrivacyController(
+		not_null<Window::SessionController*> controller);
+
 	Key key() override;
-	MTPInputPrivacyKey apiKey() override;
 
 	rpl::producer<QString> title() override;
 	rpl::producer<QString> optionsTitleKey() override;
-	rpl::producer<QString> warning() override;
+	rpl::producer<TextWithEntities> warning() override;
+	void prepareWarningLabel(not_null<Ui::FlatLabel*> warning) override;
 	rpl::producer<QString> exceptionButtonTextKey(
 		Exception exception) override;
 	rpl::producer<QString> exceptionBoxTitle(Exception exception) override;
@@ -70,6 +79,7 @@ public:
 	void saveAdditional() override;
 
 private:
+	const not_null<Window::SessionController*> _controller;
 	rpl::variable<Option> _phoneNumberOption = { Option::Contacts };
 	rpl::variable<Option> _addedByPhone = { Option::Everyone };
 	Fn<void()> _saveAdditional;
@@ -84,11 +94,10 @@ public:
 	explicit LastSeenPrivacyController(not_null<::Main::Session*> session);
 
 	Key key() override;
-	MTPInputPrivacyKey apiKey() override;
 
 	rpl::producer<QString> title() override;
 	rpl::producer<QString> optionsTitleKey() override;
-	rpl::producer<QString> warning() override;
+	rpl::producer<TextWithEntities> warning() override;
 	rpl::producer<QString> exceptionButtonTextKey(
 		Exception exception) override;
 	rpl::producer<QString> exceptionBoxTitle(Exception exception) override;
@@ -96,7 +105,7 @@ public:
 
 	void confirmSave(
 		bool someAreDisallowed,
-		FnMut<void()> saveCallback) override;
+		Fn<void()> saveCallback) override;
 
 private:
 	const not_null<::Main::Session*> _session;
@@ -109,7 +118,6 @@ public:
 	using Exception = EditPrivacyBox::Exception;
 
 	Key key() override;
-	MTPInputPrivacyKey apiKey() override;
 
 	rpl::producer<QString> title() override;
 	bool hasOption(Option option) override;
@@ -127,7 +135,6 @@ public:
 	using Exception = EditPrivacyBox::Exception;
 
 	Key key() override;
-	MTPInputPrivacyKey apiKey() override;
 
 	rpl::producer<QString> title() override;
 	rpl::producer<QString> optionsTitleKey() override;
@@ -148,12 +155,11 @@ public:
 	using Exception = EditPrivacyBox::Exception;
 
 	Key key() override;
-	MTPInputPrivacyKey apiKey() override;
 
 	rpl::producer<QString> title() override;
 	rpl::producer<QString> optionsTitleKey() override;
 	QString optionLabel(EditPrivacyBox::Option option) override;
-	rpl::producer<QString> warning() override;
+	rpl::producer<TextWithEntities> warning() override;
 	rpl::producer<QString> exceptionButtonTextKey(
 		Exception exception) override;
 	rpl::producer<QString> exceptionBoxTitle(Exception exception) override;
@@ -168,14 +174,14 @@ public:
 	using Option = EditPrivacyBox::Option;
 	using Exception = EditPrivacyBox::Exception;
 
-	explicit ForwardsPrivacyController(not_null<::Main::Session*> session);
+	explicit ForwardsPrivacyController(
+		not_null<Window::SessionController*> controller);
 
 	Key key() override;
-	MTPInputPrivacyKey apiKey() override;
 
 	rpl::producer<QString> title() override;
 	rpl::producer<QString> optionsTitleKey() override;
-	rpl::producer<QString> warning() override;
+	rpl::producer<TextWithEntities> warning() override;
 	rpl::producer<QString> exceptionButtonTextKey(
 		Exception exception) override;
 	rpl::producer<QString> exceptionBoxTitle(Exception exception) override;
@@ -183,19 +189,16 @@ public:
 
 	object_ptr<Ui::RpWidget> setupAboveWidget(
 		not_null<QWidget*> parent,
-		rpl::producer<Option> optionValue) override;
+		rpl::producer<Option> optionValue,
+		not_null<QWidget*> outerContainer) override;
 
 private:
 	using Element = HistoryView::Element;
 	not_null<HistoryView::ElementDelegate*> delegate();
 	HistoryView::Context elementContext() override;
 
-	static void PaintForwardedTooltip(
-		Painter &p,
-		not_null<HistoryView::Element*> view,
-		Option value);
-
-	const not_null<::Main::Session*> _session;
+	const not_null<Window::SessionController*> _controller;
+	const std::unique_ptr<Ui::ChatStyle> _chatStyle;
 
 };
 
@@ -205,7 +208,6 @@ public:
 	using Exception = EditPrivacyBox::Exception;
 
 	Key key() override;
-	MTPInputPrivacyKey apiKey() override;
 
 	rpl::producer<QString> title() override;
 	bool hasOption(Option option) override;

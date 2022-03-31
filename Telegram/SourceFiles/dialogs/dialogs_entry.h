@@ -18,6 +18,7 @@ class Session;
 namespace Data {
 class Session;
 class Folder;
+class CloudImageView;
 } // namespace Data
 
 namespace Dialogs {
@@ -89,7 +90,11 @@ inline UnreadState operator-(const UnreadState &a, const UnreadState &b) {
 
 class Entry {
 public:
-	Entry(not_null<Data::Session*> owner, const Key &key);
+	enum class Type {
+		History,
+		Folder,
+	};
+	Entry(not_null<Data::Session*> owner, Type type);
 	Entry(const Entry &other) = delete;
 	Entry &operator=(const Entry &other) = delete;
 	virtual ~Entry() = default;
@@ -97,12 +102,17 @@ public:
 	[[nodiscard]] Data::Session &owner() const;
 	[[nodiscard]] Main::Session &session() const;
 
+	History *asHistory();
+	Data::Folder *asFolder();
+
 	PositionChange adjustByPosInChatList(
 		FilterId filterId,
 		not_null<MainList*> list);
 	[[nodiscard]] bool inChatList(FilterId filterId = 0) const {
 		return _chatListLinks.contains(filterId);
 	}
+	RowsByLetter *chatListLinks(FilterId filterId);
+	const RowsByLetter *chatListLinks(FilterId filterId) const;
 	[[nodiscard]] int posInChatList(FilterId filterId) const;
 	not_null<Row*> addToChatList(
 		FilterId filterId,
@@ -115,15 +125,12 @@ public:
 		FilterId filterId,
 		QChar letter,
 		not_null<Row*> row);
-	void updateChatListEntry() const;
+	void updateChatListEntry();
 	[[nodiscard]] bool isPinnedDialog(FilterId filterId) const {
 		return lookupPinnedIndex(filterId) != 0;
 	}
 	void cachePinnedIndex(FilterId filterId, int index);
-	bool isProxyPromoted() const {
-		return _isProxyPromoted;
-	}
-	void cacheProxyPromoted(bool promoted);
+	[[nodiscard]] bool isTopPromoted() const;
 	[[nodiscard]] uint64 sortKeyInChatList(FilterId filterId) const {
 		return filterId
 			? computeSortPosition(filterId)
@@ -137,7 +144,7 @@ public:
 
 	virtual int fixedOnTopIndex() const = 0;
 	static constexpr auto kArchiveFixOnTopIndex = 1;
-	static constexpr auto kProxyPromotionFixOnTopIndex = 2;
+	static constexpr auto kTopPromotionFixOnTopIndex = 2;
 
 	virtual bool shouldBeInChatList() const = 0;
 	virtual int chatListUnreadCount() const = 0;
@@ -148,6 +155,7 @@ public:
 	virtual bool chatListMessageKnown() const = 0;
 	virtual void requestChatListMessage() = 0;
 	virtual const QString &chatListName() const = 0;
+	virtual const QString &chatListNameSortKey() const = 0;
 	virtual const base::flat_set<QString> &chatListNameWords() const = 0;
 	virtual const base::flat_set<QChar> &chatListFirstLetters() const = 0;
 
@@ -161,24 +169,23 @@ public:
 	virtual void loadUserpic() = 0;
 	virtual void paintUserpic(
 		Painter &p,
+		std::shared_ptr<Data::CloudImageView> &view,
 		int x,
 		int y,
 		int size) const = 0;
 	void paintUserpicLeft(
 			Painter &p,
+			std::shared_ptr<Data::CloudImageView> &view,
 			int x,
 			int y,
 			int w,
 			int size) const {
-		paintUserpic(p, rtl() ? (w - x - size) : x, y, size);
+		paintUserpic(p, view, rtl() ? (w - x - size) : x, y, size);
 	}
 
-	TimeId chatListTimeId() const {
+	[[nodiscard]] TimeId chatListTimeId() const {
 		return _timeId;
 	}
-
-	mutable const HistoryItem *textCachedFor = nullptr; // cache
-	mutable Ui::Text::String lastItemTextCache;
 
 protected:
 	void notifyUnreadStateChange(const UnreadState &wasState);
@@ -194,25 +201,25 @@ protected:
 
 	[[nodiscard]] int lookupPinnedIndex(FilterId filterId) const;
 
+	void cacheTopPromoted(bool promoted);
+
 private:
 	virtual void changedChatListPinHook();
-	void pinnedIndexChanged(int was, int now);
+	void pinnedIndexChanged(FilterId filterId, int was, int now);
 	[[nodiscard]] uint64 computeSortPosition(FilterId filterId) const;
 
 	void setChatListExistence(bool exists);
-	RowsByLetter *chatListLinks(FilterId filterId);
-	const RowsByLetter *chatListLinks(FilterId filterId) const;
 	not_null<Row*> mainChatListLink(FilterId filterId) const;
 	Row *maybeMainChatListLink(FilterId filterId) const;
 
-	not_null<Data::Session*> _owner;
-	Dialogs::Key _key;
+	const not_null<Data::Session*> _owner;
 	base::flat_map<FilterId, RowsByLetter> _chatListLinks;
 	uint64 _sortKeyInChatList = 0;
 	uint64 _sortKeyByDate = 0;
 	base::flat_map<FilterId, int> _pinnedIndex;
-	bool _isProxyPromoted = false;
 	TimeId _timeId = 0;
+	bool _isTopPromoted = false;
+	const bool _isFolder = false;
 
 };
 

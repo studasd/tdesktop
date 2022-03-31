@@ -10,8 +10,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "storage/serialize_common.h"
 #include "storage/localstorage.h"
-#include "boxes/confirm_box.h"
+#include "ui/boxes/confirm_box.h"
 #include "lang/lang_file_parser.h"
+#include "lang/lang_tag.h" // kTextCommandLangTag.
 #include "base/platform/base_platform_info.h"
 #include "base/qthelp_regex.h"
 
@@ -92,7 +93,7 @@ void ValueParser::appendToResult(const char *nextBegin) {
 bool ValueParser::logError(const QString &text) {
 	_failed = true;
 	auto loggedKey = (_currentTag.size() > 0) ? (_key + QString(':') + _currentTag) : QString(_key);
-	LOG(("Lang Error: %1 (key '%2')").arg(text).arg(loggedKey));
+	LOG(("Lang Error: %1 (key '%2')").arg(text, loggedKey));
 	return false;
 }
 
@@ -134,7 +135,7 @@ bool ValueParser::readTag() {
 
 	if (_currentTagReplacer.isEmpty()) {
 		_currentTagReplacer = QString(4, TextCommand);
-		_currentTagReplacer[1] = TextCommandLangTag;
+		_currentTagReplacer[1] = kTextCommandLangTag;
 	}
 	_currentTagReplacer[2] = QChar(0x0020 + _currentTagIndex);
 
@@ -258,7 +259,7 @@ void Instance::switchToId(const Language &data) {
 			value = PrepareTestValue(value, _id[5]);
 		}
 		if (!_derived) {
-			_updated.notify();
+			_updated.fire({});
 		}
 	}
 	updatePluralRules();
@@ -278,7 +279,7 @@ void Instance::setBaseId(const QString &baseId, const QString &pluralId) {
 void Instance::switchToCustomFile(const QString &filePath) {
 	if (loadFromCustomFile(filePath)) {
 		Local::writeLangPack();
-		_updated.notify();
+		_updated.fire({});
 	}
 }
 
@@ -303,6 +304,7 @@ void Instance::reset(const Language &data) {
 		_values[i] = GetOriginalValue(ushort(i));
 	}
 	ranges::fill(_nonDefaultSet, 0);
+	updateChoosingStickerReplacement();
 
 	_idChanges.fire_copy(_id);
 }
@@ -548,6 +550,7 @@ void Instance::fillFromSerialized(
 		applyValue(nonDefaultStrings[i], nonDefaultStrings[i + 1]);
 	}
 	updatePluralRules();
+	updateChoosingStickerReplacement();
 
 	_idChanges.fire_copy(_id);
 }
@@ -572,6 +575,7 @@ void Instance::fillFromCustomContent(
 	_pluralId = PluralCodeForCustom(absolutePath, relativePath);
 	_name = _nativeName = QString();
 	loadFromCustomContent(absolutePath, relativePath, content);
+	updateChoosingStickerReplacement();
 
 	_idChanges.fire_copy(_id);
 }
@@ -600,6 +604,35 @@ bool Instance::loadFromCustomFile(const QString &filePath) {
 		return true;
 	}
 	return false;
+}
+
+void Instance::updateChoosingStickerReplacement() {
+	// A language changing in the runtime is not supported.
+	const auto replacement = kChoosingStickerReplacement.utf8();
+	const auto phrase = tr::lng_send_action_choose_sticker(tr::now);
+	const auto first = phrase.indexOf(replacement);
+	const auto support = (first != -1);
+	const auto phraseNamed = tr::lng_user_action_choose_sticker(
+		tr::now,
+		lt_user,
+		QString());
+	const auto firstNamed = phraseNamed.indexOf(replacement);
+	const auto supportNamed = (firstNamed != -1);
+
+	_choosingStickerReplacement.support = (supportNamed && support);
+	_choosingStickerReplacement.rightIndex = phrase.size() - first;
+	_choosingStickerReplacement.rightIndexNamed = phraseNamed.size()
+		- firstNamed;
+}
+
+bool Instance::supportChoosingStickerReplacement() const {
+	return _choosingStickerReplacement.support;
+}
+
+int Instance::rightIndexChoosingStickerReplacement(bool named) const {
+	return named
+		? _choosingStickerReplacement.rightIndexNamed
+		: _choosingStickerReplacement.rightIndex;
 }
 
 // SetCallback takes two QByteArrays: key, value.
@@ -667,9 +700,9 @@ void Instance::applyDifferenceToMe(
 		});
 	}
 	if (!_derived) {
-		_updated.notify();
+		_updated.fire({});
 	} else {
-		_derived->_updated.notify();
+		_derived->_updated.fire({});
 	}
 }
 
@@ -709,6 +742,14 @@ void Instance::applyValue(const QByteArray &key, const QByteArray &value) {
 		} else if (!_derived->_nonDefaultSet[key]) {
 			_derived->_values[key] = std::move(value);
 		}
+		if (key == tr::lng_send_action_choose_sticker.base
+			|| key == tr::lng_user_action_choose_sticker.base) {
+			if (!_derived) {
+				updateChoosingStickerReplacement();
+			} else {
+				_derived->updateChoosingStickerReplacement();
+			}
+		}
 	});
 }
 
@@ -739,27 +780,49 @@ void Instance::resetValue(const QByteArray &key) {
 		} else if (!_derived->_nonDefaultSet[keyIndex]) {
 			_derived->_values[keyIndex] = GetOriginalValue(keyIndex);
 		}
+		if (keyIndex == tr::lng_send_action_choose_sticker.base
+			|| keyIndex == tr::lng_user_action_choose_sticker.base) {
+			if (!_derived) {
+				updateChoosingStickerReplacement();
+			} else {
+				_derived->updateChoosingStickerReplacement();
+			}
+		}
 	}
 }
 
-Instance &Current() {
+Instance &GetInstance() {
 	return Core::App().langpack();
+}
+
+QString Id() {
+	return GetInstance().id();
+}
+
+rpl::producer<> Updated() {
+	return GetInstance().updated();
+}
+
+QString GetNonDefaultValue(const QByteArray &key) {
+	return GetInstance().getNonDefaultValue(key);
 }
 
 namespace details {
 
 QString Current(ushort key) {
-	return Lang::Current().getValue(key);
+	return GetInstance().getValue(key);
 }
 
-rpl::producer<QString> Viewer(ushort key) {
+rpl::producer<QString> Value(ushort key) {
 	return rpl::single(
-		Lang::Current().getValue(key)
-	) | then(base::ObservableViewer(
-		Lang::Current().updated()
-	) | rpl::map([=] {
-		return Lang::Current().getValue(key);
-	}));
+		Current(key)
+	) | then(
+		Updated() | rpl::map([=] { return Current(key); })
+	);
+}
+
+bool IsNonDefaultPlural(ushort keyBase) {
+	return GetInstance().isNonDefaultPlural(keyBase);
 }
 
 } // namespace details

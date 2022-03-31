@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_tag.h"
 
 #include "lang/lang_keys.h"
+#include "ui/text/text.h"
+#include "base/qt/qt_common_adapters.h"
 
 namespace Lang {
 namespace {
@@ -867,19 +869,14 @@ auto ChoosePlural = ChoosePluralDefault;
 int FindTagReplacementPosition(const QString &original, ushort tag) {
 	for (auto s = original.constData(), ch = s, e = ch + original.size(); ch != e;) {
 		if (*ch == TextCommand) {
-			if (ch + kTagReplacementSize <= e && (ch + 1)->unicode() == TextCommandLangTag && *(ch + 3) == TextCommand) {
+			if (ch + kTagReplacementSize <= e && (ch + 1)->unicode() == kTextCommandLangTag && *(ch + 3) == TextCommand) {
 				if ((ch + 2)->unicode() == 0x0020 + tag) {
 					return ch - s;
 				} else {
 					ch += kTagReplacementSize;
 				}
 			} else {
-				auto next = textSkipCommand(ch, e);
-				if (next == ch) {
-					++ch;
-				} else {
-					ch = next;
-				}
+				++ch;
 			}
 		} else {
 			++ch;
@@ -902,7 +899,7 @@ QString FormatDouble(float64 value) {
 
 int NonZeroPartToInt(QString value) {
 	auto zeros = 0;
-	for (const auto ch : value) {
+	for (const auto &ch : value) {
 		if (ch == '0') {
 			++zeros;
 		} else {
@@ -910,7 +907,7 @@ int NonZeroPartToInt(QString value) {
 		}
 	}
 	return (zeros > 0)
-		? (zeros < value.size() ? value.midRef(zeros).toInt() : 0)
+		? (zeros < value.size() ? base::StringViewMid(value, zeros).toInt() : 0)
 		: (value.isEmpty() ? 0 : value.toInt());
 }
 
@@ -952,8 +949,8 @@ PluralResult Plural(
 
 	// Simplified.
 	const auto n = std::abs(shortened.number ? float64(shortened.number) : value);
-	const auto i = qFloor(n);
-	const auto integer = (qCeil(n) == i);
+	const auto i = int(std::floor(n));
+	const auto integer = (int(std::ceil(n)) == i);
 	const auto formatted = integer ? QString() : FormatDouble(n);
 	const auto dot = formatted.indexOf('.');
 	const auto fraction = (dot >= 0) ? formatted.mid(dot + 1) : QString();
@@ -963,7 +960,7 @@ PluralResult Plural(
 	const auto t = f;
 
 	const auto useNonDefaultPlural = (ChoosePlural != ChoosePluralDefault)
-		&& Lang::Current().isNonDefaultPlural(keyBase);
+		&& Lang::details::IsNonDefaultPlural(keyBase);
 	const auto shift = (useNonDefaultPlural ? ChoosePlural : ChoosePluralDefault)(
 		(integer ? i : -1),
 		i,
@@ -987,7 +984,7 @@ void UpdatePluralRules(const QString &languageId) {
 	static auto kMap = GeneratePluralRulesMap();
 	auto parent = uint64(0);
 	auto key = uint64(0);
-	for (const auto ch : languageId) {
+	for (const auto &ch : languageId) {
 		const auto converted = ConvertKeyChar(ch.unicode());
 		if (converted == '-' && !parent) {
 			parent = key;
@@ -1007,11 +1004,11 @@ QString ReplaceTag<QString>::Replace(QString &&original, const QString &replacem
 	auto result = QString();
 	result.reserve(original.size() + replacement.size() - kTagReplacementSize);
 	if (replacementPosition > 0) {
-		result.append(original.midRef(0, replacementPosition));
+		result.append(base::StringViewMid(original, 0, replacementPosition));
 	}
 	result.append(replacement);
 	if (replacementPosition + kTagReplacementSize < original.size()) {
-		result.append(original.midRef(replacementPosition + kTagReplacementSize));
+		result.append(base::StringViewMid(original, replacementPosition + kTagReplacementSize));
 	}
 	return result;
 }

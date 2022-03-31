@@ -12,9 +12,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/panel_animation.h"
 #include "ui/ui_utility.h"
 #include "ui/filter_icons.h"
+#include "ui/cached_round_corners.h"
 #include "lang/lang_keys.h"
 #include "core/application.h"
-#include "app.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_window.h"
 
@@ -22,7 +22,6 @@ namespace Ui {
 namespace {
 
 constexpr auto kHideTimeoutMs = crl::time(300);
-constexpr auto kDelayedHideTimeoutMs = 3 * crl::time(1000);
 constexpr auto kIconsPerRow = 6;
 
 constexpr auto kIcons = std::array{
@@ -103,10 +102,10 @@ void FilterIconPanel::setupInner() {
 	_inner->paintRequest(
 		) | rpl::start_with_next([=](QRect clip) {
 		auto p = Painter(_inner);
-		App::roundRect(
+		Ui::FillRoundRect(
 			p,
 			_inner->rect(),
-			st::emojiPanBg,
+			st::dialogsBg,
 			ImageRoundRadius::Small);
 		p.setFont(st::emojiPanHeaderFont);
 		p.setPen(st::emojiPanHeaderFg);
@@ -122,15 +121,21 @@ void FilterIconPanel::setupInner() {
 			if (!rect.intersects(clip)) {
 				continue;
 			}
-			if (i == selected) {
-				App::roundRect(
+			const auto over = (i == selected);
+			if (over) {
+				Ui::FillRoundRect(
 					p,
 					rect,
-					st::emojiPanHover,
-					StickerHoverCorners);
+					st::dialogsBgOver,
+					Ui::StickerHoverCorners);
 			}
 			const auto icon = LookupFilterIcon(kIcons[i]).normal;
-			icon->paintInCenter(p, rect, st::emojiIconFg->c);
+			icon->paintInCenter(
+				p,
+				rect,
+				(over
+					? st::dialogsUnreadBgMutedOver
+					: st::dialogsUnreadBgMuted)->c);
 		}
 	}, _inner->lifetime());
 
@@ -267,7 +272,7 @@ void FilterIconPanel::paintEvent(QPaintEvent *e) {
 	}
 }
 
-void FilterIconPanel::enterEventHook(QEvent *e) {
+void FilterIconPanel::enterEventHook(QEnterEvent *e) {
 	Core::App().registerLeaveSubscription(this);
 	showAnimated();
 }
@@ -390,7 +395,7 @@ QImage FilterIconPanel::grabForAnimation() {
 	_a_show = base::take(showAnimation);
 	_showAnimation = base::take(showAnimationData);
 	_a_opacity = base::take(opacityAnimation);
-	_cache = base::take(_cache);
+	_cache = base::take(cache);
 
 	return result;
 }

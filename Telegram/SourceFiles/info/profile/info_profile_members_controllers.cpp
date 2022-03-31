@@ -15,11 +15,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "main/main_session.h"
 #include "mainwidget.h"
-#include "observer_peer.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_user.h"
-#include "boxes/confirm_box.h"
+#include "ui/boxes/confirm_box.h"
 #include "window/window_session_controller.h"
 #include "styles/style_info.h"
 #include "data/data_peer_values.h"
@@ -38,7 +37,7 @@ void MemberListRow::setType(Type type) {
 	_type = type;
 }
 
-QSize MemberListRow::actionSize() const {
+QSize MemberListRow::rightActionSize() const {
 	return canRemove()
 		? QRect(
 			QPoint(),
@@ -47,7 +46,7 @@ QSize MemberListRow::actionSize() const {
 		: QSize();
 }
 
-void MemberListRow::paintAction(
+void MemberListRow::rightActionPaint(
 		Painter &p,
 		int x,
 		int y,
@@ -91,6 +90,17 @@ void MemberListRow::paintNameIcon(
 				: &st::infoMembersCreatorIcon);
 	}();
 	icon->paint(p, x, y, outerWidth);
+}
+
+void MemberListRow::refreshStatus() {
+	if (user()->isBot()) {
+		auto seesAllMessages = (user()->botInfo->readsAllHistory || _type.rights != Rights::Normal);
+		setCustomStatus(seesAllMessages
+			? tr::lng_status_bot_reads_all(tr::now)
+			: tr::lng_status_bot_not_reads_all(tr::now));
+	} else {
+		PeerListRow::refreshStatus();
+	}
 }
 
 std::unique_ptr<PeerListController> CreateMembersController(

@@ -9,9 +9,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "info/media/info_media_inner_widget.h"
 #include "info/info_controller.h"
+#include "main/main_session.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/search_field_controller.h"
 #include "ui/ui_utility.h"
+#include "data/data_peer.h"
+#include "data/data_user.h"
 #include "styles/style_info.h"
 
 namespace Info {
@@ -37,16 +40,20 @@ Type TabIndexToType(int index) {
 
 Memento::Memento(not_null<Controller*> controller)
 : Memento(
-	controller->peerId(),
+	(controller->peer()
+		? controller->peer()
+		: controller->parentController()->session().user()),
 	controller->migratedPeerId(),
-	controller->section().mediaType()) {
+	(controller->section().type() == Section::Type::Downloads
+		? Type::File
+		: controller->section().mediaType())) {
 }
 
-Memento::Memento(PeerId peerId, PeerId migratedPeerId, Type type)
-: ContentMemento(peerId, migratedPeerId)
+Memento::Memento(not_null<PeerData*> peer, PeerId migratedPeerId, Type type)
+: ContentMemento(peer, migratedPeerId)
 , _type(type) {
 	_searchState.query.type = type;
-	_searchState.query.peerId = peerId;
+	_searchState.query.peerId = peer->id;
 	_searchState.query.migratedPeerId = migratedPeerId;
 	if (migratedPeerId) {
 		_searchState.migratedList = Storage::SparseIdsList();
@@ -86,8 +93,8 @@ rpl::producer<SelectedItems> Widget::selectedListValue() const {
 	return _inner->selectedListValue();
 }
 
-void Widget::cancelSelection() {
-	_inner->cancelSelection();
+void Widget::selectionAction(SelectionAction action) {
+	_inner->selectionAction(action);
 }
 
 void Widget::setIsStackBottom(bool isStackBottom) {
@@ -114,8 +121,8 @@ void Widget::setInternalState(
 	restoreState(memento);
 }
 
-std::unique_ptr<ContentMemento> Widget::doCreateMemento() {
-	auto result = std::make_unique<Memento>(controller());
+std::shared_ptr<ContentMemento> Widget::doCreateMemento() {
+	auto result = std::make_shared<Memento>(controller());
 	saveState(result.get());
 	return result;
 }

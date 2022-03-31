@@ -8,40 +8,63 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mainwindow.h"
+#include "window/window_adaptive.h"
 #include "ui/layers/layer_widget.h"
 
 namespace Main {
 class Account;
 } // namespace Main
 
+namespace Media::View {
+struct OpenRequest;
+} // namespace Media::View
+
 namespace Window {
 
-class Controller final {
+class Controller final : public base::has_weak_ptr {
 public:
-	explicit Controller(not_null<Main::Account*> account);
+	Controller();
+	Controller(
+		not_null<PeerData*> singlePeer,
+		MsgId showAtMsgId);
 	~Controller();
 
 	Controller(const Controller &other) = delete;
 	Controller &operator=(const Controller &other) = delete;
 
-	Main::Account &account() const {
-		return *_account;
+	void showAccount(not_null<Main::Account*> account);
+	[[nodiscard]] PeerData *singlePeer() const;
+	[[nodiscard]] bool isPrimary() const {
+		return (singlePeer() == nullptr);
 	}
-	not_null<::MainWindow*> widget() {
+
+	[[nodiscard]] not_null<::MainWindow*> widget() {
 		return &_widget;
 	}
-	SessionController *sessionController() const {
+	[[nodiscard]] Main::Account &account() const {
+		Expects(_account != nullptr);
+
+		return *_account;
+	}
+	[[nodiscard]] SessionController *sessionController() const {
 		return _sessionController.get();
 	}
+	[[nodiscard]] bool locked() const;
+
+	[[nodiscard]] Adaptive &adaptive() const;
 
 	void finishFirstShow();
 
 	void setupPasscodeLock();
 	void clearPasscodeLock();
 	void setupIntro();
-	void setupMain();
+	void setupMain(MsgId singlePeerShowAtMsgId);
+
+	void showLogoutConfirmation();
 
 	void showSettings();
+
+	[[nodiscard]] int verticalShadowTop() const;
 
 	template <typename BoxType>
 	QPointer<BoxType> show(
@@ -53,31 +76,70 @@ public:
 		return result;
 	}
 	void showToast(const QString &text);
+	void showLayer(
+		std::unique_ptr<Ui::LayerWidget> &&layer,
+		Ui::LayerOptions options,
+		anim::type animated = anim::type::normal);
 
 	void showRightColumn(object_ptr<TWidget> widget);
-	void sideBarChanged();
+
+	void hideSettingsAndLayer(anim::type animated = anim::type::normal);
 
 	void activate();
 	void reActivate();
-	void updateIsActive(int timeout);
+	void updateIsActiveFocus();
+	void updateIsActiveBlur();
+	void updateIsActive();
 	void minimize();
 	void close();
 
+	void preventOrInvoke(Fn<void()> &&callback);
+
+	void invokeForSessionController(
+		not_null<Main::Account*> account,
+		Fn<void(not_null<SessionController*>)> &&callback);
+
+	void openInMediaView(Media::View::OpenRequest &&request);
+	[[nodiscard]] auto openInMediaViewRequests() const
+	-> rpl::producer<Media::View::OpenRequest>;
+
 	QPoint getPointForCallPanelCenter() const;
 
-	void tempDirDelete(int task);
+	rpl::lifetime &lifetime();
 
 private:
+	struct CreateArgs {
+		PeerData *singlePeer = nullptr;
+	};
+	explicit Controller(CreateArgs &&args);
+
+	void showAccount(
+		not_null<Main::Account*> account,
+		MsgId singlePeerShowAtMsgId);
+	void setupSideBar();
+	void sideBarChanged();
+	void logoutWithChecks(Main::Account *account);
+
 	void showBox(
 		object_ptr<Ui::BoxContent> content,
 		Ui::LayerOptions options,
 		anim::type animated);
 	void checkThemeEditor();
+	void checkLockByTerms();
+	void showTermsDecline();
+	void showTermsDelete();
 
-	not_null<Main::Account*> _account;
+	PeerData *_singlePeer = nullptr;
+	Main::Account *_account = nullptr;
 	::MainWindow _widget;
+	const std::unique_ptr<Adaptive> _adaptive;
 	std::unique_ptr<SessionController> _sessionController;
+	base::Timer _isActiveTimer;
+	QPointer<Ui::BoxContent> _termsBox;
 
+	rpl::event_stream<Media::View::OpenRequest> _openInMediaViewRequests;
+
+	rpl::lifetime _accountLifetime;
 	rpl::lifetime _lifetime;
 
 };

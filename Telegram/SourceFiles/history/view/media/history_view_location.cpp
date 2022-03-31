@@ -7,45 +7,72 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/media/history_view_location.h"
 
-#include "layout.h"
+#include "history/history.h"
 #include "history/history_item_components.h"
 #include "history/history_item.h"
 #include "history/history_location_manager.h"
 #include "history/view/history_view_element.h"
 #include "history/view/history_view_cursor_state.h"
+#include "ui/chat/chat_style.h"
 #include "ui/image/image.h"
-#include "ui/text_options.h"
+#include "ui/text/text_options.h"
+#include "ui/cached_round_corners.h"
+#include "data/data_session.h"
 #include "data/data_file_origin.h"
-#include "data/data_location.h"
-#include "app.h"
-#include "styles/style_history.h"
+#include "data/data_cloud_file.h"
+#include "styles/style_chat.h"
 
 namespace HistoryView {
 
 Location::Location(
 	not_null<Element*> parent,
-	not_null<Data::LocationThumbnail*> location,
+	not_null<Data::CloudImage*> data,
+	Data::LocationPoint point,
 	const QString &title,
 	const QString &description)
 : Media(parent)
-, _data(location)
+, _data(data)
 , _title(st::msgMinWidth)
 , _description(st::msgMinWidth)
-, _link(std::make_shared<LocationClickHandler>(_data->point)) {
+, _link(std::make_shared<LocationClickHandler>(point)) {
 	if (!title.isEmpty()) {
 		_title.setText(
 			st::webPageTitleStyle,
-			TextUtilities::Clean(title),
+			title,
 			Ui::WebpageTextTitleOptions());
 	}
 	if (!description.isEmpty()) {
 		_description.setMarkedText(
 			st::webPageDescriptionStyle,
 			TextUtilities::ParseEntities(
-				TextUtilities::Clean(description),
-				TextParseLinks | TextParseMultiline | TextParseRichText),
+				description,
+				TextParseLinks | TextParseMultiline),
 			Ui::WebpageTextDescriptionOptions());
 	}
+}
+
+Location::~Location() {
+	if (_media) {
+		_media = nullptr;
+		_parent->checkHeavyPart();
+	}
+}
+
+void Location::unloadHeavyPart() {
+	_media = nullptr;
+}
+
+bool Location::hasHeavyPart() const {
+	return (_media != nullptr);
+}
+
+void Location::ensureMediaCreated() const {
+	if (_media) {
+		return;
+	}
+	_media = _data->createView();
+	_data->load(&history()->session(), _parent->data()->fullId());
+	history()->owner().registerHeavyViewPart(_parent);
 }
 
 QSize Location::countOptimalSize() {
@@ -55,7 +82,10 @@ QSize Location::countOptimalSize() {
 		th = (st::maxMediaSize * th) / tw;
 		tw = st::maxMediaSize;
 	}
-	auto minWidth = qMax(st::minPhotoSize, _parent->infoWidth() + 2 * (st::msgDateImgDelta + st::msgDateImgPadding.x()));
+	auto minWidth = std::clamp(
+		_parent->minWidthForMedia(),
+		st::minPhotoSize,
+		st::maxMediaSize);
 	auto maxWidth = qMax(tw, minWidth);
 	auto minHeight = qMax(th, st::minPhotoSize);
 
@@ -91,7 +121,10 @@ QSize Location::countCurrentSize(int newWidth) {
 	} else {
 		newWidth = tw;
 	}
-	auto minWidth = qMax(st::minPhotoSize, _parent->infoWidth() + 2 * (st::msgDateImgDelta + st::msgDateImgPadding.x()));
+	auto minWidth = std::clamp(
+		_parent->minWidthForMedia(),
+		st::minPhotoSize,
+		std::min(newWidth, st::maxMediaSize));
 	accumulate_max(newWidth, minWidth);
 	accumulate_max(newHeight, st::minPhotoSize);
 	if (_parent->hasBubble()) {
@@ -121,12 +154,13 @@ TextSelection Location::fromDescriptionSelection(
 	return ShiftItemSelection(selection, _title);
 }
 
-void Location::draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const {
+void Location::draw(Painter &p, const PaintContext &context) const {
 	if (width() < st::msgPadding.left() + st::msgPadding.right() + 1) return;
 	auto paintx = 0, painty = 0, paintw = width(), painth = height();
 	bool bubble = _parent->hasBubble();
-	auto outbg = _parent->hasOutLayout();
-	bool selected = (selection == FullSelection);
+	const auto st = context.st;
+	const auto sti = context.imageStyle();
+	const auto stm = context.messageStyle();
 
 	if (bubble) {
 		if (!_title.isEmpty() || !_description.isEmpty()) {
@@ -137,14 +171,13 @@ void Location::draw(Painter &p, const QRect &r, TextSelection selection, crl::ti
 
 		auto textw = width() - st::msgPadding.left() - st::msgPadding.right();
 
+		p.setPen(stm->historyTextFg);
 		if (!_title.isEmpty()) {
-			p.setPen(outbg ? st::webPageTitleOutFg : st::webPageTitleInFg);
-			_title.drawLeftElided(p, paintx + st::msgPadding.left(), painty, textw, width(), 2, style::al_left, 0, -1, 0, false, selection);
+			_title.drawLeftElided(p, paintx + st::msgPadding.left(), painty, textw, width(), 2, style::al_left, 0, -1, 0, false, context.selection);
 			painty += qMin(_title.countHeight(textw), 2 * st::webPageTitleFont->height);
 		}
 		if (!_description.isEmpty()) {
-			p.setPen(outbg ? st::webPageDescriptionOutFg : st::webPageDescriptionInFg);
-			_description.drawLeftElided(p, paintx + st::msgPadding.left(), painty, textw, width(), 3, style::al_left, 0, -1, 0, false, toDescriptionSelection(selection));
+			_description.drawLeftElided(p, paintx + st::msgPadding.left(), painty, textw, width(), 3, style::al_left, 0, -1, 0, false, toDescriptionSelection(context.selection));
 			painty += qMin(_description.countHeight(textw), 3 * st::webPageDescriptionFont->height);
 		}
 		if (!_title.isEmpty() || !_description.isEmpty()) {
@@ -152,20 +185,23 @@ void Location::draw(Painter &p, const QRect &r, TextSelection selection, crl::ti
 		}
 		painth -= painty;
 	} else {
-		App::roundShadow(p, 0, 0, paintw, painth, selected ? st::msgInShadowSelected : st::msgInShadow, selected ? InSelectedShadowCorners : InShadowCorners);
+		Ui::FillRoundShadow(p, 0, 0, paintw, painth, sti->msgShadow, sti->msgShadowCorners);
 	}
 
-	const auto contextId = _parent->data()->fullId();
-	_data->load(contextId);
 	auto roundRadius = ImageRoundRadius::Large;
 	auto roundCorners = ((isBubbleTop() && _title.isEmpty() && _description.isEmpty()) ? (RectPart::TopLeft | RectPart::TopRight) : RectPart::None)
-		| (isBubbleBottom() ? (RectPart::BottomLeft | RectPart::BottomRight) : RectPart::None);
+		| (isRoundedInBubbleBottom() ? (RectPart::BottomLeft | RectPart::BottomRight) : RectPart::None);
 	auto rthumb = QRect(paintx, painty, paintw, painth);
-	if (_data && !_data->thumb->isNull()) {
-		const auto &pix = _data->thumb->pixSingle(contextId, paintw, painth, paintw, painth, roundRadius, roundCorners);
-		p.drawPixmap(rthumb.topLeft(), pix);
+	ensureMediaCreated();
+	if (const auto thumbnail = _media->image()) {
+		p.drawPixmap(rthumb.topLeft(), thumbnail->pixSingle(
+			rthumb.size(),
+			{
+				.options = Images::RoundOptions(roundRadius, roundCorners),
+				.outer = rthumb.size(),
+			}));
 	} else {
-		App::complexLocationRect(p, rthumb, roundRadius, roundCorners);
+		Ui::FillComplexLocationRect(p, st, rthumb, roundRadius, roundCorners);
 	}
 	const auto paintMarker = [&](const style::icon &icon) {
 		icon.paint(
@@ -174,20 +210,26 @@ void Location::draw(Painter &p, const QRect &r, TextSelection selection, crl::ti
 			rthumb.y() + (rthumb.height() / 2) - icon.height(),
 			width());
 	};
-	paintMarker(st::historyMapPoint);
-	paintMarker(st::historyMapPointInner);
-	if (selected) {
-		App::complexOverlayRect(p, rthumb, roundRadius, roundCorners);
+	paintMarker(st->historyMapPoint());
+	paintMarker(st->historyMapPointInner());
+	if (context.selected()) {
+		Ui::FillComplexOverlayRect(p, st, rthumb, roundRadius, roundCorners);
 	}
 
 	if (_parent->media() == this) {
 		auto fullRight = paintx + paintw;
 		auto fullBottom = height();
-		_parent->drawInfo(p, fullRight, fullBottom, paintx * 2 + paintw, selected, InfoDisplayType::Image);
-		if (!bubble && _parent->displayRightAction()) {
+		_parent->drawInfo(
+			p,
+			context,
+			fullRight,
+			fullBottom,
+			paintx * 2 + paintw,
+			InfoDisplayType::Image);
+		if (const auto size = bubble ? std::nullopt : _parent->rightActionSize()) {
 			auto fastShareLeft = (fullRight + st::historyFastShareLeft);
-			auto fastShareTop = (fullBottom - st::historyFastShareBottom - st::historyFastShareSize);
-			_parent->drawRightAction(p, fastShareLeft, fastShareTop, 2 * paintx + paintw);
+			auto fastShareTop = (fullBottom - st::historyFastShareBottom - size->height());
+			_parent->drawRightAction(p, context, fastShareLeft, fastShareTop, 2 * paintx + paintw);
 		}
 	}
 }
@@ -249,13 +291,19 @@ TextState Location::textState(QPoint point, StateRequest request) const {
 	if (_parent->media() == this) {
 		auto fullRight = paintx + paintw;
 		auto fullBottom = height();
-		if (_parent->pointInTime(fullRight, fullBottom, point, InfoDisplayType::Image)) {
-			result.cursor = CursorState::Date;
+		const auto bottomInfoResult = _parent->bottomInfoTextState(
+			fullRight,
+			fullBottom,
+			point,
+			InfoDisplayType::Image);
+		if (bottomInfoResult.link
+			|| bottomInfoResult.cursor != CursorState::None) {
+			return bottomInfoResult;
 		}
-		if (!bubble && _parent->displayRightAction()) {
+		if (const auto size = bubble ? std::nullopt : _parent->rightActionSize()) {
 			auto fastShareLeft = (fullRight + st::historyFastShareLeft);
-			auto fastShareTop = (fullBottom - st::historyFastShareBottom - st::historyFastShareSize);
-			if (QRect(fastShareLeft, fastShareTop, st::historyFastShareSize, st::historyFastShareSize).contains(point)) {
+			auto fastShareTop = (fullBottom - st::historyFastShareBottom - size->height());
+			if (QRect(fastShareLeft, fastShareTop, size->width(), size->height()).contains(point)) {
 				result.link = _parent->rightActionLink();
 			}
 		}
@@ -293,11 +341,18 @@ bool Location::needsBubble() const {
 		return true;
 	}
 	const auto item = _parent->data();
-	return item->viaBot()
-		|| item->Has<HistoryMessageReply>()
+	return item->repliesAreComments()
+		|| item->externalReply()
+		|| item->viaBot()
+		|| _parent->displayedReply()
 		|| _parent->displayForwardedFrom()
 		|| _parent->displayFromName();
-	return false;
+}
+
+QPoint Location::resolveCustomInfoRightBottom() const {
+	const auto skipx = (st::msgDateImgDelta + st::msgDateImgPadding.x());
+	const auto skipy = (st::msgDateImgDelta + st::msgDateImgPadding.y());
+	return QPoint(width() - skipx, height() - skipy);
 }
 
 int Location::fullWidth() const {

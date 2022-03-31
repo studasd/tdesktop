@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "core/crash_reports.h"
 #include "core/update_checker.h"
-#include "base/platform/base_platform_info.h"
 #include "base/platform/win/base_windows_h.h"
 
 #include <shellapi.h>
@@ -18,7 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Platform {
 
 Launcher::Launcher(int argc, char *argv[])
-: Core::Launcher(argc, argv, DeviceModelPretty(), SystemVersionPretty()) {
+: Core::Launcher(argc, argv) {
 }
 
 std::optional<QStringList> Launcher::readArgumentsHook(
@@ -68,14 +67,9 @@ bool Launcher::launchUpdater(UpdaterLaunch action) {
 	if (cStartInTray()) {
 		pushArgument(qsl("-startintray"));
 	}
-	if (cTestMode()) {
-		pushArgument(qsl("-testmode"));
+	if (cUseFreeType()) {
+		pushArgument(qsl("-freetype"));
 	}
-#ifndef TDESKTOP_DISABLE_AUTOUPDATE
-	if (Core::UpdaterDisabled()) {
-		pushArgument(qsl("-externalupdater"));
-	}
-#endif // !TDESKTOP_DISABLE_AUTOUPDATE
 	if (customWorkingDir()) {
 		pushArgument(qsl("-workdir"));
 		pushArgument('"' + cWorkingDir() + '"');
@@ -129,15 +123,15 @@ bool Launcher::launch(
 		arguments.toStdWString().c_str(),
 		nativeWorkingDir.empty() ? nullptr : nativeWorkingDir.c_str(),
 		SW_SHOWNORMAL);
-	if (long(result) < 32) {
+	if (int64(result) < 32) {
 		DEBUG_LOG(("Application Error: failed to execute %1, working directory: '%2', result: %3"
 			).arg(binaryPath
 			).arg(cWorkingDir()
-			).arg(long(result)
+			).arg(int64(result)
 			));
 		return false;
 	}
 	return true;
 }
 
-} // namespace
+} // namespace Platform

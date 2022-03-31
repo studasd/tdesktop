@@ -10,13 +10,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <rpl/event_stream.h>
 #include <rpl/filter.h>
 #include <rpl/variable.h>
-#include "main/main_settings.h"
 #include "base/timer.h"
 
 class ApiWrap;
 
+namespace Api {
+class Updates;
+class SendProgressManager;
+} // namespace Api
+
 namespace MTP {
 class Instance;
+struct ConfigFields;
 } // namespace MTP
 
 namespace Support {
@@ -26,152 +31,185 @@ class Templates;
 
 namespace Data {
 class Session;
+class Changes;
+class CloudImageView;
 } // namespace Data
 
 namespace Storage {
 class DownloadManagerMtproto;
 class Uploader;
 class Facade;
+class Account;
+class Domain;
 } // namespace Storage
 
 namespace Window {
-namespace Notifications {
-class System;
-} // namespace Notifications
+class SessionController;
+struct TermsLock;
 } // namespace Window
-
-namespace Calls {
-class Instance;
-} // namespace Calls
 
 namespace Stickers {
 class EmojiPack;
-class DicePack;
+class DicePacks;
 } // namespace Stickers;
-
-namespace Core {
-class Changelogs;
-} // namespace Core
 
 namespace Main {
 
 class Account;
+class Domain;
+class SessionSettings;
+class SendAsPeers;
 
-class Session final
-	: public base::has_weak_ptr
-	, private base::Subscriber {
+class Session final : public base::has_weak_ptr {
 public:
 	Session(
-		not_null<Main::Account*> account,
+		not_null<Account*> account,
 		const MTPUser &user,
-		Settings &&other);
+		std::unique_ptr<SessionSettings> settings);
 	~Session();
 
 	Session(const Session &other) = delete;
 	Session &operator=(const Session &other) = delete;
 
-	[[nodiscard]] static bool Exists();
+	[[nodiscard]] Account &account() const;
+	[[nodiscard]] Storage::Account &local() const;
+	[[nodiscard]] Domain &domain() const;
+	[[nodiscard]] Storage::Domain &domainLocal() const;
 
-	[[nodiscard]] Main::Account &account() const;
-
+	[[nodiscard]] uint64 uniqueId() const; // userId() with TestDC shift.
 	[[nodiscard]] UserId userId() const;
 	[[nodiscard]] PeerId userPeerId() const;
 	[[nodiscard]] not_null<UserData*> user() const {
 		return _user;
 	}
-	bool validateSelf(const MTPUser &user);
+	bool validateSelf(UserId id);
 
-	[[nodiscard]] Storage::DownloadManagerMtproto &downloader() {
+	[[nodiscard]] Data::Changes &changes() const {
+		return *_changes;
+	}
+	[[nodiscard]] Api::Updates &updates() const {
+		return *_updates;
+	}
+	[[nodiscard]] Api::SendProgressManager &sendProgressManager() const {
+		return *_sendProgressManager;
+	}
+	[[nodiscard]] Storage::DownloadManagerMtproto &downloader() const {
 		return *_downloader;
 	}
-	[[nodiscard]] Storage::Uploader &uploader() {
+	[[nodiscard]] Storage::Uploader &uploader() const {
 		return *_uploader;
 	}
-	[[nodiscard]] Storage::Facade &storage() {
+	[[nodiscard]] Storage::Facade &storage() const {
 		return *_storage;
 	}
 	[[nodiscard]] Stickers::EmojiPack &emojiStickersPack() const {
 		return *_emojiStickersPack;
 	}
-	[[nodiscard]] Stickers::DicePack &diceStickersPack() const {
-		return *_diceStickersPack;
+	[[nodiscard]] Stickers::DicePacks &diceStickersPacks() const {
+		return *_diceStickersPacks;
 	}
-
-	[[nodiscard]] base::Observable<void> &downloaderTaskFinished();
-
-	[[nodiscard]] Window::Notifications::System &notifications() {
-		return *_notifications;
-	}
-
-	[[nodiscard]] Data::Session &data() {
+	[[nodiscard]] Data::Session &data() const {
 		return *_data;
 	}
-	[[nodiscard]] Settings &settings() {
-		return _settings;
+	[[nodiscard]] SessionSettings &settings() const {
+		return *_settings;
 	}
+	[[nodiscard]] SendAsPeers &sendAsPeers() const {
+		return *_sendAsPeers;
+	}
+
+	void saveSettings();
 	void saveSettingsDelayed(crl::time delay = kDefaultSaveDelay);
 	void saveSettingsNowIfNeeded();
 
-	[[nodiscard]] not_null<MTP::Instance*> mtp();
+	void addWindow(not_null<Window::SessionController*> controller);
+	[[nodiscard]] auto windows() const
+		-> const base::flat_set<not_null<Window::SessionController*>> &;
+	[[nodiscard]] Window::SessionController *tryResolveWindow() const;
+
+	// Shortcuts.
+	void notifyDownloaderTaskFinished();
+	[[nodiscard]] rpl::producer<> downloaderTaskFinished() const;
+	[[nodiscard]] MTP::DcId mainDcId() const;
+	[[nodiscard]] MTP::Instance &mtp() const;
+	[[nodiscard]] const MTP::ConfigFields &serverConfig() const;
 	[[nodiscard]] ApiWrap &api() {
 		return *_api;
 	}
 
-	[[nodiscard]] Calls::Instance &calls() {
-		return *_calls;
-	}
-
-	void checkAutoLock();
-	void checkAutoLockIn(crl::time time);
-	void localPasscodeChanged();
+	// Terms lock.
+	void lockByTerms(const Window::TermsLock &data);
+	void unlockTerms();
 	void termsDeleteNow();
+	[[nodiscard]] std::optional<Window::TermsLock> termsLocked() const;
+	rpl::producer<bool> termsLockChanges() const;
+	rpl::producer<bool> termsLockValue() const;
+
+	[[nodiscard]] QString createInternalLink(const QString &query) const;
+	[[nodiscard]] QString createInternalLinkFull(const QString &query) const;
+	[[nodiscard]] TextWithEntities createInternalLink(
+		const TextWithEntities &query) const;
+	[[nodiscard]] TextWithEntities createInternalLinkFull(
+		TextWithEntities query) const;
+
+	void setTmpPassword(const QByteArray &password, TimeId validUntil);
+	[[nodiscard]] QByteArray validTmpPassword() const;
+
+	// Can be called only right before ~Session.
+	void finishLogout();
+
+	// Uploads cancel with confirmation.
+	[[nodiscard]] bool uploadsInProgress() const;
+	void uploadsStopWithConfirmation(Fn<void()> done);
+	void uploadsStop();
 
 	[[nodiscard]] rpl::lifetime &lifetime() {
 		return _lifetime;
 	}
 
-	base::Observable<DocumentData*> documentUpdated;
-	base::Observable<std::pair<not_null<HistoryItem*>, MsgId>> messageIdChanging;
-
-	bool supportMode() const;
-	Support::Helper &supportHelper() const;
-	Support::Templates &supportTemplates() const;
+	[[nodiscard]] bool supportMode() const;
+	[[nodiscard]] Support::Helper &supportHelper() const;
+	[[nodiscard]] Support::Templates &supportTemplates() const;
 
 private:
 	static constexpr auto kDefaultSaveDelay = crl::time(1000);
 
-	const not_null<Main::Account*> _account;
+	const not_null<Account*> _account;
 
-	Settings _settings;
-	base::Timer _saveSettingsTimer;
-
-	crl::time _shouldLockAt = 0;
-	base::Timer _autoLockTimer;
-
+	const std::unique_ptr<SessionSettings> _settings;
+	const std::unique_ptr<Data::Changes> _changes;
 	const std::unique_ptr<ApiWrap> _api;
-	const std::unique_ptr<Calls::Instance> _calls;
+	const std::unique_ptr<Api::Updates> _updates;
+	const std::unique_ptr<Api::SendProgressManager> _sendProgressManager;
 	const std::unique_ptr<Storage::DownloadManagerMtproto> _downloader;
 	const std::unique_ptr<Storage::Uploader> _uploader;
 	const std::unique_ptr<Storage::Facade> _storage;
-	const std::unique_ptr<Window::Notifications::System> _notifications;
 
-	// _data depends on _downloader / _uploader / _notifications.
+	// _data depends on _downloader / _uploader.
 	const std::unique_ptr<Data::Session> _data;
+	const UserId _userId;
 	const not_null<UserData*> _user;
 
 	// _emojiStickersPack depends on _data.
 	const std::unique_ptr<Stickers::EmojiPack> _emojiStickersPack;
-	const std::unique_ptr<Stickers::DicePack> _diceStickersPack;
-
-	// _changelogs depends on _data, subscribes on chats loading event.
-	const std::unique_ptr<Core::Changelogs> _changelogs;
+	const std::unique_ptr<Stickers::DicePacks> _diceStickersPacks;
+	const std::unique_ptr<SendAsPeers> _sendAsPeers;
 
 	const std::unique_ptr<Support::Helper> _supportHelper;
+
+	std::shared_ptr<Data::CloudImageView> _selfUserpicView;
+
+	rpl::event_stream<bool> _termsLockChanges;
+	std::unique_ptr<Window::TermsLock> _termsLock;
+
+	base::flat_set<not_null<Window::SessionController*>> _windows;
+	base::Timer _saveSettingsTimer;
+
+	QByteArray _tmpPassword;
+	TimeId _tmpPasswordValidUntil = 0;
 
 	rpl::lifetime _lifetime;
 
 };
 
 } // namespace Main
-
-Main::Session &Auth();

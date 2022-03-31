@@ -58,6 +58,11 @@ public:
 	[[nodiscard]] QImage frame(
 		const FrameRequest &request,
 		const Instance *instance);
+	[[nodiscard]] FrameWithInfo frameWithInfo(
+		const FrameRequest &request,
+		const Instance *instance);
+	[[nodiscard]] FrameWithInfo frameWithInfo(const Instance *instance);
+	[[nodiscard]] QImage currentFrameImage();
 	void unregisterInstance(not_null<const Instance*> instance);
 	[[nodiscard]] rpl::producer<> checkNextFrame() const;
 	[[nodiscard]] rpl::producer<> waitingForData() const;
@@ -77,21 +82,30 @@ private:
 	};
 	struct Frame {
 		FFmpeg::FramePointer decoded = FFmpeg::MakeFramePointer();
+		FFmpeg::FramePointer transferred;
 		QImage original;
+		FrameYUV yuv;
 		crl::time position = kTimeUnknown;
 		crl::time displayed = kTimeUnknown;
 		crl::time display = kTimeUnknown;
+		FrameFormat format = FrameFormat::None;
 
 		base::flat_map<const Instance*, Prepared> prepared;
 
+		int index = 0;
 		bool alpha = false;
+	};
+	struct FrameWithIndex {
+		not_null<Frame*> frame;
+		int index = -1;
 	};
 
 	class Shared {
 	public:
 		using PrepareFrame = not_null<Frame*>;
 		using PrepareNextCheck = crl::time;
-		using PrepareState = base::optional_variant<
+		using PrepareState = std::variant<
+			v::null_t,
 			PrepareFrame,
 			PrepareNextCheck>;
 		struct PresentFrame {
@@ -101,20 +115,18 @@ private:
 		};
 
 		// Called from the wrapped object queue.
-		void init(QImage &&cover, crl::time position);
+		void init(QImage &&cover, bool hasAlpha, crl::time position);
 		[[nodiscard]] bool initialized() const;
 
 		[[nodiscard]] PrepareState prepareState(
 			crl::time trackTime,
 			bool dropStaleFrames);
 
-		// RasterizeCallback(not_null<Frame*>).
-		template <typename RasterizeCallback>
 		[[nodiscard]] PresentFrame presentFrame(
+			not_null<VideoTrackObject*> object,
 			TimePoint trackTime,
 			float64 playbackSpeed,
-			bool dropStaleFrames,
-			RasterizeCallback &&rasterize);
+			bool dropStaleFrames);
 		[[nodiscard]] bool firstPresentHappened() const;
 
 		// Called from the main thread.
@@ -124,6 +136,7 @@ private:
 		bool markFrameShown();
 		[[nodiscard]] crl::time nextFrameDisplayTime() const;
 		[[nodiscard]] not_null<Frame*> frameForPaint();
+		[[nodiscard]] FrameWithIndex frameForPaintWithIndex();
 
 	private:
 		[[nodiscard]] not_null<Frame*> getFrame(int index);
@@ -148,6 +161,11 @@ private:
 	[[nodiscard]] static bool IsStale(
 		not_null<const Frame*> frame,
 		crl::time trackTime);
+
+	[[nodiscard]] QImage frameImage(
+		not_null<Frame*> frame,
+		const FrameRequest &request,
+		const Instance *instance);
 
 	const int _streamIndex = 0;
 	const AVRational _streamTimeBase;

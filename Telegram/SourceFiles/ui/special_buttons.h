@@ -10,20 +10,33 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/tooltip.h"
 #include "ui/effects/animations.h"
+#include "ui/effects/cross_line.h"
 #include "styles/style_window.h"
 #include "styles/style_widgets.h"
 
 class PeerData;
 
-namespace Ui {
-class InfiniteRadialAnimation;
-} // namespace Ui
+namespace Data {
+class CloudImageView;
+} // namespace Data
 
 namespace Window {
+class Controller;
 class SessionController;
 } // namespace Window
 
+namespace Media {
+namespace Streaming {
+class Instance;
+struct Update;
+enum class Error;
+struct Information;
+} // namespace Streaming
+} // namespace Media
+
 namespace Ui {
+
+class PopupMenu;
 
 class HistoryDownButton : public RippleButton {
 public:
@@ -47,114 +60,10 @@ private:
 
 };
 
-class EmojiButton : public RippleButton {
-public:
-	EmojiButton(QWidget *parent, const style::IconButton &st);
-
-	void setLoading(bool loading);
-	void setColorOverrides(const style::icon *iconOverride, const style::color *colorOverride, const style::color *rippleOverride);
-
-protected:
-	void paintEvent(QPaintEvent *e) override;
-	void onStateChanged(State was, StateChangeSource source) override;
-
-	QImage prepareRippleMask() const override;
-	QPoint prepareRippleStartPosition() const override;
-
-private:
-	void loadingAnimationCallback();
-
-	const style::IconButton &_st;
-
-	std::unique_ptr<Ui::InfiniteRadialAnimation> _loading;
-
-	const style::icon *_iconOverride = nullptr;
-	const style::color *_colorOverride = nullptr;
-	const style::color *_rippleOverride = nullptr;
-
-};
-
-class SendButton : public RippleButton {
-public:
-	SendButton(QWidget *parent);
-
-	static constexpr auto kSlowmodeDelayLimit = 100 * 60;
-
-	enum class Type {
-		Send,
-		Schedule,
-		Save,
-		Record,
-		Cancel,
-		Slowmode,
-	};
-	Type type() const {
-		return _type;
-	}
-	void setType(Type state);
-	void setRecordActive(bool recordActive);
-	void setSlowmodeDelay(int seconds);
-	void finishAnimating();
-
-	void setRecordStartCallback(Fn<void()> callback) {
-		_recordStartCallback = std::move(callback);
-	}
-	void setRecordUpdateCallback(Fn<void(QPoint globalPos)> callback) {
-		_recordUpdateCallback = std::move(callback);
-	}
-	void setRecordStopCallback(Fn<void(bool active)> callback) {
-		_recordStopCallback = std::move(callback);
-	}
-	void setRecordAnimationCallback(Fn<void()> callback) {
-		_recordAnimationCallback = std::move(callback);
-	}
-
-	float64 recordActiveRatio() {
-		return _a_recordActive.value(_recordActive ? 1. : 0.);
-	}
-
-protected:
-	void mouseMoveEvent(QMouseEvent *e) override;
-	void paintEvent(QPaintEvent *e) override;
-	void onStateChanged(State was, StateChangeSource source) override;
-
-	QImage prepareRippleMask() const override;
-	QPoint prepareRippleStartPosition() const override;
-
-private:
-	void recordAnimationCallback();
-	QPixmap grabContent();
-	bool isSlowmode() const;
-
-	void paintRecord(Painter &p, bool over);
-	void paintSave(Painter &p, bool over);
-	void paintCancel(Painter &p, bool over);
-	void paintSend(Painter &p, bool over);
-	void paintSchedule(Painter &p, bool over);
-	void paintSlowmode(Painter &p);
-
-	Type _type = Type::Send;
-	Type _afterSlowmodeType = Type::Send;
-	bool _recordActive = false;
-	QPixmap _contentFrom, _contentTo;
-
-	Ui::Animations::Simple _a_typeChanged;
-	Ui::Animations::Simple _a_recordActive;
-
-	bool _recording = false;
-	Fn<void()> _recordStartCallback;
-	Fn<void(bool active)> _recordStopCallback;
-	Fn<void(QPoint globalPos)> _recordUpdateCallback;
-	Fn<void()> _recordAnimationCallback;
-
-	int _slowmodeDelay = 0;
-	QString _slowmodeDelayText;
-
-};
-
 class UserpicButton : public RippleButton {
 public:
 	enum class Role {
+		ChoosePhoto,
 		ChangePhoto,
 		OpenPhoto,
 		OpenProfile,
@@ -163,12 +72,19 @@ public:
 
 	UserpicButton(
 		QWidget *parent,
+		not_null<::Window::Controller*> window,
+		not_null<PeerData*> peer,
+		Role role,
+		const style::UserpicButton &st);
+	UserpicButton(
+		QWidget *parent,
+		not_null<::Window::Controller*> window,
 		const QString &cropTitle,
 		Role role,
 		const style::UserpicButton &st);
 	UserpicButton(
 		QWidget *parent,
-		not_null<Window::SessionController*> controller,
+		not_null<::Window::SessionController*> controller,
 		not_null<PeerData*> peer,
 		Role role,
 		const style::UserpicButton &st);
@@ -181,9 +97,21 @@ public:
 	void switchChangePhotoOverlay(bool enabled);
 	void showSavedMessagesOnSelf(bool enabled);
 
-	QImage takeResultImage() {
+	// Role::ChoosePhoto
+	[[nodiscard]] rpl::producer<QImage> chosenImages() const {
+		return _chosenImages.events();
+	}
+
+	// Role::ChangePhoto
+	[[nodiscard]] rpl::producer<> uploadPhotoRequests() const {
+		return _uploadPhotoRequests.events();
+	}
+	[[nodiscard]] QImage takeResultImage() {
 		return std::move(_result);
 	}
+
+	// For Role::OpenPhoto as if it is Role::ChangePhoto.
+	void changeTo(QImage &&image);
 
 protected:
 	void paintEvent(QPaintEvent *e) override;
@@ -209,17 +137,28 @@ private:
 	void updateCursorInChangeOverlay(QPoint localPos);
 	void setCursorInChangeOverlay(bool inOverlay);
 	void updateCursor();
+	void updateVideo();
 	bool showSavedMessages() const;
+	bool showRepliesMessages() const;
+	void checkStreamedIsStarted();
+	bool createStreamingObjects(not_null<PhotoData*> photo);
+	void clearStreaming();
+	void handleStreamingUpdate(Media::Streaming::Update &&update);
+	void handleStreamingError(Media::Streaming::Error &&error);
+	void streamingReady(Media::Streaming::Information &&info);
+	void paintUserpicFrame(Painter &p, QPoint photoPosition);
 
 	void grabOldUserpic();
 	void setClickHandlerByRole();
 	void openPeerPhoto();
-	void changePhotoLazy();
-	void uploadNewPeerPhoto();
+	void choosePhotoLocally();
+	void changePhotoLocally(bool requestToUpload = false);
 
 	const style::UserpicButton &_st;
-	Window::SessionController *_controller = nullptr;
+	::Window::SessionController *_controller = nullptr;
+	::Window::Controller *_window = nullptr;
 	PeerData *_peer = nullptr;
+	std::shared_ptr<Data::CloudImageView> _userpicView;
 	QString _cropTitle;
 	Role _role = Role::ChangePhoto;
 	bool _notShownYet = true;
@@ -227,9 +166,14 @@ private:
 	QPixmap _userpic, _oldUserpic;
 	bool _userpicHasImage = false;
 	bool _userpicCustom = false;
+	bool _requestToUpload = false;
 	InMemoryKey _userpicUniqueKey;
 	Ui::Animations::Simple _a_appearance;
 	QImage _result;
+	std::unique_ptr<Media::Streaming::Instance> _streamed;
+	PhotoData *_streamedPhoto = nullptr;
+
+	base::unique_qptr<Ui::PopupMenu> _menu;
 
 	bool _showSavedMessagesOnSelf = false;
 	bool _canOpenPhoto = false;
@@ -237,37 +181,13 @@ private:
 	bool _changeOverlayEnabled = false;
 	Ui::Animations::Simple _changeOverlayShown;
 
+	rpl::event_stream<QImage> _chosenImages;
+	rpl::event_stream<> _uploadPhotoRequests;
+
 };
-// // #feed
-//class FeedUserpicButton : public AbstractButton {
-//public:
-//	FeedUserpicButton(
-//		QWidget *parent,
-//		not_null<Window::SessionController*> controller,
-//		not_null<Data::Feed*> feed,
-//		const style::FeedUserpicButton &st);
-//
-//private:
-//	struct Part {
-//		not_null<ChannelData*> channel;
-//		base::unique_qptr<UserpicButton> button;
-//	};
-//
-//	void prepare();
-//	void checkParts();
-//	bool partsAreValid() const;
-//	void refreshParts();
-//	QPoint countInnerPosition() const;
-//
-//	const style::FeedUserpicButton &_st;
-//	not_null<Window::SessionController*> _controller;
-//	not_null<Data::Feed*> _feed;
-//	std::vector<Part> _parts;
-//
-//};
 
 class SilentToggle
-	: public Ui::IconButton
+	: public Ui::RippleButton
 	, public Ui::AbstractTooltipShower {
 public:
 	SilentToggle(QWidget *parent, not_null<ChannelData*> channel);
@@ -287,11 +207,16 @@ protected:
 	void mouseReleaseEvent(QMouseEvent *e) override;
 	void leaveEventHook(QEvent *e) override;
 
+	QImage prepareRippleMask() const override;
+	QPoint prepareRippleStartPosition() const override;
+
 private:
-	void refreshIconOverrides();
+	const style::IconButton &_st;
 
 	not_null<ChannelData*> _channel;
 	bool _checked = false;
+
+	Ui::Animations::Simple _crossLineAnimation;
 
 };
 

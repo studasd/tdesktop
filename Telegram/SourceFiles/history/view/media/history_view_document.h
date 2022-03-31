@@ -12,6 +12,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 struct HistoryDocumentNamed;
 
+namespace Data {
+class DocumentMedia;
+} // namespace Data
+
 namespace Ui {
 namespace Text {
 class String;
@@ -20,15 +24,17 @@ class String;
 
 namespace HistoryView {
 
-class Document
+class Document final
 	: public File
 	, public RuntimeComposer<Document> {
 public:
 	Document(
 		not_null<Element*> parent,
+		not_null<HistoryItem*> realParent,
 		not_null<DocumentData*> document);
+	~Document();
 
-	void draw(Painter &p, const QRect &r, TextSelection selection, crl::time ms) const override;
+	void draw(Painter &p, const PaintContext &context) const override;
 	TextState textState(QPoint point, StateRequest request) const override;
 	void updatePressed(QPoint point) override;
 
@@ -54,7 +60,23 @@ public:
 		return false;
 	}
 	QMargins bubbleMargins() const override;
-	bool hideForwardedFrom() const override;
+
+	QSize sizeForGroupingOptimal(int maxWidth) const override;
+	QSize sizeForGrouping(int width) const override;
+	void drawGrouped(
+		Painter &p,
+		const PaintContext &context,
+		const QRect &geometry,
+		RectParts sides,
+		RectParts corners,
+		float64 highlightOpacity,
+		not_null<uint64*> cacheKey,
+		not_null<QPixmap*> cache) const override;
+	TextState getStateGrouped(
+		const QRect &geometry,
+		RectParts sides,
+		QPoint point,
+		StateRequest request) const override;
 
 	bool voiceProgressAnimationCallback(crl::time now);
 
@@ -62,6 +84,9 @@ public:
 
 	void refreshParentId(not_null<HistoryItem*> realParent) override;
 	void parentTextUpdated() override;
+
+	bool hasHeavyPart() const override;
+	void unloadHeavyPart() override;
 
 protected:
 	float64 dataProgress() const override;
@@ -74,6 +99,22 @@ private:
 		bool showPause = false;
 		int realDuration = 0;
 	};
+	enum class LayoutMode {
+		Full,
+		Grouped,
+	};
+
+	void draw(
+		Painter &p,
+		const PaintContext &context,
+		int width,
+		LayoutMode mode) const;
+	[[nodiscard]] TextState textState(
+		QPoint point,
+		QSize layout,
+		StateRequest request,
+		LayoutMode mode) const;
+	void ensureDataMediaCreated() const;
 
 	[[nodiscard]] Ui::Text::String createCaption();
 
@@ -87,13 +128,27 @@ private:
 	bool updateStatusText() const; // returns showPause
 
 	[[nodiscard]] bool downloadInCorner() const;
-	void drawCornerDownload(Painter &p, bool selected) const;
+	void drawCornerDownload(
+		Painter &p,
+		const PaintContext &context,
+		LayoutMode mode) const;
 	[[nodiscard]] TextState cornerDownloadTextState(
 		QPoint point,
-		StateRequest request) const;
+		StateRequest request,
+		LayoutMode mode) const;
 
 	not_null<DocumentData*> _data;
+	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
+	mutable QImage _iconCache;
+	mutable QImage _cornerDownloadCache;
 
 };
+
+bool DrawThumbnailAsSongCover(
+	Painter &p,
+	const style::color &colored,
+	const std::shared_ptr<Data::DocumentMedia> &dataMedia,
+	const QRect &rect,
+	const bool selected = false);
 
 } // namespace HistoryView

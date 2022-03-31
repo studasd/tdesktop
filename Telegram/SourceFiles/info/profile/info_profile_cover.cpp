@@ -7,27 +7,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "info/profile/info_profile_cover.h"
 
-#include <rpl/never.h>
-#include <rpl/combine.h>
 #include "data/data_photo.h"
 #include "data/data_peer_values.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
+#include "data/data_changes.h"
+#include "editor/photo_editor_layer_widget.h"
 #include "info/profile/info_profile_values.h"
 #include "info/info_controller.h"
 #include "info/info_memento.h"
 #include "lang/lang_keys.h"
 #include "ui/widgets/labels.h"
 #include "ui/effects/ripple_animation.h"
-#include "ui/text/text_utilities.h" // Ui::Text::ToUpper
+#include "ui/text/text_utilities.h"
 #include "ui/special_buttons.h"
 #include "ui/unread_badge.h"
 #include "base/unixtime.h"
 #include "window/window_session_controller.h"
-#include "observer_peer.h"
 #include "core/application.h"
 #include "main/main_session.h"
 #include "apiwrap.h"
+#include "api/api_peer_photo.h"
 #include "styles/style_boxes.h"
 #include "styles/style_info.h"
 
@@ -146,10 +146,15 @@ auto ChatStatusText(int fullCount, int onlineCount, bool isGroup) {
 			lt_online_count,
 			OnlineStatusText(onlineCount));
 	} else if (fullCount > 0) {
-		return tr::lng_chat_status_members(
-			tr::now,
-			lt_count_decimal,
-			fullCount);
+		return isGroup
+			? tr::lng_chat_status_members(
+				tr::now,
+				lt_count_decimal,
+				fullCount)
+			: tr::lng_chat_status_subscribers(
+				tr::now,
+				lt_count_decimal,
+				fullCount);
 	}
 	return isGroup
 		? tr::lng_group_status(tr::now)
@@ -264,6 +269,13 @@ Cover::Cover(
 
 	initViewers(std::move(title));
 	setupChildGeometry();
+
+	_userpic->uploadPhotoRequests(
+	) | rpl::start_with_next([=] {
+		_peer->session().api().peerPhoto().upload(
+			_peer,
+			_userpic->takeResultImage());
+	}, _userpic->lifetime());
 }
 
 void Cover::setupChildGeometry() {
@@ -293,7 +305,7 @@ Cover *Cover::setOnlineCount(rpl::producer<int> &&count) {
 }
 
 void Cover::initViewers(rpl::producer<QString> title) {
-	using Flag = Notify::PeerUpdate::Flag;
+	using Flag = Data::PeerUpdate::Flag;
 	std::move(
 		title
 	) | rpl::start_with_next([=](const QString &title) {
@@ -301,31 +313,26 @@ void Cover::initViewers(rpl::producer<QString> title) {
 		refreshNameGeometry(width());
 	}, lifetime());
 
-	Notify::PeerUpdateValue(
+	_peer->session().changes().peerFlagsValue(
 		_peer,
-		Flag::UserOnlineChanged | Flag::MembersChanged
+		Flag::OnlineStatus | Flag::Members
 	) | rpl::start_with_next(
 		[=] { refreshStatusText(); },
 		lifetime());
 	if (!_peer->isUser()) {
-		Notify::PeerUpdateValue(
+		_peer->session().changes().peerFlagsValue(
 			_peer,
-			Flag::RightsChanged
+			Flag::Rights
 		) | rpl::start_with_next(
 			[=] { refreshUploadPhotoOverlay(); },
 			lifetime());
 	} else if (_peer->isSelf()) {
 		refreshUploadPhotoOverlay();
 	}
-	VerifiedValue(
+	BadgeValue(
 		_peer
-	) | rpl::start_with_next([=](bool verified) {
-		setVerified(verified);
-	}, lifetime());
-	ScamValue(
-		_peer
-	) | rpl::start_with_next([=](bool scam) {
-		setScam(scam);
+	) | rpl::start_with_next([=](Badge badge) {
+		setBadge(badge);
 	}, lifetime());
 }
 
@@ -340,50 +347,45 @@ void Cover::refreshUploadPhotoOverlay() {
 	}());
 }
 
-void Cover::setVerified(bool verified) {
-	if ((_verifiedCheck != nullptr) == verified) {
+void Cover::setBadge(Badge badge) {
+	if (_badge == badge) {
 		return;
 	}
-	if (verified) {
-		_scamBadge.destroy();
+	_badge = badge;
+	_verifiedCheck.destroy();
+	_scamFakeBadge.destroy();
+	switch (_badge) {
+	case Badge::Verified:
 		_verifiedCheck.create(this);
 		_verifiedCheck->show();
 		_verifiedCheck->resize(st::infoVerifiedCheck.size());
 		_verifiedCheck->paintRequest(
-		) | rpl::start_with_next([check = _verifiedCheck.data()] {
+		) | rpl::start_with_next([check = _verifiedCheck.data()]{
 			Painter p(check);
 			st::infoVerifiedCheck.paint(p, 0, 0, check->width());
-		}, _verifiedCheck->lifetime());
-	} else {
-		_verifiedCheck.destroy();
-	}
-	refreshNameGeometry(width());
-}
-
-void Cover::setScam(bool scam) {
-	if ((_scamBadge != nullptr) == scam) {
-		return;
-	}
-	if (scam) {
-		_verifiedCheck.destroy();
-		const auto size = Ui::ScamBadgeSize();
+			}, _verifiedCheck->lifetime());
+		break;
+	case Badge::Scam:
+	case Badge::Fake: {
+		const auto fake = (_badge == Badge::Fake);
+		const auto size = Ui::ScamBadgeSize(fake);
 		const auto skip = st::infoVerifiedCheckPosition.x();
-		_scamBadge.create(this);
-		_scamBadge->show();
-		_scamBadge->resize(
+		_scamFakeBadge.create(this);
+		_scamFakeBadge->show();
+		_scamFakeBadge->resize(
 			size.width() + 2 * skip,
 			size.height() + 2 * skip);
-		_scamBadge->paintRequest(
-		) | rpl::start_with_next([=, badge = _scamBadge.data()] {
+		_scamFakeBadge->paintRequest(
+		) | rpl::start_with_next([=, badge = _scamFakeBadge.data()]{
 			Painter p(badge);
 			Ui::DrawScamBadge(
+				fake,
 				p,
 				badge->rect().marginsRemoved({ skip, skip, skip, skip }),
 				badge->width(),
 				st::attentionButtonFg);
-		}, _scamBadge->lifetime());
-	} else {
-		_scamBadge.destroy();
+			}, _scamFakeBadge->lifetime());
+	} break;
 	}
 	refreshNameGeometry(width());
 }
@@ -395,7 +397,8 @@ void Cover::refreshStatusText() {
 		}
 		return false;
 	}();
-	auto statusText = [&] {
+	auto statusText = [&]() -> TextWithEntities {
+		using namespace Ui::Text;
 		auto currentTime = base::unixtime::now();
 		if (auto user = _peer->asUser()) {
 			const auto result = Data::OnlineTextFull(user, currentTime);
@@ -405,27 +408,29 @@ void Cover::refreshStatusText() {
 				_refreshStatusTimer.callOnce(updateIn);
 			}
 			return showOnline
-				? textcmdLink(1, result)
-				: result;
+				? PlainLink(result)
+				: TextWithEntities{ .text = result };
 		} else if (auto chat = _peer->asChat()) {
 			if (!chat->amIn()) {
-				return tr::lng_chat_status_unaccessible(tr::now);
+				return tr::lng_chat_status_unaccessible({}, WithEntities);
 			}
 			auto fullCount = std::max(
 				chat->count,
 				int(chat->participants.size()));
-			return ChatStatusText(fullCount, _onlineCount, true);
+			return { .text = ChatStatusText(fullCount, _onlineCount, true) };
 		} else if (auto channel = _peer->asChannel()) {
 			auto fullCount = qMax(channel->membersCount(), 1);
 			auto result = ChatStatusText(
 				fullCount,
 				_onlineCount,
 				channel->isMegagroup());
-			return hasMembersLink ? textcmdLink(1, result) : result;
+			return hasMembersLink
+				? PlainLink(result)
+				: TextWithEntities{ .text = result };
 		}
-		return tr::lng_chat_status_unaccessible(tr::now);
+		return tr::lng_chat_status_unaccessible(tr::now, WithEntities);
 	}();
-	_status->setRichText(statusText);
+	_status->setMarkedText(statusText);
 	if (hasMembersLink) {
 		_status->setLink(1, std::make_shared<LambdaClickHandler>([=] {
 			_showSection.fire(Section::Type::Members);
@@ -447,9 +452,9 @@ void Cover::refreshNameGeometry(int newWidth) {
 	if (_verifiedCheck) {
 		nameWidth -= st::infoVerifiedCheckPosition.x()
 			+ _verifiedCheck->width();
-	} else if (_scamBadge) {
+	} else if (_scamFakeBadge) {
 		nameWidth -= st::infoVerifiedCheckPosition.x()
-			+ _scamBadge->width();
+			+ _scamFakeBadge->width();
 	}
 	_name->resizeToNaturalWidth(nameWidth);
 	_name->moveToLeft(nameLeft, nameTop, newWidth);
@@ -460,15 +465,15 @@ void Cover::refreshNameGeometry(int newWidth) {
 		const auto checkTop = nameTop
 			+ st::infoVerifiedCheckPosition.y();
 		_verifiedCheck->moveToLeft(checkLeft, checkTop, newWidth);
-	} else if (_scamBadge) {
+	} else if (_scamFakeBadge) {
 		const auto skip = st::infoVerifiedCheckPosition.x();
 		const auto badgeLeft = nameLeft
 			+ _name->width()
 			+ st::infoVerifiedCheckPosition.x()
 			- skip;
 		const auto badgeTop = nameTop
-			+ (_name->height() - _scamBadge->height()) / 2;
-		_scamBadge->moveToLeft(badgeLeft, badgeTop, newWidth);
+			+ (_name->height() - _scamFakeBadge->height()) / 2;
+		_scamFakeBadge->moveToLeft(badgeLeft, badgeTop, newWidth);
 	}
 }
 
@@ -482,45 +487,6 @@ void Cover::refreshStatusGeometry(int newWidth) {
 		st::infoProfileStatusLeft,
 		st::infoProfileStatusTop,
 		newWidth);
-}
-
-QMargins SharedMediaCover::getMargins() const {
-	return QMargins(0, 0, 0, st::infoSharedMediaBottomSkip);
-}
-
-SharedMediaCover::SharedMediaCover(QWidget *parent)
-: SectionWithToggle(parent, st::infoSharedMediaCoverHeight) {
-	createLabel();
-}
-
-SharedMediaCover *SharedMediaCover::setToggleShown(rpl::producer<bool> &&shown) {
-	return static_cast<SharedMediaCover*>(
-		SectionWithToggle::setToggleShown(std::move(shown)));
-}
-
-void SharedMediaCover::createLabel() {
-	using namespace rpl::mappers;
-	auto label = object_ptr<Ui::FlatLabel>(
-		this,
-		tr::lng_profile_shared_media() | Ui::Text::ToUpper(),
-		st::infoBlockHeaderLabel);
-	label->setAttribute(Qt::WA_TransparentForMouseEvents);
-
-	rpl::combine(
-		toggleShownValue(),
-		widthValue(),
-		_2
-	) | rpl::start_with_next([this, weak = label.data()](int newWidth) {
-		auto availableWidth = newWidth
-			- st::infoBlockHeaderPosition.x()
-			- st::infoSharedMediaButton.padding.right()
-			- toggleSkip();
-		weak->resizeToWidth(availableWidth);
-		weak->moveToLeft(
-			st::infoBlockHeaderPosition.x(),
-			st::infoBlockHeaderPosition.y(),
-			newWidth);
-	}, label->lifetime());
 }
 
 } // namespace Profile

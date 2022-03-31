@@ -18,6 +18,20 @@ namespace {
 constexpr auto kMaxSingleReadAmount = 8 * 1024 * 1024;
 constexpr auto kMaxQueuedPackets = 1024;
 
+[[nodiscard]] bool UnreliableFormatDuration(
+		not_null<AVFormatContext*> format,
+		not_null<AVStream*> stream,
+		Mode mode) {
+	return (mode == Mode::Video || mode == Mode::Inspection)
+		&& stream->codecpar
+		&& (stream->codecpar->codec_id == AV_CODEC_ID_VP9)
+		&& format->iformat
+		&& format->iformat->name
+		&& QString::fromLatin1(
+			format->iformat->name
+		).split(QChar(',')).contains(u"webm");
+}
+
 } // namespace
 
 File::Context::Context(
@@ -40,8 +54,8 @@ int64_t File::Context::Seek(void *opaque, int64_t offset, int whence) {
 }
 
 int File::Context::read(bytes::span buffer) {
-	const auto amount = std::min(size_type(_size - _offset), buffer.size());
-	Assert(amount >= 0);
+	Assert(_size >= _offset);
+	const auto amount = std::min(std::size_t(_size - _offset), buffer.size());
 
 	if (unroll()) {
 		return -1;
@@ -54,9 +68,22 @@ int File::Context::read(bytes::span buffer) {
 	}
 
 	buffer = buffer.subspan(0, amount);
-	while (!_reader->fill(_offset, buffer, &_semaphore)) {
-		processQueuedPackets(SleepPolicy::Disallowed);
-		_delegate->fileWaitingForData();
+	while (true) {
+		const auto result = _reader->fill(_offset, buffer, &_semaphore);
+		if (result == Reader::FillState::Success) {
+			break;
+		} else if (result == Reader::FillState::WaitingRemote) {
+			// Perhaps for the correct sleeping in case of enough packets
+			// being read already we require SleepPolicy::Allowed here.
+			// Otherwise if we wait for the remote frequently and
+			// _queuedPackets never get to kMaxQueuedPackets and we don't call
+			// processQueuedPackets(SleepPolicy::Allowed) ever.
+			//
+			// But right now we can't simply pass SleepPolicy::Allowed here,
+			// it freezes because of two _semaphore.acquire one after another.
+			processQueuedPackets(SleepPolicy::Disallowed);
+			_delegate->fileWaitingForData();
+		}
 		_semaphore.acquire();
 		if (_interrupted) {
 			return -1;
@@ -120,7 +147,9 @@ void File::Context::logFatal(
 
 Stream File::Context::initStream(
 		not_null<AVFormatContext*> format,
-		AVMediaType type) {
+		AVMediaType type,
+		Mode mode,
+		bool hwAllowed) {
 	auto result = Stream();
 	const auto index = result.index = av_find_best_stream(
 		format,
@@ -130,11 +159,22 @@ Stream File::Context::initStream(
 		nullptr,
 		0);
 	if (index < 0) {
-		return result;
+		return {};
 	}
 
 	const auto info = format->streams[index];
 	if (type == AVMEDIA_TYPE_VIDEO) {
+		if (info->disposition & AV_DISPOSITION_ATTACHED_PIC) {
+			// ignore cover streams
+			return Stream();
+		}
+		result.codec = FFmpeg::MakeCodecPointer({
+			.stream = info,
+			.hwAllowed = hwAllowed,
+		});
+		if (!result.codec) {
+			return result;
+		}
 		result.rotation = FFmpeg::ReadRotationFromMetadata(info);
 		result.aspect = FFmpeg::ValidateAspectRatio(info->sample_aspect_ratio);
 	} else if (type == AVMEDIA_TYPE_AUDIO) {
@@ -142,25 +182,22 @@ Stream File::Context::initStream(
 		if (!result.frequency) {
 			return result;
 		}
-	}
-
-	result.codec = FFmpeg::MakeCodecPointer(info);
-	if (!result.codec) {
-		if (info->codecpar->codec_id == AV_CODEC_ID_MJPEG) {
-			// mp3 files contain such "video stream", just ignore it.
-			return Stream();
+		result.codec = FFmpeg::MakeCodecPointer({ .stream = info });
+		if (!result.codec) {
+			return result;
 		}
-		return result;
 	}
 
-	result.frame = FFmpeg::MakeFramePointer();
-	if (!result.frame) {
+	result.decodedFrame = FFmpeg::MakeFramePointer();
+	if (!result.decodedFrame) {
 		result.codec = nullptr;
 		return result;
 	}
 	result.timeBase = info->time_base;
 	result.duration = (info->duration != AV_NOPTS_VALUE)
 		? FFmpeg::PtsToTime(info->duration, result.timeBase)
+		: UnreliableFormatDuration(format, info, mode)
+		? kTimeUnknown
 		: FFmpeg::PtsToTime(format->duration, FFmpeg::kUniversalTimeBase);
 	if (result.duration == kTimeUnknown) {
 		result.duration = kDurationUnavailable;
@@ -215,7 +252,7 @@ void File::Context::seekToPosition(
 	return logFatal(qstr("av_seek_frame"), error);
 }
 
-base::variant<FFmpeg::Packet, FFmpeg::AvErrorWrap> File::Context::readPacket() {
+std::variant<FFmpeg::Packet, FFmpeg::AvErrorWrap> File::Context::readPacket() {
 	auto error = FFmpeg::AvErrorWrap();
 
 	auto result = FFmpeg::Packet();
@@ -230,7 +267,7 @@ base::variant<FFmpeg::Packet, FFmpeg::AvErrorWrap> File::Context::readPacket() {
 	return error;
 }
 
-void File::Context::start(crl::time position) {
+void File::Context::start(crl::time position, bool hwAllow) {
 	auto error = FFmpeg::AvErrorWrap();
 
 	if (unroll()) {
@@ -249,12 +286,13 @@ void File::Context::start(crl::time position) {
 		return logFatal(qstr("avformat_find_stream_info"), error);
 	}
 
-	auto video = initStream(format.get(), AVMEDIA_TYPE_VIDEO);
+	const auto mode = _delegate->fileOpenMode();
+	auto video = initStream(format.get(), AVMEDIA_TYPE_VIDEO, mode, hwAllow);
 	if (unroll()) {
 		return;
 	}
 
-	auto audio = initStream(format.get(), AVMEDIA_TYPE_AUDIO);
+	auto audio = initStream(format.get(), AVMEDIA_TYPE_AUDIO, mode, false);
 	if (unroll()) {
 		return;
 	}
@@ -299,7 +337,7 @@ void File::Context::readNextPacket() {
 	auto result = readPacket();
 	if (unroll()) {
 		return;
-	} else if (const auto packet = base::get_if<FFmpeg::Packet>(&result)) {
+	} else if (const auto packet = std::get_if<FFmpeg::Packet>(&result)) {
 		const auto index = packet->fields().stream_index;
 		const auto i = _queuedPackets.find(index);
 		if (i == end(_queuedPackets)) {
@@ -312,8 +350,8 @@ void File::Context::readNextPacket() {
 		Assert(i->second.size() < kMaxQueuedPackets);
 	} else {
 		// Still trying to read by drain.
-		Assert(result.is<FFmpeg::AvErrorWrap>());
-		Assert(result.get<FFmpeg::AvErrorWrap>().code() == AVERROR_EOF);
+		Assert(v::is<FFmpeg::AvErrorWrap>(result));
+		Assert(v::get<FFmpeg::AvErrorWrap>(result).code() == AVERROR_EOF);
 		processQueuedPackets(SleepPolicy::Allowed);
 		if (!finished()) {
 			handleEndOfFile();
@@ -390,19 +428,22 @@ void File::Context::stopStreamingAsync() {
 	_reader->stopStreamingAsync();
 }
 
-File::File(
-	not_null<Data::Session*> owner,
-	std::shared_ptr<Reader> reader)
+File::File(std::shared_ptr<Reader> reader)
 : _reader(std::move(reader)) {
 }
 
-void File::start(not_null<FileDelegate*> delegate, crl::time position) {
+void File::start(
+		not_null<FileDelegate*> delegate,
+		crl::time position,
+		bool hwAllow) {
 	stop(true);
 
 	_reader->startStreaming();
 	_context.emplace(delegate, _reader.get());
+
 	_thread = std::thread([=, context = &*_context] {
-		context->start(position);
+		crl::toggle_fp_exceptions(true);
+		context->start(position, hwAllow);
 		while (!context->finished()) {
 			context->readNextPacket();
 		}

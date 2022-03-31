@@ -7,9 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/changelogs.h"
 
-#include "storage/localstorage.h"
 #include "lang/lang_keys.h"
+#include "core/application.h"
+#include "main/main_domain.h"
+#include "main/main_session.h"
+#include "storage/storage_domain.h"
 #include "data/data_session.h"
+#include "base/qt/qt_common_adapters.h"
 #include "mainwindow.h"
 #include "apiwrap.h"
 
@@ -19,67 +23,91 @@ namespace {
 std::map<int, const char*> BetaLogs() {
 	return {
 	{
-		1009010,
-		"\xE2\x80\xA2 Switch to the Picture-in-Picture mode "
-		"to watch your video in a small window.\n"
+		3002006,
+		"- Try out the new audio player with playlist shuffle and repeat.\n"
 
-		"\xE2\x80\xA2 Change video playback speed "
-		"in the playback controls '...' menu.\n"
-
-		"\xE2\x80\xA2 Rotate photos and videos in the media viewer "
-		"using the rotate button in the bottom right corner.\n"
+		"- Give a custom name to your desktop session "
+		"to distinguish it in the sessions list.\n"
 	},
 	{
-		1009015,
-		"\xE2\x80\xA2 Mark new messages as read "
-		"while scrolling down through them.\n"
+		3002007,
+		"- Active sessions list redesign.\n"
 
-		"\xE2\x80\xA2 Bug fixes and other minor improvements."
+		"- Fix disappearing emoji selector button.\n"
+
+		"- Fix a crash in archived stickers loading.\n"
+		
+		"- Fix a crash in calls to old Telegram versions.\n"
 	},
 	{
-		1009017,
-		"\xE2\x80\xA2 Spell checker on Windows 7.\n"
+		3003001,
+		"- Switch between contacts list sorting modes.\n"
 
-		"\xE2\x80\xA2 Bug fixes and other minor improvements."
+		"- Sort contacts list by last seen time by default.\n"
+
+		"- Fix disappearing Send As Channel button after message editing.\n"
+
+		"- Fix file upload cancelling.\n"
+
+		"- Fix crash in video capture on macOS.\n"
+
+		"- Fix labels in the About box.\n"
+
+		"- Use Qt 6.2.2 for macOS and Linux builds.\n"
+
+		"- Allow installing x64 Windows version on Windows ARM.\n"
 	},
 	{
-		1009020,
-		"\xE2\x80\xA2 Fix crash in shared links search.\n"
+		3003002,
+		"- Select text when typing and choose 'Formatting > Spoiler' in the "
+		"context menu to hide some or all of the contents of a message.\n"
 
-		"\xE2\x80\xA2 Fix blurred thumbnails in albums with video files.\n"
+		"- Click on the spoiler in chat to reveal its hidden text.\n"
 
-		"\xE2\x80\xA2 Fix a possible crash in animated stickers rendering."
+		"- Spoiler formatting hides text in chat, "
+		"as well as in the chat list and notifications.\n"
 	},
 	{
-		1009022,
-		"\xE2\x80\xA2 Organize chats into Chat Folders "
-		"if you have too many chats.\n"
+		3004005,
+		"- Fix crash in monospace blocks processing.\n"
+
+		"- Fix reaction animations stopping after an hour uptime.\n"
 	},
 	{
-		2000001,
-		"\xE2\x80\xA2 Switch between folders using Ctrl+1, ..., Ctrl+8.\n"
+		3004006,
+		"- Add snap layouts support on Windows 11.\n"
+		
+		"- Fix crash in drafts after accounts switching.\n"
+	},
+	{
+		3005003,
+		"- Check the status of media and file downloads by clicking "
+		"on the new panel in the bottom of the chats list.\n"
 
-		"\xE2\x80\xA2 Fix crash when a pinned in folder chat "
-		"was added to archive.\n"
+		"- View recently downloaded files "
+		"from the new Settings > Advanced > Downloads section.\n"
 
-		"\xE2\x80\xA2 Fix font issues in Linux version."
+		"- Manage Live Streams in your groups and channels "
+		"using external software like OBS Studio or XSplit Broadcaster.\n"
+	},
+	{
+		3005005,
+		"- Support stereo audio output in RTMP streams.\n"
+
+		"- Improve RTMP stream full screen mode.\n"
+
+		"- Fix a couple of crashes.\n"
+	},
+	{
+		3005006,
+		"- Show viewers count in RTMP streams.\n"
+		"- Send GIFs search results without \"via @bot\".\n"
+		"- Display the file thumbnail in downloads bar.\n"
+		"- Always try to save original photo bytes to disk.\n"
+		"- Fix crash when deleting a user from your contacts list.\n"
 	}
 	};
 };
-
-QString FormatVersionDisplay(int version) {
-	return QString::number(version / 1000000)
-		+ '.' + QString::number((version % 1000000) / 1000)
-		+ ((version % 1000)
-			? ('.' + QString::number(version % 1000))
-			: QString());
-}
-
-QString FormatVersionPrecise(int version) {
-	return QString::number(version / 1000000)
-		+ '.' + QString::number((version % 1000000) / 1000)
-		+ '.' + QString::number(version % 1000);
-}
 
 } // namespace
 
@@ -96,7 +124,9 @@ Changelogs::Changelogs(not_null<Main::Session*> session, int oldVersion)
 
 std::unique_ptr<Changelogs> Changelogs::Create(
 		not_null<Main::Session*> session) {
-	const auto oldVersion = Local::oldMapVersion();
+	auto &local = Core::App().domain().local();
+	const auto oldVersion = local.oldVersion();
+	local.clearOldVersion();
 	return (oldVersion > 0 && oldVersion < AppVersion)
 		? std::make_unique<Changelogs>(session, oldVersion)
 		: nullptr;
@@ -147,7 +177,7 @@ void Changelogs::addLocalLogs() {
 			lt_changes,
 			tr::lng_new_version_minor(tr::now),
 			lt_link,
-			qsl("https://desktop.telegram.org/changelog"));
+			Core::App().changelogLink());
 		addLocalLog(text.trimmed());
 	}
 }
@@ -160,7 +190,7 @@ void Changelogs::addLocalLog(const QString &text) {
 };
 
 void Changelogs::addBetaLogs() {
-	for (const auto [version, changes] : BetaLogs()) {
+	for (const auto &[version, changes] : BetaLogs()) {
 		addBetaLog(version, changes);
 	}
 }
@@ -169,10 +199,32 @@ void Changelogs::addBetaLog(int changeVersion, const char *changes) {
 	if (_oldVersion >= changeVersion) {
 		return;
 	}
+	const auto text = [&] {
+		static const auto simple = u"\n- "_q;
+		static const auto separator = QString::fromUtf8("\n\xE2\x80\xA2 ");
+		auto result = QString::fromUtf8(changes).trimmed();
+		if (result.startsWith(base::StringViewMid(simple, 1))) {
+			result = separator.mid(1) + result.mid(simple.size() - 1);
+		}
+		return result.replace(simple, separator);
+	}();
 	const auto version = FormatVersionDisplay(changeVersion);
-	const auto text = qsl("New in version %1:\n\n").arg(version)
-		+ QString::fromUtf8(changes).trimmed();
-	addLocalLog(text);
+	const auto log = qsl("New in version %1 beta:\n\n").arg(version) + text;
+	addLocalLog(log);
+}
+
+QString FormatVersionDisplay(int version) {
+	return QString::number(version / 1000000)
+		+ '.' + QString::number((version % 1000000) / 1000)
+		+ ((version % 1000)
+			? ('.' + QString::number(version % 1000))
+			: QString());
+}
+
+QString FormatVersionPrecise(int version) {
+	return QString::number(version / 1000000)
+		+ '.' + QString::number((version % 1000000) / 1000)
+		+ '.' + QString::number(version % 1000);
 }
 
 } // namespace Core

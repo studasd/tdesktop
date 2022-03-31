@@ -17,9 +17,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwidget.h"
 #include "mtproto/dedicated_file_loader.h"
 #include "spellcheck/spellcheck_utils.h"
-#include "styles/style_layers.h"
-#include "styles/style_settings.h"
-#include "styles/style_boxes.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
@@ -27,6 +24,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/popup_menu.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/effects/animations.h"
+#include "styles/style_layers.h"
+#include "styles/style_settings.h"
+#include "styles/style_boxes.h"
+#include "styles/style_menu_icons.h"
 
 namespace Ui {
 namespace {
@@ -39,20 +40,20 @@ using DictState = BlobState;
 using QueryCallback = Fn<void(const QString &)>;
 constexpr auto kMaxQueryLength = 15;
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 10, 0)
-#define OLD_QT
-using QStringView = QString;
-#endif
-
 class Inner : public Ui::RpWidget {
 public:
-	Inner(QWidget *parent, Dictionaries enabledDictionaries);
+	Inner(
+		QWidget *parent,
+		not_null<Main::Session*> session,
+		Dictionaries enabledDictionaries);
 
 	Dictionaries enabledRows() const;
 	QueryCallback queryCallback() const;
 
 private:
-	void setupContent(Dictionaries enabledDictionaries);
+	void setupContent(
+		not_null<Main::Session*> session,
+		Dictionaries enabledDictionaries);
 
 	Dictionaries _enabledRows;
 	QueryCallback _queryCallback;
@@ -86,7 +87,7 @@ QString StateDescription(const DictState &state) {
 auto CreateMultiSelect(QWidget *parent) {
 	const auto result = Ui::CreateChild<Ui::MultiSelect>(
 		parent,
-		st::contactsMultiSelect,
+		st::defaultMultiSelect,
 		tr::lng_participant_filter());
 
 	result->resizeToWidth(st::boxWidth);
@@ -96,8 +97,10 @@ auto CreateMultiSelect(QWidget *parent) {
 
 Inner::Inner(
 	QWidget *parent,
-	Dictionaries enabledDictionaries) : RpWidget(parent) {
-	setupContent(std::move(enabledDictionaries));
+	not_null<Main::Session*> session,
+	Dictionaries enabledDictionaries)
+: RpWidget(parent) {
+	setupContent(session, std::move(enabledDictionaries));
 }
 
 QueryCallback Inner::queryCallback() const {
@@ -110,6 +113,7 @@ Dictionaries Inner::enabledRows() const {
 
 auto AddButtonWithLoader(
 		not_null<Ui::VerticalLayout*> content,
+		not_null<Main::Session*> session,
 		const Spellchecker::Dict &dict,
 		bool buttonEnabled,
 		rpl::producer<QStringView> query) {
@@ -217,7 +221,7 @@ auto AddButtonWithLoader(
 
 	buttonState->value(
 	) | rpl::start_with_next([=](const DictState &state) {
-		const auto isToggledSet = state.is<Active>();
+		const auto isToggledSet = v::is<Active>(state);
 		const auto toggled = isToggledSet ? 1. : 0.;
 		const auto over = !button->isDisabled()
 			&& (button->isDown() || button->isOver());
@@ -238,39 +242,29 @@ auto AddButtonWithLoader(
 		) | rpl::then(
 			rpl::merge(
 				// Events to toggle on.
-				dictionaryFromGlobalLoader->events(
-				) | rpl::map([] {
-					return true;
-				}),
+				dictionaryFromGlobalLoader->events() | rpl::map_to(true),
 				// Events to toggle off.
 				rpl::merge(
 					dictionaryRemoved->events(),
 					buttonState->value(
 					) | rpl::filter([](const DictState &state) {
-						return state.is<Failed>();
-					}) | rpl::map([] {
-						return rpl::empty_value();
-					})
-				) | rpl::map([] {
-					return false;
-				})
+						return v::is<Failed>(state);
+					}) | rpl::to_empty
+				) | rpl::map_to(false)
 			)
 		)
 	);
 
-	 *buttonState = localLoaderValues->events_starting_with(
-	 	rawGlobalLoaderPtr() ? rawGlobalLoaderPtr() : localLoader->get()
-	 ) | rpl::map([=](Loader *loader) {
+	*buttonState = localLoaderValues->events_starting_with(
+		rawGlobalLoaderPtr() ? rawGlobalLoaderPtr() : localLoader->get()
+	) | rpl::map([=](Loader *loader) {
 		return (loader && loader->id() == id)
 			? loader->state()
 			: rpl::single(
 				buttonEnabled
 			) | rpl::then(
 				rpl::merge(
-					dictionaryRemoved->events(
-					) | rpl::map([] {
-						return false;
-					}),
+					dictionaryRemoved->events() | rpl::map_to(false),
 					button->toggledValue()
 				)
 			) | rpl::map([=](auto enabled) {
@@ -278,22 +272,24 @@ auto AddButtonWithLoader(
 			});
 	}) | rpl::flatten_latest(
 	) | rpl::filter([=](const DictState &state) {
-		return !buttonState->current().is<Failed>() || !state.is<Available>();
+		return !v::is<Failed>(buttonState->current())
+			|| !v::is<Available>(state);
 	});
 
 	button->toggledValue(
 	) | rpl::start_with_next([=](bool toggled) {
 		const auto &state = buttonState->current();
-		if (toggled && (state.is<Available>() || state.is<Failed>())) {
+		if (toggled && (v::is<Available>(state) || v::is<Failed>(state))) {
 			const auto weak = Ui::MakeWeak(button);
 			setLocalLoader(base::make_unique_q<Loader>(
-				App::main(),
+				QCoreApplication::instance(),
+				session,
 				id,
 				Spellchecker::GetDownloadLocation(id),
 				Spellchecker::DictPathByLangId(id),
 				Spellchecker::GetDownloadSize(id),
 				crl::guard(weak, destroyLocalLoader)));
-		} else if (!toggled && state.is<Loading>()) {
+		} else if (!toggled && v::is<Loading>(state)) {
 			if (const auto g = rawGlobalLoaderPtr()) {
 				g->destroy();
 				return;
@@ -310,12 +306,14 @@ auto AddButtonWithLoader(
 		if (!DictExists(id)) {
 			return false;
 		}
-		*contextMenu = base::make_unique_q<Ui::PopupMenu>(button);
+		*contextMenu = base::make_unique_q<Ui::PopupMenu>(
+			button,
+			st::popupMenuWithIcons);
 		contextMenu->get()->addAction(
 			tr::lng_settings_manage_remove_dictionary(tr::now), [=] {
-			Spellchecker::RemoveDictionary(id);
-			dictionaryRemoved->fire({});
-		});
+				Spellchecker::RemoveDictionary(id);
+				dictionaryRemoved->fire({});
+			}, &st::menuIconDelete);
 		contextMenu->get()->popup(QCursor::pos());
 		return true;
 	};
@@ -336,7 +334,9 @@ auto AddButtonWithLoader(
 	return button;
 }
 
-void Inner::setupContent(Dictionaries enabledDictionaries) {
+void Inner::setupContent(
+		not_null<Main::Session*> session,
+		Dictionaries enabledDictionaries) {
 	const auto content = Ui::CreateChild<Ui::VerticalLayout>(this);
 
 	const auto queryStream = content->lifetime()
@@ -346,6 +346,7 @@ void Inner::setupContent(Dictionaries enabledDictionaries) {
 		const auto id = dict.id;
 		const auto row = AddButtonWithLoader(
 			content,
+			session,
 			dict,
 			ranges::contains(enabledDictionaries, id),
 			queryStream->events());
@@ -389,7 +390,8 @@ void ManageDictionariesBox::prepare() {
 	const auto inner = setInnerWidget(
 		object_ptr<Inner>(
 			this,
-			_session->settings().dictionariesEnabled()),
+			_session,
+			Core::App().settings().dictionariesEnabled()),
 		st::boxScroll,
 		multiSelect->height()
 	);
@@ -407,9 +409,9 @@ void ManageDictionariesBox::prepare() {
 	setTitle(tr::lng_settings_manage_dictionaries());
 
 	addButton(tr::lng_settings_save(), [=] {
-		_session->settings().setDictionariesEnabled(
+		Core::App().settings().setDictionariesEnabled(
 			FilterEnabledDict(inner->enabledRows()));
-		_session->saveSettingsDelayed();
+		Core::App().saveSettingsDelayed();
 		// Ignore boxClosing() when the Save button was pressed.
 		lifetime().destroy();
 		closeBox();
@@ -417,9 +419,9 @@ void ManageDictionariesBox::prepare() {
 	addButton(tr::lng_close(), [=] { closeBox(); });
 
 	boxClosing() | rpl::start_with_next([=] {
-		_session->settings().setDictionariesEnabled(
+		Core::App().settings().setDictionariesEnabled(
 			FilterEnabledDict(initialEnabledRows));
-		_session->saveSettingsDelayed();
+		Core::App().saveSettingsDelayed();
 	}, lifetime());
 
 	setDimensionsToContent(st::boxWidth, inner);

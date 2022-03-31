@@ -24,6 +24,16 @@ enum class SharedMediaType : signed char;
 using SharedMediaTypesMask = base::enum_mask<SharedMediaType>;
 } // namespace Storage
 
+namespace Lottie {
+class SinglePlayer;
+struct ColorReplacements;
+} // namespace Lottie
+
+namespace Ui {
+struct BubbleSelectionInterval;
+struct ChatPaintContext;
+} // namespace Ui
+
 namespace HistoryView {
 
 enum class PointState : char;
@@ -33,6 +43,8 @@ struct TextState;
 struct StateRequest;
 class Element;
 
+using PaintContext = Ui::ChatPaintContext;
+
 enum class MediaInBubbleState {
 	None,
 	Top,
@@ -40,9 +52,18 @@ enum class MediaInBubbleState {
 	Bottom,
 };
 
-[[nodiscard]] QString DocumentTimestampLinkBase(
+[[nodiscard]] TimeId DurationForTimestampLinks(
+	not_null<DocumentData*> document);
+[[nodiscard]] QString TimestampLinkBase(
 	not_null<DocumentData*> document,
 	FullMsgId context);
+
+[[nodiscard]] TimeId DurationForTimestampLinks(
+	not_null<WebPageData*> webpage);
+[[nodiscard]] QString TimestampLinkBase(
+	not_null<WebPageData*> webpage,
+	FullMsgId context);
+
 [[nodiscard]] TextWithEntities AddTimestampLinks(
 	TextWithEntities text,
 	TimeId duration,
@@ -50,7 +71,7 @@ enum class MediaInBubbleState {
 
 class Media : public Object {
 public:
-	Media(not_null<Element*> parent) : _parent(parent) {
+	explicit Media(not_null<Element*> parent) : _parent(parent) {
 	}
 
 	[[nodiscard]] not_null<History*> history() const;
@@ -74,11 +95,12 @@ public:
 	}
 	virtual void refreshParentId(not_null<HistoryItem*> realParent) {
 	}
-	virtual void draw(
+	virtual void drawHighlight(
 		Painter &p,
-		const QRect &r,
-		TextSelection selection,
-		crl::time ms) const = 0;
+		const PaintContext &context,
+		int top) const {
+	}
+	virtual void draw(Painter &p, const PaintContext &context) const = 0;
 	[[nodiscard]] virtual PointState pointState(QPoint point) const;
 	[[nodiscard]] virtual TextState textState(
 		QPoint point,
@@ -111,6 +133,10 @@ public:
 	[[nodiscard]] TextSelection unskipSelection(
 		TextSelection selection) const;
 
+	[[nodiscard]] virtual auto getBubbleSelectionIntervals(
+		TextSelection selection) const
+	-> std::vector<Ui::BubbleSelectionInterval>;
+
 	// if we press and drag this link should we drag the item
 	[[nodiscard]] virtual bool dragItemByHandler(
 		const ClickHandlerPtr &p) const = 0;
@@ -139,23 +165,27 @@ public:
 	}
 	virtual void stopAnimation() {
 	}
-	virtual void clearStickerLoopPlayed() {
+	virtual void stickerClearLoopPlayed() {
 	}
-	virtual int checkAnimationCount() {
-		return 0;
+	virtual std::unique_ptr<Lottie::SinglePlayer> stickerTakeLottie(
+		not_null<DocumentData*> data,
+		const Lottie::ColorReplacements *replacements);
+	virtual void checkAnimation() {
 	}
 
-	[[nodiscard]] virtual QSize sizeForGrouping() const {
+	[[nodiscard]] virtual QSize sizeForGroupingOptimal(int maxWidth) const {
+		Unexpected("Grouping method call.");
+	}
+	[[nodiscard]] virtual QSize sizeForGrouping(int width) const {
 		Unexpected("Grouping method call.");
 	}
 	virtual void drawGrouped(
 			Painter &p,
-			const QRect &clip,
-			TextSelection selection,
-			crl::time ms,
+			const PaintContext &context,
 			const QRect &geometry,
 			RectParts sides,
 			RectParts corners,
+			float64 highlightOpacity,
 			not_null<uint64*> cacheKey,
 			not_null<QPixmap*> cache) const {
 		Unexpected("Grouping method call.");
@@ -175,11 +205,18 @@ public:
 	}
 	[[nodiscard]] virtual bool needsBubble() const = 0;
 	[[nodiscard]] virtual bool customInfoLayout() const = 0;
+	[[nodiscard]] virtual QRect contentRectForReactions() const {
+		return QRect(0, 0, width(), height());
+	}
+	[[nodiscard]] virtual auto reactionButtonCenterOverride() const
+	-> std::optional<int> {
+		return std::nullopt;
+	}
+	[[nodiscard]] virtual QPoint resolveCustomInfoRightBottom() const {
+		return QPoint();
+	}
 	[[nodiscard]] virtual QMargins bubbleMargins() const {
 		return QMargins();
-	}
-	[[nodiscard]] virtual bool hideForwardedFrom() const {
-		return false;
 	}
 
 	[[nodiscard]] virtual bool overrideEditedDate() const {
@@ -210,11 +247,8 @@ public:
 		return (_inBubbleState == MediaInBubbleState::Bottom)
 			|| (_inBubbleState == MediaInBubbleState::None);
 	}
+	[[nodiscard]] bool isRoundedInBubbleBottom() const;
 	[[nodiscard]] virtual bool skipBubbleTail() const {
-		return false;
-	}
-
-	[[nodiscard]] virtual bool hidesForwardedInfo() const {
 		return false;
 	}
 
@@ -252,7 +286,13 @@ public:
 		const QRect &bubble,
 		crl::time ms) const {
 	}
+	[[nodiscard]] virtual bool customHighlight() const {
+		return false;
+	}
 
+	virtual bool hasHeavyPart() const {
+		return false;
+	}
 	virtual void unloadHeavyPart() {
 	}
 
@@ -267,14 +307,16 @@ public:
 protected:
 	[[nodiscard]] QSize countCurrentSize(int newWidth) override;
 	[[nodiscard]] Ui::Text::String createCaption(
-		not_null<HistoryItem*> item,
-		TimeId timestampLinksDuration = 0,
-		const QString &timestampLinkBase = QString()) const;
+		not_null<HistoryItem*> item) const;
 
 	virtual void playAnimation(bool autoplay) {
 	}
 
-	not_null<Element*> _parent;
+	[[nodiscard]] bool usesBubblePattern(const PaintContext &context) const;
+
+	void repaint() const;
+
+	const not_null<Element*> _parent;
 	MediaInBubbleState _inBubbleState = MediaInBubbleState::None;
 
 };

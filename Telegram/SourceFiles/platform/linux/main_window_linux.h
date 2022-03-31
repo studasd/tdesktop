@@ -8,64 +8,29 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "platform/platform_main_window.h"
+#include "base/unique_qptr.h"
 
-#include "ui/widgets/popup_menu.h"
+class QMenuBar;
 
-#ifndef TDESKTOP_DISABLE_DBUS_INTEGRATION
-#include "statusnotifieritem.h"
-#include <QtCore/QTemporaryFile>
-#include <QtDBus/QDBusObjectPath>
-#include <dbusmenuexporter.h>
-#endif
+namespace Ui {
+class PopupMenu;
+} // namespace Ui
 
 namespace Platform {
 
 class MainWindow : public Window::MainWindow {
-	Q_OBJECT
-
 public:
 	explicit MainWindow(not_null<Window::Controller*> controller);
 
-	virtual QImage iconWithCounter(
-		int size,
-		int count,
-		style::color bg,
-		style::color fg,
-		bool smallIcon) = 0;
+	void psShowTrayMenu();
 
-	static void LibsLoaded();
+	bool isActiveForTrayMenu() override;
 
 	~MainWindow();
 
-public slots:
-	void psShowTrayMenu();
-
-#ifndef TDESKTOP_DISABLE_DBUS_INTEGRATION
-	void onSNIOwnerChanged(
-		const QString &service,
-		const QString &oldOwner,
-		const QString &newOwner);
-
-	void psLinuxUndo();
-	void psLinuxRedo();
-	void psLinuxCut();
-	void psLinuxCopy();
-	void psLinuxPaste();
-	void psLinuxDelete();
-	void psLinuxSelectAll();
-
-	void psLinuxBold();
-	void psLinuxItalic();
-	void psLinuxUnderline();
-	void psLinuxStrikeOut();
-	void psLinuxMonospace();
-	void psLinuxClearFormat();
-
-	void onVisibleChanged(bool visible);
-
-#endif // !TDESKTOP_DISABLE_DBUS_INTEGRATION
-
 protected:
+	bool eventFilter(QObject *obj, QEvent *evt) override;
+
 	void initHook() override;
 	void unreadCounterChangedHook() override;
 	void updateGlobalMenuHook() override;
@@ -73,7 +38,7 @@ protected:
 	void initTrayMenuHook() override;
 	bool hasTrayIcon() const override;
 
-	void workmodeUpdated(DBIWorkMode mode) override;
+	void workmodeUpdated(Core::Settings::WorkMode mode) override;
 	void createGlobalMenu() override;
 
 	QSystemTrayIcon *trayIcon = nullptr;
@@ -82,27 +47,10 @@ protected:
 	void psTrayMenuUpdated();
 	void psSetupTrayIcon();
 
-	virtual void placeSmallCounter(
-		QImage &img,
-		int size,
-		int count,
-		style::color bg,
-		const QPoint &shift,
-		style::color color) = 0;
-
 private:
-	Ui::PopupMenu *_trayIconMenuXEmbed = nullptr;
+	base::unique_qptr<Ui::PopupMenu> _trayIconMenuXEmbed;
 
-	void updateIconCounters();
-
-#ifndef TDESKTOP_DISABLE_DBUS_INTEGRATION
-	StatusNotifierItem *_sniTrayIcon = nullptr;
-	std::unique_ptr<QTemporaryFile> _trayIconFile = nullptr;
-
-	DBusMenuExporter *_mainMenuExporter = nullptr;
-	QDBusObjectPath _mainMenuPath;
-
-	QMenu *psMainMenu = nullptr;
+	QMenuBar *psMainMenu = nullptr;
 	QAction *psLogout = nullptr;
 	QAction *psUndo = nullptr;
 	QAction *psRedo = nullptr;
@@ -123,9 +71,8 @@ private:
 	QAction *psMonospace = nullptr;
 	QAction *psClearFormat = nullptr;
 
-	void setSNITrayIcon(int counter, bool muted);
-	void attachToSNITrayIcon();
-#endif // !TDESKTOP_DISABLE_DBUS_INTEGRATION
+	void updateIconCounters();
+	void handleNativeSurfaceChanged(bool exist);
 
 };
 

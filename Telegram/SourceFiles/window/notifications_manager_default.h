@@ -16,6 +16,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QTimer>
 
+namespace Data {
+class CloudImageView;
+} // namespace Data
+
 namespace Ui {
 class IconButton;
 class RoundButton;
@@ -34,18 +38,21 @@ class HideAllButton;
 class Manager;
 std::unique_ptr<Manager> Create(System *system);
 
-class Manager : public Notifications::Manager, private base::Subscriber {
+class Manager final : public Notifications::Manager {
 public:
 	Manager(System *system);
+	~Manager();
+
+	[[nodiscard]] ManagerType type() const override {
+		return ManagerType::Default;
+	}
 
 	template <typename Method>
 	void enumerateNotifications(Method method) {
-		for_const (auto &notification, _notifications) {
+		for (const auto &notification : _notifications) {
 			method(notification);
 		}
 	}
-
-	~Manager();
 
 private:
 	friend class internal::Notification;
@@ -53,17 +60,23 @@ private:
 	friend class internal::Widget;
 	using Notification = internal::Notification;
 	using HideAllButton = internal::HideAllButton;
+	struct SessionSubscription {
+		rpl::lifetime subscription;
+		rpl::lifetime lifetime;
+	};
 
-	QPixmap hiddenUserpicPlaceholder() const;
+	[[nodiscard]] QPixmap hiddenUserpicPlaceholder() const;
 
 	void doUpdateAll() override;
-	void doShowNotification(
-		not_null<HistoryItem*> item,
-		int forwardedCount) override;
+	void doShowNotification(NotificationFields &&fields) override;
 	void doClearAll() override;
 	void doClearAllFast() override;
 	void doClearFromHistory(not_null<History*> history) override;
+	void doClearFromSession(not_null<Main::Session*> session) override;
 	void doClearFromItem(not_null<HistoryItem*> item) override;
+	bool doSkipAudio() const override;
+	bool doSkipToast() const override;
+	bool doSkipFlashBounce() const override;
 
 	void showNextFromQueue();
 	void unlinkFromShown(Notification *remove);
@@ -82,7 +95,12 @@ private:
 
 	bool hasReplyingNotification() const;
 
+	void subscribeToSession(not_null<Main::Session*> session);
+
 	std::vector<std::unique_ptr<Notification>> _notifications;
+	base::flat_map<
+		not_null<Main::Session*>,
+		SessionSubscription> _subscriptions;
 
 	std::unique_ptr<HideAllButton> _hideAll;
 
@@ -90,10 +108,11 @@ private:
 	base::Timer _inputCheckTimer;
 
 	struct QueuedNotification {
-		QueuedNotification(not_null<HistoryItem*> item, int forwardedCount);
+		QueuedNotification(NotificationFields &&fields);
 
 		not_null<History*> history;
 		not_null<PeerData*> peer;
+		QString reaction;
 		QString author;
 		HistoryItem *item = nullptr;
 		int forwardedCount = 0;
@@ -102,14 +121,17 @@ private:
 	std::deque<QueuedNotification> _queuedNotifications;
 
 	Ui::Animations::Simple _demoMasterOpacity;
+	bool _demoIsShown = false;
 
 	mutable QPixmap _hiddenUserpicPlaceholder;
+
+	rpl::lifetime _lifetime;
 
 };
 
 namespace internal {
 
-class Widget : public TWidget, protected base::Subscriber {
+class Widget : public Ui::RpWidget {
 public:
 	enum class Direction {
 		Up,
@@ -143,7 +165,7 @@ protected:
 	virtual void updateGeometry(int x, int y, int width, int height);
 
 protected:
-	not_null<Manager*> manager() const {
+	[[nodiscard]] not_null<Manager*> manager() const {
 		return _manager;
 	}
 
@@ -177,7 +199,7 @@ protected:
 
 };
 
-class Notification : public Widget {
+class Notification final : public Widget {
 public:
 	Notification(
 		not_null<Manager*> manager,
@@ -185,6 +207,7 @@ public:
 		not_null<PeerData*> peer,
 		const QString &author,
 		HistoryItem *item,
+		const QString &reaction,
 		int forwardedCount,
 		bool fromScheduled,
 		QPoint startPosition,
@@ -203,14 +226,20 @@ public:
 	bool isReplying() const {
 		return _replyArea && !isUnlinked();
 	}
+	[[nodiscard]] History *maybeHistory() const {
+		return _history;
+	}
 
 	// Called only by Manager.
 	bool unlinkItem(HistoryItem *del);
 	bool unlinkHistory(History *history = nullptr);
-	bool checkLastInput(bool hasReplyingNotifications);
+	bool unlinkSession(not_null<Main::Session*> session);
+	bool checkLastInput(
+		bool hasReplyingNotifications,
+		std::optional<crl::time> lastInputTime);
 
 protected:
-	void enterEventHook(QEvent *e) override;
+	void enterEventHook(QEnterEvent *e) override;
 	void leaveEventHook(QEvent *e) override;
 	void paintEvent(QPaintEvent *e) override;
 	void mousePressEvent(QMouseEvent *e) override;
@@ -232,6 +261,10 @@ private:
 	void updateGeometry(int x, int y, int width, int height) override;
 	void actionsOpacityCallback();
 
+	[[nodiscard]] Notifications::Manager::NotificationId myId() const;
+
+	const not_null<PeerData*> _peer;
+
 	QPixmap _cache;
 
 	bool _hideReplyButton = false;
@@ -242,8 +275,9 @@ private:
 	crl::time _started;
 
 	History *_history = nullptr;
-	PeerData *_peer = nullptr;
+	std::shared_ptr<Data::CloudImageView> _userpicView;
 	QString _author;
+	QString _reaction;
 	HistoryItem *_item = nullptr;
 	int _forwardedCount = 0;
 	bool _fromScheduled = false;
@@ -275,7 +309,7 @@ public:
 	void stopHiding();
 
 protected:
-	void enterEventHook(QEvent *e) override;
+	void enterEventHook(QEnterEvent *e) override;
 	void leaveEventHook(QEvent *e) override;
 	void mousePressEvent(QMouseEvent *e) override;
 	void mouseReleaseEvent(QMouseEvent *e) override;
