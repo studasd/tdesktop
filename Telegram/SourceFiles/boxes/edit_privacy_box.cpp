@@ -112,7 +112,7 @@ std::unique_ptr<PrivacyExceptionsBoxController::Row> PrivacyExceptionsBoxControl
 
 } // namespace
 
-QString EditPrivacyController::optionLabel(Option option) {
+QString EditPrivacyController::optionLabel(Option option) const {
 	switch (option) {
 	case Option::Everyone: return tr::lng_edit_privacy_everyone(tr::now);
 	case Option::Contacts: return tr::lng_edit_privacy_contacts(tr::now);
@@ -276,6 +276,11 @@ void EditPrivacyBox::setupContent() {
 				? tr::lng_edit_privacy_exceptions_count(tr::now, lt_count, count)
 				: tr::lng_edit_privacy_exceptions_add(tr::now);
 		});
+		_controller->handleExceptionsChange(
+			exception,
+			update->events_starting_with({}) | rpl::map([=] {
+				return Settings::ExceptionUsersCount(exceptions(exception));
+			}));
 		auto text = _controller->exceptionButtonTextKey(exception);
 		const auto always = (exception == Exception::Always);
 		const auto button = content->add(

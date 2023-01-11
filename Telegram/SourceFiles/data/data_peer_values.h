@@ -21,6 +21,7 @@ class Session;
 namespace Data {
 
 struct Reaction;
+class ForumTopic;
 
 template <typename ChangeType, typename Error, typename Generator>
 inline auto FlagsValueWithMask(
@@ -102,36 +103,46 @@ inline auto PeerFullFlagValue(
 
 [[nodiscard]] rpl::producer<bool> CanWriteValue(UserData *user);
 [[nodiscard]] rpl::producer<bool> CanWriteValue(ChatData *chat);
-[[nodiscard]] rpl::producer<bool> CanWriteValue(ChannelData *channel);
-[[nodiscard]] rpl::producer<bool> CanWriteValue(not_null<PeerData*> peer);
-[[nodiscard]] rpl::producer<bool> CanPinMessagesValue(not_null<PeerData*> peer);
-[[nodiscard]] rpl::producer<bool> CanManageGroupCallValue(not_null<PeerData*> peer);
+[[nodiscard]] rpl::producer<bool> CanWriteValue(
+	ChannelData *channel,
+	bool checkForForum = true);
+[[nodiscard]] rpl::producer<bool> CanWriteValue(
+	not_null<PeerData*> peer,
+	bool checkForForum = true);
+[[nodiscard]] rpl::producer<bool> CanWriteValue(not_null<ForumTopic*> topic);
+[[nodiscard]] rpl::producer<bool> CanPinMessagesValue(
+	not_null<PeerData*> peer);
+[[nodiscard]] rpl::producer<bool> CanManageGroupCallValue(
+	not_null<PeerData*> peer);
+[[nodiscard]] rpl::producer<bool> PeerPremiumValue(not_null<PeerData*> peer);
+[[nodiscard]] rpl::producer<bool> AmPremiumValue(
+	not_null<Main::Session*> session);
 
 [[nodiscard]] TimeId SortByOnlineValue(not_null<UserData*> user, TimeId now);
 [[nodiscard]] crl::time OnlineChangeTimeout(TimeId online, TimeId now);
-[[nodiscard]] crl::time OnlineChangeTimeout(not_null<UserData*> user, TimeId now);
+[[nodiscard]] crl::time OnlineChangeTimeout(
+	not_null<UserData*> user,
+	TimeId now);
 [[nodiscard]] QString OnlineText(TimeId online, TimeId now);
 [[nodiscard]] QString OnlineText(not_null<UserData*> user, TimeId now);
 [[nodiscard]] QString OnlineTextFull(not_null<UserData*> user, TimeId now);
 [[nodiscard]] bool OnlineTextActive(TimeId online, TimeId now);
 [[nodiscard]] bool OnlineTextActive(not_null<UserData*> user, TimeId now);
-[[nodiscard]] bool IsUserOnline(not_null<UserData*> user);
+[[nodiscard]] bool IsUserOnline(not_null<UserData*> user, TimeId now = 0);
 [[nodiscard]] bool ChannelHasActiveCall(not_null<ChannelData*> channel);
 
 [[nodiscard]] rpl::producer<QImage> PeerUserpicImageValue(
 	not_null<PeerData*> peer,
-	int size);
-[[nodiscard]] rpl::producer<QImage> PeerUserpicImageValue(
-	not_null<PeerData*> peer,
 	int size,
-	ImageRoundRadius radius);
+	std::optional<int> radius = {});
 
-[[nodiscard]] std::optional<base::flat_set<QString>> PeerAllowedReactions(
+[[nodiscard]] const AllowedReactions &PeerAllowedReactions(
 	not_null<PeerData*> peer);
-[[nodiscard]] auto PeerAllowedReactionsValue(not_null<PeerData*> peer)
--> rpl::producer<std::optional<base::flat_set<QString>>>;
+[[nodiscard]] rpl::producer<AllowedReactions> PeerAllowedReactionsValue(
+	not_null<PeerData*> peer);
 
+[[nodiscard]] int UniqueReactionsLimit(not_null<PeerData*> peer);
 [[nodiscard]] rpl::producer<int> UniqueReactionsLimitValue(
-	not_null<Main::Session*> session);
+	not_null<PeerData*> peer);
 
 } // namespace Data

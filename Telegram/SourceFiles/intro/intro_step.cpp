@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_instance.h"
 #include "lang/lang_cloud_manager.h"
 #include "main/main_account.h"
+#include "main/main_app_config.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
@@ -118,6 +119,10 @@ rpl::producer<QString> Step::nextButtonText() const {
 	return tr::lng_intro_next();
 }
 
+rpl::producer<const style::RoundButton*> Step::nextButtonStyle() const {
+	return rpl::single((const style::RoundButton*)(nullptr));
+}
+
 void Step::goBack() {
 	if (_goCallback) {
 		_goCallback(nullptr, StackAction::Back, Animate::Back);
@@ -200,6 +205,7 @@ void Step::createSession(
 	if (!photo.isNull()) {
 		session.api().peerPhoto().upload(session.user(), std::move(photo));
 	}
+	account->appConfig().refresh();
 	if (session.supportMode()) {
 		PrepareSupportMode(&session);
 	}
@@ -207,7 +213,7 @@ void Step::createSession(
 }
 
 void Step::paintEvent(QPaintEvent *e) {
-	Painter p(this);
+	auto p = QPainter(this);
 	paintAnimated(p, e->rect());
 }
 
@@ -262,7 +268,7 @@ void Step::showFinished() {
 	activate();
 }
 
-bool Step::paintAnimated(Painter &p, QRect clip) {
+bool Step::paintAnimated(QPainter &p, QRect clip) {
 	if (_slideAnimation) {
 		_slideAnimation->paintFrame(p, (width() - st::introStepWidth) / 2, contentTop(), width());
 		if (!_slideAnimation->animating()) {
@@ -309,19 +315,29 @@ bool Step::paintAnimated(Painter &p, QRect clip) {
 }
 
 void Step::fillSentCodeData(const MTPDauth_sentCode &data) {
+	const auto bad = [](const char *type) {
+		LOG(("API Error: Should not be '%1'.").arg(type));
+	};
+	getData()->codeByTelegram = false;
+	getData()->codeByFragmentUrl = QString();
 	data.vtype().match([&](const MTPDauth_sentCodeTypeApp &data) {
 		getData()->codeByTelegram = true;
 		getData()->codeLength = data.vlength().v;
 	}, [&](const MTPDauth_sentCodeTypeSms &data) {
-		getData()->codeByTelegram = false;
+		getData()->codeLength = data.vlength().v;
+	}, [&](const MTPDauth_sentCodeTypeFragmentSms &data) {
+		getData()->codeByFragmentUrl = qs(data.vurl());
 		getData()->codeLength = data.vlength().v;
 	}, [&](const MTPDauth_sentCodeTypeCall &data) {
-		getData()->codeByTelegram = false;
 		getData()->codeLength = data.vlength().v;
 	}, [&](const MTPDauth_sentCodeTypeFlashCall &) {
-		LOG(("Error: should not be flashcall!"));
-	}, [&](const MTPDauth_sentCodeTypeMissedCall &data) {
-		LOG(("Error: should not be missedcall!"));
+		bad("FlashCall");
+	}, [&](const MTPDauth_sentCodeTypeMissedCall &) {
+		bad("MissedCall");
+	}, [&](const MTPDauth_sentCodeTypeEmailCode &) {
+		bad("EmailCode");
+	}, [&](const MTPDauth_sentCodeTypeSetUpEmailRequired &) {
+		bad("SetUpEmailRequired");
 	});
 }
 
@@ -333,7 +349,7 @@ void Step::hideDescription() {
 	_description->hide(anim::type::normal);
 }
 
-void Step::paintContentSnapshot(Painter &p, const QPixmap &snapshot, float64 alpha, float64 howMuchHidden) {
+void Step::paintContentSnapshot(QPainter &p, const QPixmap &snapshot, float64 alpha, float64 howMuchHidden) {
 	if (!snapshot.isNull()) {
 		auto contentTop = anim::interpolate(height() - (snapshot.height() / cIntRetinaFactor()), height(), howMuchHidden);
 		if (contentTop < height()) {
@@ -365,7 +381,7 @@ void Step::prepareCoverMask() {
 	_coverMask = Ui::PixmapFromImage(std::move(mask));
 }
 
-void Step::paintCover(Painter &p, int top) {
+void Step::paintCover(QPainter &p, int top) {
 	auto coverHeight = top + st::introCoverHeight;
 	if (coverHeight > 0) {
 		p.drawPixmap(QRect(0, 0, width(), coverHeight), _coverMask, QRect(0, -top * cIntRetinaFactor(), _coverMask.width(), coverHeight * cIntRetinaFactor()));

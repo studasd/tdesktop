@@ -9,15 +9,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/text/text.h"
 #include "ui/effects/animations.h"
+#include "ui/unread_badge.h"
+#include "ui/userpic_view.h"
 #include "dialogs/dialogs_key.h"
 #include "dialogs/ui/dialogs_message_view.h"
 
 class History;
 class HistoryItem;
 
-namespace Data {
-class CloudImageView;
-} // namespace Data
+namespace style {
+struct DialogRow;
+} // namespace style
 
 namespace Ui {
 class RippleAnimation;
@@ -26,16 +28,71 @@ class RippleAnimation;
 namespace Dialogs::Ui {
 using namespace ::Ui;
 class RowPainter;
+class VideoUserpic;
+struct PaintContext;
+struct TopicJumpCache;
 } // namespace Dialogs::Ui
 
 namespace Dialogs {
 
 enum class SortMode;
 
+[[nodiscard]] QRect CornerBadgeTTLRect(int photoSize);
+
 class BasicRow {
 public:
 	BasicRow();
-	~BasicRow();
+	virtual ~BasicRow();
+
+	virtual void paintUserpic(
+		Painter &p,
+		not_null<PeerData*> peer,
+		Ui::VideoUserpic *videoUserpic,
+		History *historyForCornerBadge,
+		const Ui::PaintContext &context) const;
+
+	void addRipple(QPoint origin, QSize size, Fn<void()> updateCallback);
+	virtual void stopLastRipple();
+	virtual void clearRipple();
+	void addRippleWithMask(
+		QPoint origin,
+		QImage mask,
+		Fn<void()> updateCallback);
+
+	void paintRipple(
+		QPainter &p,
+		int x,
+		int y,
+		int outerWidth,
+		const QColor *colorOverride = nullptr) const;
+
+	[[nodiscard]] Ui::PeerUserpicView &userpicView() const {
+		return _userpic;
+	}
+
+private:
+	mutable Ui::PeerUserpicView _userpic;
+	mutable std::unique_ptr<Ui::RippleAnimation> _ripple;
+
+};
+
+class List;
+class Row final : public BasicRow {
+public:
+	explicit Row(std::nullptr_t) {
+	}
+	Row(Key key, int index, int top);
+	~Row();
+
+	[[nodiscard]] int top() const {
+		return _top;
+	}
+	[[nodiscard]] int height() const {
+		Expects(_height != 0);
+
+		return _height;
+	}
+	void recountHeight(float64 narrowRatio);
 
 	void updateCornerBadgeShown(
 		not_null<PeerData*> peer,
@@ -43,56 +100,19 @@ public:
 	void paintUserpic(
 		Painter &p,
 		not_null<PeerData*> peer,
+		Ui::VideoUserpic *videoUserpic,
 		History *historyForCornerBadge,
-		crl::time now,
-		bool active,
-		int fullWidth) const;
+		const Ui::PaintContext &context) const final override;
 
-	void addRipple(QPoint origin, QSize size, Fn<void()> updateCallback);
-	void stopLastRipple();
-
-	void paintRipple(
-		Painter &p,
-		int x,
-		int y,
-		int outerWidth,
-		const QColor *colorOverride = nullptr) const;
-
-	std::shared_ptr<Data::CloudImageView> &userpicView() const {
-		return _userpic;
-	}
-
-private:
-	struct CornerBadgeUserpic {
-		InMemoryKey key;
-		float64 shown = 0.;
-		bool active = false;
-		QImage frame;
-		Ui::Animations::Simple animation;
-	};
-
-	void setCornerBadgeShown(
-		bool shown,
-		Fn<void()> updateCallback) const;
-	void ensureCornerBadgeUserpic() const;
-	static void PaintCornerBadgeFrame(
-		not_null<CornerBadgeUserpic*> data,
-		not_null<PeerData*> peer,
-		std::shared_ptr<Data::CloudImageView> &view);
-
-	mutable std::shared_ptr<Data::CloudImageView> _userpic;
-	mutable std::unique_ptr<Ui::RippleAnimation> _ripple;
-	mutable std::unique_ptr<CornerBadgeUserpic> _cornerBadgeUserpic;
-	mutable bool _cornerBadgeShown = false;
-
-};
-
-class List;
-class Row : public BasicRow {
-public:
-	explicit Row(std::nullptr_t) {
-	}
-	Row(Key key, int pos);
+	[[nodiscard]] bool lookupIsInTopicJump(int x, int y) const;
+	void stopLastRipple() override;
+	void clearRipple() override;
+	void addTopicJumpRipple(
+		QPoint origin,
+		not_null<Ui::TopicJumpCache*> topicJumpCache,
+		Fn<void()> updateCallback);
+	void clearTopicJumpRipple();
+	[[nodiscard]] bool topicJumpRipple() const;
 
 	[[nodiscard]] Key key() const {
 		return _id;
@@ -103,18 +123,19 @@ public:
 	[[nodiscard]] Data::Folder *folder() const {
 		return _id.folder();
 	}
+	[[nodiscard]] Data::ForumTopic *topic() const {
+		return _id.topic();
+	}
+	[[nodiscard]] Data::Thread *thread() const {
+		return _id.thread();
+	}
 	[[nodiscard]] not_null<Entry*> entry() const {
 		return _id.entry();
 	}
-	[[nodiscard]] int pos() const {
-		return _pos;
+	[[nodiscard]] int index() const {
+		return _index;
 	}
 	[[nodiscard]] uint64 sortKey(FilterId filterId) const;
-
-	void validateListEntryCache() const;
-	[[nodiscard]] const Ui::Text::String &listEntryCache() const {
-		return _listEntryCache;
-	}
 
 	// for any attached data, for example View in contacts list
 	void *attached = nullptr;
@@ -122,19 +143,69 @@ public:
 private:
 	friend class List;
 
+	class CornerLayersManager {
+	public:
+		using Layer = int;
+		CornerLayersManager();
+
+		[[nodiscard]] bool isSameLayer(Layer layer) const;
+		[[nodiscard]] bool isDisplayedNone() const;
+		[[nodiscard]] float64 progressForLayer(Layer layer) const;
+		[[nodiscard]] float64 progress() const;
+		[[nodiscard]] bool isFinished() const;
+		void setLayer(Layer layer, Fn<void()> updateCallback);
+		void markFrameShown();
+
+	private:
+		bool _lastFrameShown = false;
+		Layer _prevLayer = 0;
+		Layer _nextLayer = 0;
+		Ui::Animations::Simple _animation;
+
+	};
+
+	struct CornerBadgeUserpic {
+		InMemoryKey key;
+		CornerLayersManager layersManager;
+		int frameIndex = -1;
+		bool active = false;
+		QImage frame;
+		QImage cacheTTL;
+	};
+
+	void setCornerBadgeShown(
+		CornerLayersManager::Layer nextLayer,
+		Fn<void()> updateCallback) const;
+	void ensureCornerBadgeUserpic() const;
+	static void PaintCornerBadgeFrame(
+		not_null<CornerBadgeUserpic*> data,
+		not_null<PeerData*> peer,
+		Ui::VideoUserpic *videoUserpic,
+		Ui::PeerUserpicView &view,
+		const Ui::PaintContext &context);
+
 	Key _id;
-	int _pos = 0;
-	mutable uint32 _listEntryCacheVersion = 0;
-	mutable Ui::Text::String _listEntryCache;
+	mutable std::unique_ptr<CornerBadgeUserpic> _cornerBadgeUserpic;
+	int _top = 0;
+	int _height = 0;
+	int _index : 30 = 0;
+	int _cornerBadgeShown : 1 = 0;
+	int _topicJumpRipple : 1 = 0;
 
 };
 
-class FakeRow : public BasicRow {
+class FakeRow final : public BasicRow, public base::has_weak_ptr {
 public:
-	FakeRow(Key searchInChat, not_null<HistoryItem*> item);
+	FakeRow(
+		Key searchInChat,
+		not_null<HistoryItem*> item,
+		Fn<void()> repaint);
 
 	[[nodiscard]] Key searchInChat() const {
 		return _searchInChat;
+	}
+	[[nodiscard]] Data::ForumTopic *topic() const {
+		return _topic;
 	}
 	[[nodiscard]] not_null<HistoryItem*> item() const {
 		return _item;
@@ -142,13 +213,26 @@ public:
 	[[nodiscard]] Ui::MessageView &itemView() const {
 		return _itemView;
 	}
+	[[nodiscard]] Fn<void()> repaint() const {
+		return _repaint;
+	}
+	[[nodiscard]] Ui::PeerBadge &badge() const {
+		return _badge;
+	}
+	[[nodiscard]] const Ui::Text::String &name() const;
+
+	void invalidateTopic();
 
 private:
 	friend class Ui::RowPainter;
 
-	Key _searchInChat;
-	not_null<HistoryItem*> _item;
+	const Key _searchInChat;
+	const not_null<HistoryItem*> _item;
+	Data::ForumTopic *_topic = nullptr;
+	const Fn<void()> _repaint;
 	mutable Ui::MessageView _itemView;
+	mutable Ui::PeerBadge _badge;
+	mutable Ui::Text::String _name;
 
 };
 

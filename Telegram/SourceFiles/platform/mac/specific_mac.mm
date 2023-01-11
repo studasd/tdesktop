@@ -35,13 +35,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <mach-o/dyld.h>
 #include <AVFoundation/AVFoundation.h>
 
-void psActivateProcess(uint64 pid) {
-	if (!pid) {
-		const auto window = Core::App().activeWindow();
-		objc_activateProgram(window ? window->widget()->winId() : 0);
-	}
-}
-
 QString psAppDataPath() {
 	return objc_appDataPath();
 }
@@ -79,7 +72,7 @@ void finish() {
 
 QString SingleInstanceLocalServerName(const QString &hash) {
 #ifndef OS_MAC_STORE
-	return qsl("/tmp/") + hash + '-' + cGUIDStr();
+	return u"/tmp/"_q + hash + '-' + cGUIDStr();
 #else // OS_MAC_STORE
 	return objc_documentsPath() + hash.left(4);
 #endif // OS_MAC_STORE
@@ -191,10 +184,15 @@ bool AutostartSkip() {
 	return !cAutoStart();
 }
 
-} // namespace Platform
-
-void psNewVersion() {
+void NewVersionLaunched(int oldVersion) {
 }
+
+void ActivateThisProcess() {
+	const auto window = Core::App().activeWindow();
+	objc_activateProgram(window ? window->widget()->winId() : 0);
+}
+
+} // namespace Platform
 
 void psSendToMenu(bool send, bool silent) {
 }
@@ -208,7 +206,7 @@ QByteArray psDownloadPathBookmark(const QString &path) {
 }
 
 bool psLaunchMaps(const Data::LocationPoint &point) {
-	return QDesktopServices::openUrl(qsl("https://maps.apple.com/?q=Point&z=16&ll=%1,%2").arg(point.latAsString()).arg(point.lonAsString()));
+	return QDesktopServices::openUrl(u"https://maps.apple.com/?q=Point&z=16&ll=%1,%2"_q.arg(point.latAsString()).arg(point.lonAsString()));
 }
 
 QString strNotificationAboutThemeChange() {

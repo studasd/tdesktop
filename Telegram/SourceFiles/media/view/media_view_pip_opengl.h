@@ -65,7 +65,7 @@ private:
 	void paintUsingRaster(
 		Ui::GL::Image &image,
 		QRect rect,
-		Fn<void(Painter&&)> method,
+		Fn<void(QPainter&&)> method,
 		int bufferOffset,
 		bool transparent = false);
 
@@ -108,6 +108,7 @@ private:
 	QSize _chromaSize;
 	quint64 _cacheKey = 0;
 	int _trackFrameIndex = 0;
+	bool _chromaNV12 = false;
 
 	Ui::GL::Image _radialImage;
 	Ui::GL::Image _controlsImage;

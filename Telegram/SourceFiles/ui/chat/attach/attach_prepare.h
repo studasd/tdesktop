@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "editor/photo_editor_common.h"
+#include "ui/rect_part.h"
 
 #include <QtCore/QSemaphore>
 #include <deque>
@@ -75,11 +76,13 @@ struct PreparedFile {
 
 	QString path;
 	QByteArray content;
-	int size = 0;
+	int64 size = 0;
 	std::unique_ptr<Ui::PreparedFileInformation> information;
 	QImage preview;
 	QSize shownDimensions;
+	QSize originalDimensions;
 	Type type = Type::File;
+	bool spoiler = false;
 };
 
 [[nodiscard]] bool CanBeInAlbumType(PreparedFile::Type type, AlbumType album);
@@ -106,13 +109,15 @@ struct PreparedList {
 		std::vector<int> order);
 	void mergeToEnd(PreparedList &&other, bool cutToAlbumSize = false);
 
-	[[nodiscard]] bool canAddCaption(bool sendingAlbum) const;
+	[[nodiscard]] bool canAddCaption(bool sendingAlbum, bool compress) const;
 	[[nodiscard]] bool canBeSentInSlowmode() const;
 	[[nodiscard]] bool canBeSentInSlowmodeWith(
 		const PreparedList &other) const;
 
 	[[nodiscard]] bool hasGroupOption(bool slowmode) const;
 	[[nodiscard]] bool hasSendImagesAsPhotosOption(bool slowmode) const;
+	[[nodiscard]] bool canHaveEditorHintLabel() const;
+	[[nodiscard]] bool hasSticker() const;
 
 	Error error = Error::None;
 	QString errorData;
@@ -140,5 +145,9 @@ struct PreparedGroup {
 [[nodiscard]] bool ValidateThumbDimensions(int width, int height);
 
 [[nodiscard]] QPixmap PrepareSongCoverForThumbnail(QImage image, int size);
+
+[[nodiscard]] QPixmap BlurredPreviewFromPixmap(
+	QPixmap pixmap,
+	RectParts corners);
 
 } // namespace Ui

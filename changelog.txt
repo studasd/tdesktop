@@ -1,3 +1,258 @@
+4.5.5 beta (10.01.22)
+
+- Fix crash in Settings.
+
+4.5.4 beta (10.01.22)
+
+- Allow wide range of interface scale options.
+- Show opened chat name in the window title.
+- Bug fixes and other minor improvements.
+- Fix updating on macOS older than 10.14.
+
+4.5.3 (06.01.22)
+
+- Attempt to fix incoming video in calls from mobile apps.
+
+4.5.2 (03.01.22)
+
+- Fix unread reactions button in private chats.
+- Fix tile background saving after an app update.
+- Allow Ctrl+6,7,8 to activate extra pinned chats.
+
+4.5.1 (02.01.22)
+
+- Fix crash in profile photo privacy edition.
+- Allow sending photos larger than 1280px (in Experimental Settings).
+
+4.5 (30.12.22)
+
+- Media with spoiler effects. You can wrap photos and videos you send in a fuzzy cover by selecting media in the attachment menu and tapping (...) > Hide With Spoiler.
+- Setting pictures for your contacts. You can choose your own picture for a contact – only you will see it on their profile.
+- Suggested profile pictures. When editing your contacts, you can suggest a photo for their profile. It will take them just two clicks to add the picture you suggested.
+- Public profile pictures. If you only allow certain users to see your profile photos, you can set a public picture for everyone else. 
+- Ultimate profile picture privacy. You can set 'Who can see my profile photos' to 'Nobody' and add some users or groups as exceptions.
+- Member list privacy. Owners of large groups can hide the list of members.
+
+4.4.3 beta (29.12.22)
+
+- Support for anonymous numbers from the Fragment.com platform.
+- Fix a crash in own profile photo updating.
+- Bug fixes and other minor improvements.
+
+4.4.2 beta (28.12.22)
+
+- Send photos and video files hidden by a spoiler effect.
+- Set a public photo for those who are restricted to see your profile photo in the Privacy Settings.
+- Bug fixes and other minor improvements.
+
+4.4.1 (07.12.22)
+
+- Bug fixes and other minor improvements.
+
+4.4 (06.12.22)
+
+- You can set a Global Auto-Delete Timer for all new chats and groups you create.
+- New messages will be deleted after 1 day, week, month - or a custom duration you choose.
+- The new menu in Settings > Privacy & Security > Auto-Delete Messages also lets you set up Auto-Delete for any of your existing chats faster.
+- Admins of groups with 100+ members can organize discussions into separate topics.
+- Topics now have a two-column layout that keeps recent chats easily accessible as you browse topics.
+- Previews of topic messages in the chat list work like a button - click to jump to the last updated topic.
+- Up to 5 topics can be pinned to the top of the list.
+- Each topic now supports multiple pinned messages.
+- The View as Messages mode now shows which topic each message belongs to.
+- Badge counters for topics you never opened will have a lighter, less distracting color.
+- A new General topic is now included by default, containing service messages and the earlier message history from the group.
+- Admins can rename the General topic.
+- Large groups can enable Aggressive Filtering in Manage Group > Administrators to remove more spam with automated algorithms.
+- Admins help improve filtering by reporting any false positives in Recent Actions.
+
+4.3.4 (25.11.22)
+
+- Fix OpenGL regression in Qt and language detection.
+
+4.3.3 (23.11.22)
+
+- Fix an issue with media auto-download on Windows.
+- Fix switching accounts in maximized window.
+- Fix collapsed archive row layout.
+
+4.3.2 (21.11.22)
+
+- Enable message translations in Settings > Language.
+- Fast jump to the last updated topic.
+- Bug fixes and other minor improvements.
+
+4.3.1 (07.11.22)
+
+- Critical bug fixes.
+
+4.3 (05.11.22)
+
+- Groups with more than 200 members can now have their discussions organized into topics.
+- Premium users can now convert both voice messages and video messages into text.
+
+4.2.4 (30.09.22)
+
+- Fix crash in emoji statuses clearing.
+
+4.2.3 (28.09.22)
+
+- Improve scaling / cropping for photos / video files.
+- Improve touch support in channel comments.
+- Nice animation for spoilers.
+
+4.2.2 beta (23.09.22)
+
+- Fix crash in spoiler revealing in media captions.
+- Fix spoiler revealing in media viewer captions.
+- Fix crash in folder editing on Linux.
+
+4.2.1 beta (22.09.22)
+
+- Improve scaling / cropping for photos / video files.
+- Improve touch support in channel comments.
+- Nice animation for spoilers.
+
+4.2 (17.09.22)
+
+- A new expandable reaction menu was added in private chats and groups.
+- All users get access to dozens of new reactions, including reactions previously reserved for Premium users.
+- The reactions you use most frequently will always be displayed at the top.
+- Premium users can react to messages with thousands of custom emoji and add up to 3 reactions to each message.
+- Group admins can control whether custom reactions are allowed in their groups.
+- Premium users can add an animated emoji status next to their name to display their current activity.
+- To set a status, tap your Premium badge in the main menu or Settings.
+- Popular suggestions for working, sleeping, traveling and more will be shown at the top.
+- To set a status for a specific duration like 1 hour or 2 days, right click the emoji.
+- A new format was supported for username links, in addition to "t.me/username." You can now open Telegram accounts, groups or channels using links like "username.t.me" or "https://username.t.me."
+- Improved support for long media captions.
+
+4.1.2 beta (14.09.22)
+
+- New reaction selector above the right click menu.
+- Premium: Set any custom emoji reactions in private chats.
+- Premium: Set any custom emoji as your profile status.
+- Insert or copy custom emoji from pack preview.
+
+4.1.1 (16.08.22)
+
+- Fix editing media captions with animated emoji.
+- Fix viewing animated emoji sets used in a message.
+- Fix premium sticker tooltip auto-show in channel comments.
+- Fix main window position and size restoring after relaunch.
+- Other bug fixes and minor improvements.
+
+4.1 (12.08.22)
+
+- Include animated emoji in messages and captions.
+- Premium users unlock over 500 new emoji, including custom packs with unique characters.
+- All users can view any emoji – and try them out in the Saved Messages chat.
+- Control who can send you voice and video messages with Telegram Premium.
+- Send a Premium subscription to any user from their profile.
+- Choose 3, 6, or 12 months – at a discount.
+
+4.0.4 beta (04.08.22)
+
+- Allow sending animated emoji to Saved Messages even without Telegram Premium.
+- Premium: Suggest animated emoji by regular emoji (can be disabled in Settings).
+- Premium: Show all suggested premium stickers in a special section of the stickers panel.
+- Premium: Allow hiding premium stickers special section of the stickers panel.
+- Fix a memory leak in RTMP livestreams.
+- Fix some bot webview bugs on macOS.
+- Fix forwarding of voice messages.
+
+4.0.3 beta (28.07.22)
+
+- Animated emoji for messages.
+- Premium: Privacy settings for voice messages.
+- Premium: Gifting Telegram Premium to any user from their profile page.
+
+4.0.2 (24.06.22)
+
+- Fix window title on Windows 7. (again)
+- Fix file chooser and global menu on macOS.
+- Crash fix and OpenAL check for PipeWire fix on Linux.
+
+4.0.1 (23.06.22)
+
+- Fix window title on Windows 7.
+- Bug fixes and other minor improvements.
+
+4.0 (22.06.22)
+
+- Premium: Send media and files each up to 4 GB in size.
+- Premium: Download media and files at the fastest possible speed, with no limits.
+- Premium: Double most of the limits in the app.
+- Premium: Get a new button next to any voice message to generate a transcript of its audio.
+- Premium: React with even more emoji, including :clown: and :heart_eyes:.
+- Premium: Send unique stickers with additional effects, updated monthly.
+- Premium: Set a default chat folder or enable tools to auto-archive and hide new chats.
+- Premium: Subscribers have a badge next to their name, showing they help support Telegram.
+- Premium: Show off your profile video that will be animated for everyone in chats and the chat list.
+- Premium: Sponsored Messages that are sometimes shown in public channels will no longer appear.
+- Enable join requests for your public groups – no invite links required.
+- Users who open the group will see an Apply to Join Group button.
+- Once approved by an admin, users will be able to participate in the chat.
+- Bots that are integrated into the attachment menu can be programmed to work in groups and channels.
+
+3.7.6 beta (16.06.22)
+
+- Settings > Advanced > Experimental adds an option to open chats in separate windows.
+- Fix possible crash in video chat reconnection.
+- Fix possible crash after account switch.
+
+3.7.5 beta (12.05.22)
+
+- Improve cloud password management design.
+- Fix a crash in shared media search.
+- Fix audio recording on macOS.
+
+3.7.4 beta (03.05.22)
+
+- More icons for chat folders.
+- Improve some more sections design.
+- Update the OpenAL library to 1.22.0.
+
+3.7.3 (26.04.22)
+
+- Fix a crash in the pinned bar bot button refresh.
+
+3.7.2 (25.04.22)
+
+- Fix mute period selector values.
+- Fix a crash in repeated context menu item selection.
+- Fix context menu item selection of systems without a compositor.
+
+3.7.1 (19.04.22)
+
+- Hardware accelerated video decoding off by default.
+- Fix several crashes.
+
+3.7 (16.04.22)
+
+- Use any short music file or voice message as a notification sound.
+- Right click audio files in chats to add them to your list of sounds - or use 'Upload Sound' in the Notifications menu.
+- Click on Mute notifications > Select sound in a chat's (...) menu to change its notification sound.
+- Set custom tones for notifications in Settings > Notifications > Play sound.
+- Click on Mute notifications in a chat's (...) menu to manage its notifications.
+- Choose 'Mute for...' to turn off notifications for a preset period, like 1 hour or 1 day.
+- Quickly configure Auto-Delete settings from any chat info page.
+- Click (...) to turn on Auto-Delete, then select a specific duration.
+- Replies are now preserved when forwarding messages, making forwarded conversations easier to read.
+- Bots can now open detailed pages directly in the chat.
+- Use these streamlined interfaces to buy real-world goods and services without leaving the app.
+- Open a bot's profile to add it to your group or channel.
+- Instantly configure a bot's rights and permissions when adding it.
+- Bots can send a new type of button that lets you add them to your group or channel.
+
+3.6.3 beta (13.04.22)
+
+- Allow sending the default reaction by a double click.
+- Select a custom sound for message notifications.
+- Add chats to folders from a chat context menu.
+- Fix group and channel photo upload.
+- Test hardware video decoding.
+
 3.6.2 (27.03.22)
 
 - Fix photo changing in settings, groups and channels.
@@ -65,7 +320,7 @@
 - Bring your custom animated stickers from other apps.
 - See smaller, compact animations when reacting to messages.
 - See real-time animations in chat when a user reacts to your message.
-- React with additional emoji expressing love, appreciation, anger or surprise. 
+- React with additional emoji expressing love, appreciation, anger or surprise.
 - Tap the new button in chats to jump to your messages that have unseen reactions.
 - Watch the animations for unseen reactions play when you hit the button.
 - The app will warn you before closing if you are uploading photos or files to a chat.
@@ -138,7 +393,7 @@
 - Clear messages in one-on-one chats from a specific day or date range.
 - Comment as one of your channels in public groups and channel comments.
 - When you request to join a community and its admin or bot-admin contacts you with a message, you will see which chat they are from at the top of the chat.
-- Bot-admins can now ask users to complete tasks before they are allowed to join - like accepting community rules, passing a test, or making a donation to the content creators. 
+- Bot-admins can now ask users to complete tasks before they are allowed to join - like accepting community rules, passing a test, or making a donation to the content creators.
 
 3.2.8 beta (01.12.21)
 
@@ -164,7 +419,7 @@
 3.2.4 (13.11.21)
 
 - Fix editing of scheduled messages on macOS.
-- Fix launching on Chrome OS in Crostini container. 
+- Fix launching on Chrome OS in Crostini container.
 
 3.2.3 (08.11.21)
 

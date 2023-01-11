@@ -34,8 +34,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "webrtc/webrtc_audio_input_tester.h"
 #include "webrtc/webrtc_create_adm.h" // Webrtc::Backend.
 #include "tgcalls/VideoCaptureInterface.h"
-#include "facades.h"
-#include "boxes/abstract_box.h" // Ui::hideLayer().
 #include "styles/style_layers.h"
 
 namespace Settings {
@@ -55,6 +53,10 @@ Calls::Calls(
 }
 
 Calls::~Calls() = default;
+
+rpl::producer<QString> Calls::title() {
+	return tr::lng_settings_section_call_settings();
+}
 
 Webrtc::VideoTrack *Calls::AddCameraSubsection(
 		std::shared_ptr<Ui::Show> show,
@@ -339,10 +341,10 @@ void Calls::requestPermissionAndStartTestingMicrophone() {
 			Platform::PermissionType::Microphone,
 			startTestingChecked);
 	} else {
-		const auto showSystemSettings = [] {
+		const auto showSystemSettings = [controller = _controller] {
 			Platform::OpenSystemSettingsForPermission(
 				Platform::PermissionType::Microphone);
-			Ui::hideLayer();
+			controller->hideLayer();
 		};
 		_controller->show(Ui::MakeConfirmBox({
 			.text = tr::lng_no_mic_permission(),

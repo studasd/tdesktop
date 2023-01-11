@@ -365,6 +365,7 @@ void ChatParticipants::requestForAdd(
 
 void ChatParticipants::requestLast(not_null<ChannelData*> channel) {
 	if (!channel->isMegagroup()
+		|| !channel->canViewMembers()
 		|| _participantsRequests.contains(channel)) {
 		return;
 	}
@@ -462,13 +463,14 @@ void ChatParticipants::requestCountDelayed(
 void ChatParticipants::add(
 		not_null<PeerData*> peer,
 		const std::vector<not_null<UserData*>> &users,
+		bool passGroupHistory,
 		Fn<void(bool)> done) {
 	if (const auto chat = peer->asChat()) {
 		for (const auto &user : users) {
 			_api.request(MTPmessages_AddChatUser(
 				chat->inputChat,
 				user->inputUser,
-				MTP_int(kForwardMessagesOnAdd)
+				MTP_int(passGroupHistory ? kForwardMessagesOnAdd : 0)
 			)).done([=](const MTPUpdates &result) {
 				chat->session().api().applyUpdates(result);
 				if (done) done(true);
@@ -531,6 +533,7 @@ ChatParticipants::Parsed ChatParticipants::ParseRecent(
 		const TLMembers &data) {
 	const auto result = Parse(channel, data);
 	const auto applyLast = channel->isMegagroup()
+		&& channel->canViewMembers()
 		&& (channel->mgInfo->lastParticipants.size() <= result.list.size());
 	if (applyLast) {
 		ApplyLastList(channel, result.availableCount, result.list);
@@ -597,7 +600,7 @@ void ChatParticipants::requestSelf(not_null<ChannelData*> channel) {
 		});
 	}).fail([=](const MTP::Error &error) {
 		_selfParticipantRequests.erase(channel);
-		if (error.type() == qstr("CHANNEL_PRIVATE")) {
+		if (error.type() == u"CHANNEL_PRIVATE"_q) {
 			channel->privateErrorReceived();
 		}
 		finalize();

@@ -34,43 +34,62 @@ SessionSettings::SessionSettings()
 
 QByteArray SessionSettings::serialize() const {
 	const auto autoDownload = _autoDownload.serialize();
-	auto size = sizeof(qint32) * 38;
-	size += _groupStickersSectionHidden.size() * sizeof(quint64);
-	size += _mediaLastPlaybackPosition.size() * 2 * sizeof(quint64);
-	size += Serialize::bytearraySize(autoDownload);
-	size += sizeof(qint32) + _hiddenPinnedMessages.size() * (sizeof(quint64) + sizeof(qint32));
+	auto size = sizeof(qint32) * 4
+		+ _groupStickersSectionHidden.size() * sizeof(quint64)
+		+ sizeof(qint32) * 4
+		+ Serialize::bytearraySize(autoDownload)
+		+ sizeof(qint32) * 5
+		+ _mediaLastPlaybackPosition.size() * 2 * sizeof(quint64)
+		+ sizeof(qint32) * 5
+		+ sizeof(qint32)
+		+ (_mutePeriods.size() * sizeof(quint64))
+		+ sizeof(qint32) * 2
+		+ _hiddenPinnedMessages.size() * (sizeof(quint64) * 3);
 
 	auto result = QByteArray();
 	result.reserve(size);
 	{
 		QDataStream stream(&result, QIODevice::WriteOnly);
 		stream.setVersion(QDataStream::Qt_5_1);
-		stream << qint32(kVersionTag) << qint32(kVersion);
-		stream << static_cast<qint32>(_selectorTab);
-		stream << qint32(_groupStickersSectionHidden.size());
+		stream
+			<< qint32(kVersionTag) << qint32(kVersion)
+			<< static_cast<qint32>(_selectorTab)
+			<< qint32(_groupStickersSectionHidden.size());
 		for (const auto &peerId : _groupStickersSectionHidden) {
 			stream << SerializePeerId(peerId);
 		}
-		stream << qint32(_supportSwitch);
-		stream << qint32(_supportFixChatsOrder ? 1 : 0);
-		stream << qint32(_supportTemplatesAutocomplete ? 1 : 0);
-		stream << qint32(_supportChatsTimeSlice.current());
-		stream << autoDownload;
-		stream << qint32(_supportAllSearchResults.current() ? 1 : 0);
-		stream << qint32(_archiveCollapsed.current() ? 1 : 0);
-		stream << qint32(_archiveInMainMenu.current() ? 1 : 0);
-		stream << qint32(_skipArchiveInSearch.current() ? 1 : 0);
-		stream << qint32(_mediaLastPlaybackPosition.size());
+		stream
+			<< qint32(_supportSwitch)
+			<< qint32(_supportFixChatsOrder ? 1 : 0)
+			<< qint32(_supportTemplatesAutocomplete ? 1 : 0)
+			<< qint32(_supportChatsTimeSlice.current())
+			<< autoDownload
+			<< qint32(_supportAllSearchResults.current() ? 1 : 0)
+			<< qint32(_archiveCollapsed.current() ? 1 : 0)
+			<< qint32(_archiveInMainMenu.current() ? 1 : 0)
+			<< qint32(_skipArchiveInSearch.current() ? 1 : 0)
+			<< qint32(_mediaLastPlaybackPosition.size());
 		for (const auto &[id, time] : _mediaLastPlaybackPosition) {
 			stream << quint64(id) << qint64(time);
 		}
-		stream << qint32(0);
-		stream << qint32(_dialogsFiltersEnabled ? 1 : 0);
-		stream << qint32(_supportAllSilent ? 1 : 0);
-		stream << qint32(_photoEditorHintShowsCount);
-		stream << qint32(_hiddenPinnedMessages.size());
+		stream
+			<< qint32(0) // very old _hiddenPinnedMessages.size());
+			<< qint32(_dialogsFiltersEnabled ? 1 : 0)
+			<< qint32(_supportAllSilent ? 1 : 0)
+			<< qint32(_photoEditorHintShowsCount)
+			<< qint32(0) // old _hiddenPinnedMessages.size());
+			<< qint32(_mutePeriods.size());
+		for (const auto &period : _mutePeriods) {
+			stream << quint64(period);
+		}
+		stream
+			<< qint32(_skipPremiumStickersSet ? 1 : 0)
+			<< qint32(_hiddenPinnedMessages.size());
 		for (const auto &[key, value] : _hiddenPinnedMessages) {
-			stream << SerializePeerId(key) << qint64(value.bare);
+			stream
+				<< SerializePeerId(key.peerId)
+				<< qint64(key.topicRootId.bare)
+				<< qint64(value.bare);
 		}
 	}
 	return result;
@@ -128,10 +147,12 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 	QByteArray appVideoPipGeometry = app.videoPipGeometry();
 	std::vector<int> appDictionariesEnabled;
 	qint32 appAutoDownloadDictionaries = app.autoDownloadDictionaries() ? 1 : 0;
-	base::flat_map<PeerId, MsgId> hiddenPinnedMessages;
+	base::flat_map<ThreadId, MsgId> hiddenPinnedMessages;
 	qint32 dialogsFiltersEnabled = _dialogsFiltersEnabled ? 1 : 0;
 	qint32 supportAllSilent = _supportAllSilent ? 1 : 0;
 	qint32 photoEditorHintShowsCount = _photoEditorHintShowsCount;
+	std::vector<TimeId> mutePeriods;
+	qint32 skipPremiumStickersSet = _skipPremiumStickersSet ? 1 : 0;
 
 	stream >> versionTag;
 	if (versionTag == kVersionTag) {
@@ -321,7 +342,9 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 						"Bad data for SessionSettings::addFromSerialized()"));
 					return;
 				}
-				hiddenPinnedMessages.emplace(DeserializePeerId(key), value);
+				hiddenPinnedMessages.emplace(
+					ThreadId{ DeserializePeerId(key), MsgId(0) },
+					value);
 			}
 		}
 	}
@@ -347,7 +370,43 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 						"Bad data for SessionSettings::addFromSerialized()"));
 					return;
 				}
-				hiddenPinnedMessages.emplace(DeserializePeerId(key), value);
+				hiddenPinnedMessages.emplace(
+					ThreadId{ DeserializePeerId(key), MsgId(0) },
+					value);
+			}
+		}
+	}
+	if (!stream.atEnd()) {
+		auto count = qint32(0);
+		stream >> count;
+		if (stream.status() == QDataStream::Ok) {
+			for (auto i = 0; i != count; ++i) {
+				quint64 period;
+				stream >> period;
+				mutePeriods.emplace_back(period);
+			}
+		}
+	}
+	if (!stream.atEnd()) {
+		stream >> skipPremiumStickersSet;
+	}
+	if (!stream.atEnd()) {
+		auto count = qint32(0);
+		stream >> count;
+		if (stream.status() == QDataStream::Ok) {
+			for (auto i = 0; i != count; ++i) {
+				auto keyPeerId = quint64();
+				auto keyTopicRootId = qint64();
+				auto value = qint64();
+				stream >> keyPeerId >> keyTopicRootId >> value;
+				if (stream.status() != QDataStream::Ok) {
+					LOG(("App Error: "
+						"Bad data for SessionSettings::addFromSerialized()"));
+					return;
+				}
+				hiddenPinnedMessages.emplace(
+					ThreadId{ DeserializePeerId(keyPeerId), keyTopicRootId },
+					value);
 			}
 		}
 	}
@@ -394,6 +453,8 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
 	_dialogsFiltersEnabled = (dialogsFiltersEnabled == 1);
 	_supportAllSilent = (supportAllSilent == 1);
 	_photoEditorHintShowsCount = std::move(photoEditorHintShowsCount);
+	_mutePeriods = std::move(mutePeriods);
+	_skipPremiumStickersSet = (skipPremiumStickersSet == 1);
 
 	if (version < 2) {
 		app.setLastSeenWarningSeen(appLastSeenWarningSeen == 1);
@@ -532,6 +593,25 @@ rpl::producer<bool> SessionSettings::skipArchiveInSearchChanges() const {
 	return _skipArchiveInSearch.changes();
 }
 
+MsgId SessionSettings::hiddenPinnedMessageId(
+		PeerId peerId,
+		MsgId topicRootId) const {
+	const auto i = _hiddenPinnedMessages.find({ peerId, topicRootId });
+	return (i != end(_hiddenPinnedMessages)) ? i->second : 0;
+}
+
+void SessionSettings::setHiddenPinnedMessageId(
+		PeerId peerId,
+		MsgId topicRootId,
+		MsgId msgId) {
+	const auto id = ThreadId{ peerId, topicRootId };
+	if (msgId) {
+		_hiddenPinnedMessages[id] = msgId;
+	} else {
+		_hiddenPinnedMessages.remove(id);
+	}
+}
+
 bool SessionSettings::photoEditorHintShown() const {
 	return _photoEditorHintShowsCount < kPhotoEditorHintMaxShowsCount;
 }
@@ -539,6 +619,22 @@ bool SessionSettings::photoEditorHintShown() const {
 void SessionSettings::incrementPhotoEditorHintShown() {
 	if (photoEditorHintShown()) {
 		_photoEditorHintShowsCount++;
+	}
+}
+
+std::vector<TimeId> SessionSettings::mutePeriods() const {
+	return _mutePeriods;
+}
+
+void SessionSettings::addMutePeriod(TimeId period) {
+	if (_mutePeriods.empty()) {
+		_mutePeriods.push_back(period);
+	} else if (_mutePeriods.back() != period) {
+		if (_mutePeriods.back() < period) {
+			_mutePeriods = { _mutePeriods.back(), period };
+		} else {
+			_mutePeriods = { period, _mutePeriods.back() };
+		}
 	}
 }
 

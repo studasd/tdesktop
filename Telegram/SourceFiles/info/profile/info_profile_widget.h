@@ -7,19 +7,22 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include <rpl/producer.h>
 #include "info/info_content_widget.h"
 
-namespace Info {
-namespace Profile {
+namespace Data {
+class ForumTopic;
+} // namespace Data
+
+namespace Info::Profile {
 
 class InnerWidget;
 struct MembersState;
 
 class Memento final : public ContentMemento {
 public:
-	Memento(not_null<Controller*> controller);
+	explicit Memento(not_null<Controller*> controller);
 	Memento(not_null<PeerData*> peer, PeerId migratedPeerId);
+	explicit Memento(not_null<Data::ForumTopic*> topic);
 
 	object_ptr<ContentWidget> createWidget(
 		QWidget *parent,
@@ -28,30 +31,24 @@ public:
 
 	Section section() const override;
 
-	void setInfoExpanded(bool expanded) {
-		_infoExpanded = expanded;
-	}
-	bool infoExpanded() const {
-		return _infoExpanded;
-	}
 	void setMembersState(std::unique_ptr<MembersState> state);
 	std::unique_ptr<MembersState> membersState();
 
 	~Memento();
 
 private:
-	bool _infoExpanded = true;
+	Memento(
+		not_null<PeerData*> peer,
+		Data::ForumTopic *topic,
+		PeerId migratedPeerId);
+
 	std::unique_ptr<MembersState> _membersState;
 
 };
 
 class Widget final : public ContentWidget {
 public:
-	Widget(
-		QWidget *parent,
-		not_null<Controller*> controller);
-
-	void setIsStackBottom(bool isStackBottom) override;
+	Widget(QWidget *parent, not_null<Controller*> controller);
 
 	bool showInternal(
 		not_null<ContentMemento*> memento) override;
@@ -61,6 +58,8 @@ public:
 		not_null<Memento*> memento);
 
 	void setInnerFocus() override;
+
+	rpl::producer<QString> title() override;
 
 private:
 	void saveState(not_null<Memento*> memento);
@@ -72,5 +71,4 @@ private:
 
 };
 
-} // namespace Profile
-} // namespace Info
+} // namespace Info::Profile

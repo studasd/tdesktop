@@ -32,7 +32,6 @@ class Templates;
 namespace Data {
 class Session;
 class Changes;
-class CloudImageView;
 } // namespace Data
 
 namespace Storage {
@@ -51,7 +50,12 @@ struct TermsLock;
 namespace Stickers {
 class EmojiPack;
 class DicePacks;
+class GiftBoxPack;
 } // namespace Stickers;
+
+namespace InlineBots {
+class AttachWebView;
+} // namespace InlineBots
 
 namespace Main {
 
@@ -76,6 +80,12 @@ public:
 	[[nodiscard]] Domain &domain() const;
 	[[nodiscard]] Storage::Domain &domainLocal() const;
 
+	[[nodiscard]] bool premium() const;
+	[[nodiscard]] bool premiumPossible() const;
+	[[nodiscard]] rpl::producer<bool> premiumPossibleValue() const;
+	[[nodiscard]] bool premiumBadgesShown() const;
+
+	[[nodiscard]] bool isTestMode() const;
 	[[nodiscard]] uint64 uniqueId() const; // userId() with TestDC shift.
 	[[nodiscard]] UserId userId() const;
 	[[nodiscard]] PeerId userPeerId() const;
@@ -108,6 +118,9 @@ public:
 	[[nodiscard]] Stickers::DicePacks &diceStickersPacks() const {
 		return *_diceStickersPacks;
 	}
+	[[nodiscard]] Stickers::GiftBoxPack &giftBoxStickersPacks() const {
+		return *_giftBoxStickersPacks;
+	}
 	[[nodiscard]] Data::Session &data() const {
 		return *_data;
 	}
@@ -116,6 +129,9 @@ public:
 	}
 	[[nodiscard]] SendAsPeers &sendAsPeers() const {
 		return *_sendAsPeers;
+	}
+	[[nodiscard]] InlineBots::AttachWebView &attachWebView() const {
+		return *_attachWebView;
 	}
 
 	void saveSettings();
@@ -193,11 +209,14 @@ private:
 	// _emojiStickersPack depends on _data.
 	const std::unique_ptr<Stickers::EmojiPack> _emojiStickersPack;
 	const std::unique_ptr<Stickers::DicePacks> _diceStickersPacks;
+	const std::unique_ptr<Stickers::GiftBoxPack> _giftBoxStickersPacks;
 	const std::unique_ptr<SendAsPeers> _sendAsPeers;
+	const std::unique_ptr<InlineBots::AttachWebView> _attachWebView;
 
 	const std::unique_ptr<Support::Helper> _supportHelper;
 
-	std::shared_ptr<Data::CloudImageView> _selfUserpicView;
+	std::shared_ptr<QImage> _selfUserpicView;
+	rpl::variable<bool> _premiumPossible = false;
 
 	rpl::event_stream<bool> _termsLockChanges;
 	std::unique_ptr<Window::TermsLock> _termsLock;

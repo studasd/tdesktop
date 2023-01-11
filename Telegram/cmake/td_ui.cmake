@@ -5,7 +5,7 @@
 # https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 add_library(td_ui OBJECT)
-init_non_host_target(td_ui)
+init_non_host_target(td_ui ltcg)
 add_library(tdesktop::td_ui ALIAS td_ui)
 
 include(lib_ui/cmake/generate_styles.cmake)
@@ -16,6 +16,7 @@ set(style_files
     ui/filter_icons.style
     ui/menu_icons.style
     ui/chat/chat.style
+    ui/effects/premium.style
     boxes/boxes.style
     dialogs/dialogs.style
     chat_helpers/chat_helpers.style
@@ -48,6 +49,9 @@ nice_target_sources(td_ui ${src_loc}
 PRIVATE
     ${style_files}
 
+    boxes/peers/edit_peer_history_visibility_box.cpp
+    boxes/peers/edit_peer_history_visibility_box.h
+
     calls/group/ui/calls_group_recording_box.cpp
     calls/group/ui/calls_group_recording_box.h
     calls/group/ui/calls_group_scheduled_labels.cpp
@@ -63,10 +67,14 @@ PRIVATE
     countries/countries_instance.cpp
     countries/countries_instance.h
 
+    data/data_subscription_option.h
+
     editor/controllers/undo_controller.cpp
     editor/controllers/undo_controller.h
     editor/editor_crop.cpp
     editor/editor_crop.h
+    editor/editor_layer_widget.cpp
+    editor/editor_layer_widget.h
     editor/photo_editor_common.cpp
     editor/photo_editor_common.h
     editor/photo_editor_inner_common.h
@@ -80,6 +88,12 @@ PRIVATE
     editor/scene/scene_item_image.h
     editor/scene/scene_item_line.cpp
     editor/scene/scene_item_line.h
+
+    history/history_view_top_toast.cpp
+    history/history_view_top_toast.h
+
+    info/profile/info_profile_icon.cpp
+    info/profile/info_profile_icon.h
 
     layout/abstract_layout_item.cpp
     layout/abstract_layout_item.h
@@ -104,6 +118,8 @@ PRIVATE
 
     menu/menu_check_item.cpp
     menu/menu_check_item.h
+    menu/menu_ttl.cpp
+    menu/menu_ttl.h
 
     passport/ui/passport_details_row.cpp
     passport/ui/passport_details_row.h
@@ -133,6 +149,8 @@ PRIVATE
     ui/boxes/calendar_box.h
     ui/boxes/choose_date_time.cpp
     ui/boxes/choose_date_time.h
+    ui/boxes/choose_time.cpp
+    ui/boxes/choose_time.h
     ui/boxes/confirm_box.cpp
     ui/boxes/confirm_box.h
     ui/boxes/confirm_phone_box.cpp
@@ -147,6 +165,8 @@ PRIVATE
     ui/boxes/report_box.h
     ui/boxes/single_choice_box.cpp
     ui/boxes/single_choice_box.h
+    ui/boxes/time_picker_box.cpp
+    ui/boxes/time_picker_box.h
 
     ui/chat/attach/attach_abstract_single_file_preview.cpp
     ui/chat/attach/attach_abstract_single_file_preview.h
@@ -157,6 +177,8 @@ PRIVATE
     ui/chat/attach/attach_album_preview.h
     ui/chat/attach/attach_album_thumbnail.cpp
     ui/chat/attach/attach_album_thumbnail.h
+    ui/chat/attach/attach_bot_webview.cpp
+    ui/chat/attach/attach_bot_webview.h
     ui/chat/attach/attach_controls.cpp
     ui/chat/attach/attach_controls.h
     ui/chat/attach/attach_extensions.cpp
@@ -171,6 +193,8 @@ PRIVATE
     ui/chat/attach/attach_single_media_preview.h
     ui/chat/chat_style.cpp
     ui/chat/chat_style.h
+    ui/chat/chat_style_radius.cpp
+    ui/chat/chat_style_radius.h
     ui/chat/chat_theme.cpp
     ui/chat/chat_theme.h
     ui/chat/continuous_scroll.cpp
@@ -199,10 +223,14 @@ PRIVATE
     ui/controls/download_bar.h
     ui/controls/emoji_button.cpp
     ui/controls/emoji_button.h
+    ui/controls/jump_down_button.cpp
+    ui/controls/jump_down_button.h
     ui/controls/invite_link_buttons.cpp
     ui/controls/invite_link_buttons.h
     ui/controls/invite_link_label.cpp
     ui/controls/invite_link_label.h
+    ui/controls/peer_list_dummy.cpp
+    ui/controls/peer_list_dummy.h
     ui/controls/send_as_button.cpp
     ui/controls/send_as_button.h
     ui/controls/send_button.cpp
@@ -211,32 +239,62 @@ PRIVATE
     ui/controls/who_reacted_context_action.h
     ui/controls/window_outdated_bar.cpp
     ui/controls/window_outdated_bar.h
+    ui/effects/fireworks_animation.cpp
+    ui/effects/fireworks_animation.h
+    ui/effects/glare.cpp
+    ui/effects/glare.h
+    ui/effects/loading_element.cpp
+    ui/effects/loading_element.h
+    ui/effects/premium_graphics.cpp
+    ui/effects/premium_graphics.h
+    ui/effects/premium_stars.cpp
+    ui/effects/premium_stars.h
+    ui/effects/premium_stars_colored.cpp
+    ui/effects/premium_stars_colored.h
+    ui/effects/round_checkbox.cpp
+    ui/effects/round_checkbox.h
+    ui/effects/scroll_content_shadow.cpp
+    ui/effects/scroll_content_shadow.h
+    ui/effects/snowflakes.cpp
+    ui/effects/snowflakes.h
     ui/text/format_song_name.cpp
     ui/text/format_song_name.h
     ui/text/format_values.cpp
     ui/text/format_values.h
     ui/text/text_options.cpp
     ui/text/text_options.h
-    ui/toasts/common_toasts.cpp
-    ui/toasts/common_toasts.h
 
     ui/widgets/continuous_sliders.cpp
     ui/widgets/continuous_sliders.h
     ui/widgets/discrete_sliders.cpp
     ui/widgets/discrete_sliders.h
+    ui/widgets/gradient_round_button.cpp
+    ui/widgets/gradient_round_button.h
     ui/widgets/multi_select.cpp
     ui/widgets/multi_select.h
     ui/widgets/sent_code_field.cpp
     ui/widgets/sent_code_field.h
-    ui/widgets/separate_panel.cpp
-    ui/widgets/separate_panel.h
+    ui/widgets/vertical_drum_picker.cpp
+    ui/widgets/vertical_drum_picker.h
 
     ui/cached_round_corners.cpp
     ui/cached_round_corners.h
+    ui/color_contrast.cpp
+    ui/color_contrast.h
+    ui/color_int_conversion.cpp
+    ui/color_int_conversion.h
+    ui/empty_userpic.cpp
+    ui/empty_userpic.h
     ui/grouped_layout.cpp
     ui/grouped_layout.h
-    ui/special_fields.cpp
-    ui/special_fields.h
+    ui/unread_badge_paint.cpp
+    ui/unread_badge_paint.h
+    ui/userpic_view.cpp
+    ui/userpic_view.h
+    ui/widgets/fields/special_fields.cpp
+    ui/widgets/fields/special_fields.h
+    ui/widgets/fields/time_part_input_with_placeholder.cpp
+    ui/widgets/fields/time_part_input_with_placeholder.h
 
     ui/ui_pch.h
 )
@@ -257,4 +315,5 @@ PRIVATE
     desktop-app::lib_webview
     desktop-app::lib_webrtc
     desktop-app::lib_stripe
+    desktop-app::external_kcoreaddons
 )

@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/settings_common.h"
 
+#include "apiwrap.h"
+#include "api/api_cloud_password.h"
+#include "settings/cloud_password/settings_cloud_password_email_confirm.h"
 #include "settings/settings_chat.h"
 #include "settings/settings_advanced.h"
 #include "settings/settings_information.h"
@@ -17,11 +20,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "settings/settings_calls.h"
 #include "settings/settings_experimental.h"
 #include "core/application.h"
+#include "core/core_cloud_password.h"
 #include "ui/wrap/padding_wrap.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/box_content_divider.h"
 #include "ui/widgets/buttons.h"
+#include "ui/widgets/continuous_sliders.h"
+#include "ui/widgets/menu/menu_add_action_callback.h"
+#include "ui/painter.h"
 #include "boxes/abstract_box.h"
 #include "boxes/sessions_box.h"
 #include "window/themes/window_theme_editor_box.h"
@@ -31,10 +38,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "main/main_session.h"
 #include "main/main_domain.h"
+#include "lottie/lottie_icon.h"
 #include "base/options.h"
 #include "styles/style_layers.h"
 #include "styles/style_settings.h"
 #include "styles/style_menu_icons.h"
+
+#include <QAction>
 
 namespace Settings {
 namespace {
@@ -76,6 +86,11 @@ Icon::Icon(IconDescriptor descriptor) : _icon(descriptor.icon) {
 			? st::settingsIconRadius
 			: (std::min(_icon->width(), _icon->height()) / 2);
 		_background.emplace(radius, *background);
+	} else if (const auto brush = descriptor.backgroundBrush) {
+		const auto radius = (descriptor.type == IconType::Rounded)
+			? st::settingsIconRadius
+			: (std::min(_icon->width(), _icon->height()) / 2);
+		_backgroundBrush.emplace(radius, std::move(*brush));
 	}
 }
 
@@ -86,6 +101,14 @@ void Icon::paint(QPainter &p, QPoint position) const {
 void Icon::paint(QPainter &p, int x, int y) const {
 	if (_background) {
 		_background->paint(p, { { x, y }, _icon->size() });
+	} else if (_backgroundBrush) {
+		PainterHighQualityEnabler hq(p);
+		p.setPen(Qt::NoPen);
+		p.setBrush(_backgroundBrush->second);
+		p.drawRoundedRect(
+			QRect(QPoint(x, y), _icon->size()),
+			_backgroundBrush->first,
+			_backgroundBrush->first);
 	}
 	if (OptionMonoSettingsIcons.value()) {
 		_icon->paint(p, { x, y }, 2 * x + _icon->width(), st::menuIconFg->c);
@@ -104,35 +127,6 @@ int Icon::height() const {
 
 QSize Icon::size() const {
 	return _icon->size();
-}
-
-object_ptr<Section> CreateSection(
-		Type type,
-		not_null<QWidget*> parent,
-		not_null<Window::SessionController*> controller) {
-	switch (type) {
-	case Type::Main:
-		return object_ptr<Main>(parent, controller);
-	case Type::Information:
-		return object_ptr<Information>(parent, controller);
-	case Type::Notifications:
-		return object_ptr<Notifications>(parent, controller);
-	case Type::PrivacySecurity:
-		return object_ptr<PrivacySecurity>(parent, controller);
-	case Type::Sessions:
-		return object_ptr<Sessions>(parent, controller);
-	case Type::Advanced:
-		return object_ptr<Advanced>(parent, controller);
-	case Type::Folders:
-		return object_ptr<Folders>(parent, controller);
-	case Type::Chat:
-		return object_ptr<Chat>(parent, controller);
-	case Type::Calls:
-		return object_ptr<Calls>(parent, controller);
-	case Type::Experimental:
-		return object_ptr<Experimental>(parent, controller);
-	}
-	Unexpected("Settings section type in Widget::createInnerWidget.");
 }
 
 void AddSkip(not_null<Ui::VerticalLayout*> container) {
@@ -272,20 +266,115 @@ not_null<Ui::FlatLabel*> AddSubsectionTitle(
 		st::settingsSubsectionTitlePadding + addPadding);
 }
 
+void AddDividerTextWithLottie(
+		not_null<Ui::VerticalLayout*> parent,
+		rpl::producer<> showFinished,
+		rpl::producer<TextWithEntities> text,
+		const QString &lottie) {
+	const auto divider = Ui::CreateChild<Ui::BoxContentDivider>(parent.get());
+	const auto verticalLayout = parent->add(
+		object_ptr<Ui::VerticalLayout>(parent.get()));
+
+	auto icon = CreateLottieIcon(
+		verticalLayout,
+		{
+			.name = lottie,
+			.sizeOverride = {
+				st::settingsFilterIconSize,
+				st::settingsFilterIconSize,
+			},
+		},
+		st::settingsFilterIconPadding);
+	std::move(
+		showFinished
+	) | rpl::start_with_next([animate = std::move(icon.animate)] {
+		animate(anim::repeat::once);
+	}, verticalLayout->lifetime());
+	verticalLayout->add(std::move(icon.widget));
+
+	verticalLayout->add(
+		object_ptr<Ui::CenterWrap<>>(
+			verticalLayout,
+			object_ptr<Ui::FlatLabel>(
+				verticalLayout,
+				std::move(text),
+				st::settingsFilterDividerLabel)),
+		st::settingsFilterDividerLabelPadding);
+
+	verticalLayout->geometryValue(
+	) | rpl::start_with_next([=](const QRect &r) {
+		divider->setGeometry(r);
+	}, divider->lifetime());
+}
+
+LottieIcon CreateLottieIcon(
+		not_null<QWidget*> parent,
+		Lottie::IconDescriptor &&descriptor,
+		style::margins padding) {
+	Expects(!descriptor.frame); // I'm not sure it considers limitFps.
+
+	descriptor.limitFps = true;
+
+	auto object = object_ptr<Ui::RpWidget>(parent);
+	const auto raw = object.data();
+
+	const auto width = descriptor.sizeOverride.width();
+	raw->resize(QRect(
+		QPoint(),
+		descriptor.sizeOverride).marginsAdded(padding).size());
+
+	auto owned = Lottie::MakeIcon(std::move(descriptor));
+	const auto icon = owned.get();
+
+	raw->lifetime().add([kept = std::move(owned)]{});
+	const auto looped = raw->lifetime().make_state<bool>(true);
+
+	const auto start = [=] {
+		icon->animate([=] { raw->update(); }, 0, icon->framesCount() - 1);
+	};
+	const auto animate = [=](anim::repeat repeat) {
+		*looped = (repeat == anim::repeat::loop);
+		start();
+	};
+	raw->paintRequest(
+	) | rpl::start_with_next([=] {
+		auto p = QPainter(raw);
+		const auto left = (raw->width() - width) / 2;
+		icon->paint(p, left, padding.top());
+		if (!icon->animating() && icon->frameIndex() > 0 && *looped) {
+			start();
+		}
+
+	}, raw->lifetime());
+
+	return { .widget = std::move(object), .animate = std::move(animate) };
+}
+
 void FillMenu(
 		not_null<Window::SessionController*> controller,
 		Type type,
 		Fn<void(Type)> showOther,
-		MenuCallback addAction) {
+		Ui::Menu::MenuCallback addAction) {
 	const auto window = &controller->window();
-	if (type == Type::Chat) {
+	if (type == Chat::Id()) {
 		addAction(
 			tr::lng_settings_bg_theme_create(tr::now),
 			[=] { window->show(Box(Window::Theme::CreateBox, window)); },
 			&st::menuIconChangeColors);
+	} else if (type == CloudPasswordEmailConfirmId()) {
+		const auto api = &controller->session().api();
+		if (const auto state = api->cloudPassword().stateCurrent()) {
+			if (state->unconfirmedPattern.isEmpty()) {
+				return;
+			}
+		}
+		addAction(
+			tr::lng_settings_password_abort(tr::now),
+			[=] { api->cloudPassword().clearUnconfirmedPassword(); },
+			&st::menuIconCancel);
 	} else {
 		const auto &list = Core::App().domain().accounts();
-		if (list.size() < ::Main::Domain::kMaxAccounts) {
+		if (list.size() < Core::App().domain().maxAccounts()) {
 			addAction(tr::lng_menu_add_account(tr::now), [=] {
 				Core::App().domain().addActivated(MTP::Environment{});
 			}, &st::menuIconAddAccount);
@@ -293,14 +382,50 @@ void FillMenu(
 		if (!controller->session().supportMode()) {
 			addAction(
 				tr::lng_settings_information(tr::now),
-				[=] { showOther(Type::Information); },
+				[=] { showOther(Information::Id()); },
 				&st::menuIconInfo);
 		}
-		addAction(
-			tr::lng_settings_logout(tr::now),
-			[=] { window->showLogoutConfirmation(); },
-			&st::menuIconLeave);
+		addAction({
+			.text = tr::lng_settings_logout(tr::now),
+			.handler = [=] { window->showLogoutConfirmation(); },
+			.icon = &st::menuIconLeaveAttention,
+			.isAttention = true,
+		});
 	}
+}
+
+SliderWithLabel MakeSliderWithLabel(
+		QWidget *parent,
+		const style::MediaSlider &sliderSt,
+		const style::FlatLabel &labelSt,
+		int skip,
+		int minLabelWidth) {
+	auto result = object_ptr<Ui::RpWidget>(parent);
+	const auto raw = result.data();
+	const auto height = std::max(
+		sliderSt.seekSize.height(),
+		labelSt.style.font->height);
+	raw->resize(sliderSt.seekSize.width(), height);
+	const auto slider = Ui::CreateChild<Ui::MediaSlider>(raw, sliderSt);
+	const auto label = Ui::CreateChild<Ui::FlatLabel>(raw, labelSt);
+	slider->resize(slider->width(), sliderSt.seekSize.height());
+	rpl::combine(
+		raw->sizeValue(),
+		label->sizeValue()
+	) | rpl::start_with_next([=](QSize outer, QSize size) {
+		const auto right = std::max(size.width(), minLabelWidth) + skip;
+		label->moveToRight(0, (outer.height() - size.height()) / 2);
+		const auto width = std::max(
+			sliderSt.seekSize.width(),
+			outer.width() - right);
+		slider->resizeToWidth(width);
+		slider->moveToLeft(0, (outer.height() - slider->height()) / 2);
+	}, label->lifetime());
+	return {
+		.widget = std::move(result),
+		.slider = slider,
+		.label = label,
+	};
 }
 
 } // namespace Settings

@@ -4,7 +4,12 @@
 # For license and copyright information please follow this link:
 # https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
-cmake_minimum_required(VERSION 3.16)
+if (APPLE)
+    # target_precompile_headers with COMPILE_LANGUAGE restriction.
+    cmake_minimum_required(VERSION 3.23)
+else()
+    cmake_minimum_required(VERSION 3.16)
+endif()
 cmake_policy(SET CMP0076 NEW)
 cmake_policy(SET CMP0091 NEW)
 
@@ -31,8 +36,14 @@ get_filename_component(third_party_loc "Telegram/ThirdParty" REALPATH)
 get_filename_component(submodules_loc "Telegram" REALPATH)
 get_filename_component(cmake_helpers_loc "cmake" REALPATH)
 
+if (NOT DESKTOP_APP_USE_PACKAGED AND WIN32)
+    set(Python_EXECUTABLE ${CMAKE_CURRENT_SOURCE_DIR}/../ThirdParty/python/Scripts/python)
+endif()
+
 include(cmake/variables.cmake)
 include(cmake/nice_target_sources.cmake)
+include(cmake/target_compile_options_if_exists.cmake)
+include(cmake/target_link_options_if_exists.cmake)
 include(cmake/target_link_static_libraries.cmake)
 include(cmake/target_link_frameworks.cmake)
 include(cmake/init_target.cmake)
@@ -43,6 +54,15 @@ include(cmake/target_prepare_qrc.cmake)
 
 include(cmake/options.cmake)
 
+if (NOT DESKTOP_APP_USE_PACKAGED)
+    if (WIN32)
+        set(qt_version 5.15.8)
+    elseif (APPLE)
+        set(qt_version 6.3.2)
+    else()
+        set(qt_version 6.4.2)
+    endif()
+endif()
 include(cmake/external/qt/package.cmake)
 
 set(desktop_app_skip_libs

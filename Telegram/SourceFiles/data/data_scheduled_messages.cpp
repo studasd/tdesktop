@@ -15,7 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "history/history.h"
 #include "history/history_item_components.h"
-#include "history/history_message.h"
+#include "history/history_item_helpers.h"
 #include "apiwrap.h"
 
 namespace Data {
@@ -30,8 +30,7 @@ constexpr auto kRequestTimeLimit = 60 * crl::time(1000);
 }
 
 [[nodiscard]] MsgId LocalToRemoteMsgId(MsgId id) {
-	Expects(id > ServerMaxMsgId);
-	Expects(id < ServerMaxMsgId + ScheduledMsgIdsRange);
+	Expects(IsScheduledMsgId(id));
 
 	return (id - ServerMaxMsgId - 1);
 }
@@ -92,6 +91,11 @@ constexpr auto kRequestTimeLimit = 60 * crl::time(1000);
 }
 
 } // namespace
+
+bool IsScheduledMsgId(MsgId id) {
+	return (id > ServerMaxMsgId)
+		&& (id < ServerMaxMsgId + ScheduledMsgIdsRange);
+}
 
 ScheduledMessages::ScheduledMessages(not_null<Session*> owner)
 : _session(&owner->session())

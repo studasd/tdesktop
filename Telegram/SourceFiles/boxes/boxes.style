@@ -25,13 +25,6 @@ UserpicButton {
 	uploadIconPosition: point;
 }
 
-FeedUserpicButton {
-	size: size;
-	innerSize: pixels;
-	innerPosition: point;
-	innerPart: UserpicButton;
-}
-
 countryRowHeight: 36px;
 countryRowNameFont: semiboldFont;
 countryRowNameFg: boxTextFg;
@@ -69,11 +62,17 @@ defaultUserpicButton: UserpicButton {
 	uploadIcon: defaultUploadUserpicIcon;
 	uploadIconPosition: point(-1px, 1px);
 }
-defaultFeedUserpicButton: FeedUserpicButton {
-	size: size(76px, 76px);
-	innerSize: 76px;
-	innerPosition: point(-1px, -1px);
-	innerPart: defaultUserpicButton;
+uploadUserpicSize: 32px;
+uploadUserpicButton: UserpicButton(defaultUserpicButton) {
+	size: size(uploadUserpicSize, uploadUserpicSize);
+	photoSize: uploadUserpicSize;
+	changeIcon: icon {{ "settings/photo", activeButtonFg }};
+	changeIconPosition: point(4px, 4px);
+}
+uploadUserpicButtonBorder: 2px;
+restoreUserpicIcon: UserpicButton(defaultUserpicButton) {
+	size: size(22px, 22px);
+	photoSize: 22px;
 }
 
 confirmInviteTitle: FlatLabel(defaultFlatLabel) {
@@ -286,12 +285,16 @@ notificationsSampleMargin: 2px;
 notificationSampleOpacity: 0.5;
 notificationSampleSize: size(64px, 16px);
 
-membersAboutLimitPadding: margins(0px, 12px, 0px, 12px);
+membersAboutLimitPadding: margins(0px, 16px, 0px, 16px);
 membersAbout: FlatLabel(defaultFlatLabel) {
 	minWidth: 240px;
 	textFg: membersAboutLimitFg;
 	align: align(top);
 	style: boxLabelStyle;
+}
+
+fragmentBoxButton: RoundButton(introFragmentButton) {
+	width: 256px;
 }
 
 passcodeHeaderFont: font(19px);
@@ -576,17 +579,21 @@ colorValueInput: InputField(defaultInputField) {
 colorResultInput: InputField(colorValueInput) {
 }
 
-changePhoneIcon: icon {
-	{ "phone_simcard_from", changePhoneSimcardFrom },
-	{ "phone_simcard_migrate", changePhoneSimcardTo, point(30px, 11px) },
-	{ "phone_simcard_to", changePhoneSimcardTo, point(78px, 0px) }
-};
-changePhoneDescription: FlatLabel(boxLabel) {
+changePhoneButton: RoundButton(defaultActiveButton) {
+	width: 256px;
+}
+changePhoneButtonPadding: margins(0px, 32px, 0px, 44px);
+changePhoneTitle: FlatLabel(boxTitle) {
+}
+changePhoneTitlePadding: margins(0px, 8px, 0px, 8px);
+changePhoneDescription: FlatLabel(defaultFlatLabel) {
 	minWidth: 332px;
 	align: align(top);
+	textFg: windowSubTextFg;
 }
-changePhoneIconTop: 20px;
-changePhoneDescriptionTop: 96px;
+changePhoneDescriptionPadding: margins(0px, 1px, 0px, 8px);
+changePhoneIconPadding: margins(0px, 39px, 0px, 5px);
+changePhoneIconSize: 120px;
 changePhoneLabel: FlatLabel(defaultFlatLabel) {
 	minWidth: 275px;
 	textFg: windowSubTextFg;
@@ -594,6 +601,9 @@ changePhoneLabel: FlatLabel(defaultFlatLabel) {
 changePhoneError: FlatLabel(changePhoneLabel) {
 	textFg: boxTextFgError;
 }
+
+blockedUsersListSubtitleAddPadding: margins(0px, 1px, 0px, -14px);
+blockedUsersListIconPadding: margins(0px, 34px, 0px, 5px);
 
 adminLogFilterUserpicLeft: 15px;
 adminLogFilterLittleSkip: 16px;
@@ -650,7 +660,7 @@ rightsHeaderLabel: FlatLabel(boxLabel) {
 	textFg: windowActiveTextFg;
 }
 rightsUntilMargin: margins(0px, 8px, 0px, 20px);
-rightsRankMargin: margins(0px, 16px, 0px, 20px);
+rightsRankMargin: margins(0px, 7px, 0px, 20px);
 
 mutePhotoButton: UserpicButton(defaultUserpicButton) {
 	size: size(40px, 40px);
@@ -993,6 +1003,16 @@ scheduleTimeSeparator: FlatLabel(defaultFlatLabel) {
 }
 scheduleTimeSeparatorPadding: margins(2px, 0px, 2px, 0px);
 
+muteBoxTimeField: InputField(scheduleDateField) {
+	textMargins: margins(0px, 0px, 0px, 0px);
+	placeholderMargins: margins(0px, 0px, 0px, 0px);
+	placeholderScale: 0.;
+	heightMin: 30px;
+	textAlign: align(left);
+	font: font(14px);
+}
+muteBoxTimeFieldPadding: margins(5px, 0px, 5px, 0px);
+
 boxAttentionDividerLabel: FlatLabel(boxDividerLabel) {
 	textFg: boxTextFgError;
 }
@@ -1049,3 +1069,15 @@ requestsRejectButton: RoundButton(defaultLightButton) {
 }
 requestAcceptPosition: point(71px, 58px);
 requestButtonsSkip: 9px;
+
+ringtonesBoxButton: SettingsButton(defaultSettingsButton) {
+	textFg: lightButtonFg;
+	textFgOver: lightButtonFgOver;
+	padding: margins(56px, 10px, 22px, 8px);
+	iconLeft: 25px;
+}
+ringtonesBoxSkip: 7px;
+
+gradientButtonGlareDuration: 700;
+gradientButtonGlareTimeout: 2000;
+gradientButtonGlareWidth: 100px;

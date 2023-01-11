@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/cache/storage_cache_database.h"
 #include "storage/serialize_common.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "mtproto/mtproto_config.h"
 #include "ui/effects/animation_value.h"
 #include "ui/widgets/input_fields.h"
@@ -935,7 +936,9 @@ bool ReadSetting(
 		stream >> v;
 		if (!CheckStreamStatus(stream)) return false;
 #ifndef OS_WIN_STORE
-		if (!v.isEmpty() && v != qstr("tmp") && !v.endsWith('/')) v += '/';
+		if (!v.isEmpty() && v != FileDialog::Tmp() && !v.endsWith('/')) {
+			v += '/';
+		}
 		Core::App().settings().setDownloadPathBookmark(QByteArray());
 		Core::App().settings().setDownloadPath(v);
 #endif // OS_WIN_STORE
@@ -949,7 +952,9 @@ bool ReadSetting(
 		if (!CheckStreamStatus(stream)) return false;
 
 #ifndef OS_WIN_STORE
-		if (!v.isEmpty() && v != qstr("tmp") && !v.endsWith('/')) v += '/';
+		if (!v.isEmpty() && v != FileDialog::Tmp() && !v.endsWith('/')) {
+			v += '/';
+		}
 		Core::App().settings().setDownloadPathBookmark(bookmark);
 		Core::App().settings().setDownloadPath(v);
 		psDownloadPathEnableAccess();
@@ -1081,6 +1086,7 @@ bool ReadSetting(
 		for (auto i = v.begin(), e = v.end(); i != e; ++i) {
 			context.sessionSettings().setHiddenPinnedMessageId(
 				DeserializePeerId(i.key()),
+				MsgId(0), // topicRootId
 				MsgId(i.value()));
 		}
 		context.legacyRead = true;

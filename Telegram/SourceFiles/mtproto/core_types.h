@@ -29,6 +29,9 @@ using mtpPingId = uint64;
 using mtpBuffer = QVector<mtpPrime>;
 using mtpTypeId = uint32;
 
+struct NotSingleDataTypePlaceholder {
+};
+
 namespace MTP {
 
 // type DcId represents actual data center id, while in most cases
@@ -73,6 +76,7 @@ enum {
 	mtpc_vector = tl::id_vector,
 	mtpc_bytes = tl::id_bytes,
 	mtpc_flags = tl::id_flags,
+	mtpc_flags64 = tl::id_flags64,
 
 	// layers
 	mtpc_invokeWithLayer1 = 0x53835315,

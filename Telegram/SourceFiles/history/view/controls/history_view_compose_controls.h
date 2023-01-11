@@ -16,7 +16,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/rp_widget.h"
 #include "ui/effects/animations.h"
 #include "ui/widgets/input_fields.h"
-#include "chat_helpers/tabbed_selector.h"
 
 class History;
 class FieldAutocomplete;
@@ -28,6 +27,8 @@ enum class Type;
 namespace ChatHelpers {
 class TabbedPanel;
 class TabbedSelector;
+struct FileChosen;
+struct PhotoChosen;
 } // namespace ChatHelpers
 
 namespace Data {
@@ -43,6 +44,7 @@ class ItemBase;
 class Widget;
 } // namespace Layout
 class Result;
+struct ResultSelected;
 } // namespace InlineBots
 
 namespace Ui {
@@ -51,6 +53,7 @@ class IconButton;
 class EmojiButton;
 class SendAsButton;
 class SilentToggle;
+class DropdownMenu;
 } // namespace Ui
 
 namespace Main {
@@ -74,12 +77,13 @@ class TTLButton;
 } // namespace Controls
 
 class FieldHeader;
+class WebpageProcessor;
 
 class ComposeControls final {
 public:
-	using FileChosen = ChatHelpers::TabbedSelector::FileChosen;
-	using PhotoChosen = ChatHelpers::TabbedSelector::PhotoChosen;
-	using InlineChosen = ChatHelpers::TabbedSelector::InlineChosen;
+	using FileChosen = ChatHelpers::FileChosen;
+	using PhotoChosen = ChatHelpers::PhotoChosen;
+	using InlineChosen = InlineBots::ResultSelected;
 
 	using MessageToEdit = Controls::MessageToEdit;
 	using VoiceToSend = Controls::VoiceToSend;
@@ -96,6 +100,7 @@ public:
 	ComposeControls(
 		not_null<Ui::RpWidget*> parent,
 		not_null<Window::SessionController*> window,
+		Fn<void(not_null<DocumentData*>)> unavailableEmojiPasted,
 		Mode mode,
 		SendMenu::Type sendMenuType);
 	~ComposeControls();
@@ -119,7 +124,7 @@ public:
 	[[nodiscard]] rpl::producer<VoiceToSend> sendVoiceRequests() const;
 	[[nodiscard]] rpl::producer<QString> sendCommandRequests() const;
 	[[nodiscard]] rpl::producer<MessageToEdit> editRequests() const;
-	[[nodiscard]] rpl::producer<> attachRequests() const;
+	[[nodiscard]] rpl::producer<std::optional<bool>> attachRequests() const;
 	[[nodiscard]] rpl::producer<FileChosen> fileChosen() const;
 	[[nodiscard]] rpl::producer<PhotoChosen> photoChosen() const;
 	[[nodiscard]] rpl::producer<Data::MessagePosition> scrollRequests() const;
@@ -139,11 +144,12 @@ public:
 	void setMimeDataHook(MimeDataHook hook);
 
 	bool pushTabbedSelectorToThirdSection(
-		not_null<PeerData*> peer,
+		not_null<Data::Thread*> thread,
 		const Window::SectionShow &params);
 	bool returnTabbedSelector();
 
 	[[nodiscard]] bool isEditingMessage() const;
+	[[nodiscard]] bool readyToForward() const;
 	[[nodiscard]] FullMsgId replyingToMessage() const;
 
 	[[nodiscard]] bool preventsClose(Fn<void()> &&continueCallback) const;
@@ -159,6 +165,9 @@ public:
 	void replyToMessage(FullMsgId id);
 	void cancelReplyMessage();
 
+	void updateForwarding();
+	void cancelForward();
+
 	bool handleCancelRequest();
 
 	[[nodiscard]] TextWithTags getTextWithAppliedMarkdown() const;
@@ -168,10 +177,14 @@ public:
 	void hidePanelsAnimated();
 	void clearListenState();
 
+	void hide();
+	void show();
+
 	[[nodiscard]] rpl::producer<bool> lockShowStarts() const;
 	[[nodiscard]] bool isLockPresent() const;
 	[[nodiscard]] bool isRecording() const;
 
+	void applyCloudDraft();
 	void applyDraft(
 		FieldHistoryAction fieldHistoryAction = FieldHistoryAction::Clear);
 
@@ -197,8 +210,9 @@ private:
 	void initField();
 	void initTabbedSelector();
 	void initSendButton();
-	void initSendAsButton();
+	void initSendAsButton(not_null<PeerData*> peer);
 	void initWebpageProcess();
+	void initForwardProcess();
 	void initWriteRestriction();
 	void initVoiceRecordBar();
 	void initAutocomplete();
@@ -207,6 +221,7 @@ private:
 	void updateSendButtonType();
 	void updateMessagesTTLShown();
 	bool updateSendAsButton();
+	void updateAttachBotsMenu();
 	void updateHeight();
 	void updateWrappingVisibility();
 	void updateControlsVisibility();
@@ -238,7 +253,7 @@ private:
 	void setTabbedPanel(std::unique_ptr<ChatHelpers::TabbedPanel> panel);
 
 	bool showRecordButton() const;
-	void drawRestrictedWrite(Painter &p, const QString &error);
+	void drawRestrictedWrite(QPainter &p, const QString &error);
 	bool updateBotCommandShown();
 
 	void cancelInlineBot();
@@ -253,14 +268,12 @@ private:
 	// Request to show results in the emoji panel.
 	void applyInlineBotQuery(UserData *bot, const QString &query);
 
-	void inlineBotResolveDone(const MTPcontacts_ResolvedPeer &result);
-	void inlineBotResolveFail(const MTP::Error &error, const QString &username);
-
 	[[nodiscard]] Data::DraftKey draftKey(
 		DraftType type = DraftType::Normal) const;
 	[[nodiscard]] Data::DraftKey draftKeyCurrent() const;
 	void saveDraft(bool delayed = false);
 	void saveDraftDelayed();
+	void saveCloudDraft();
 
 	void writeDrafts();
 	void writeDraftTexts();
@@ -281,9 +294,11 @@ private:
 	const not_null<Window::SessionController*> _window;
 	History *_history = nullptr;
 	Fn<bool()> _showSlowmodeError;
+	Fn<Api::SendAction()> _sendActionFactory;
 	rpl::variable<int> _slowmodeSecondsLeft;
 	rpl::variable<bool> _sendDisabledBySlowmode;
 	rpl::variable<std::optional<QString>> _writeRestriction;
+	rpl::variable<bool> _hidden;
 	Mode _mode = Mode::Normal;
 
 	const std::unique_ptr<Ui::RpWidget> _wrap;
@@ -300,6 +315,7 @@ private:
 
 	std::unique_ptr<InlineBots::Layout::Widget> _inlineResults;
 	std::unique_ptr<ChatHelpers::TabbedPanel> _tabbedPanel;
+	std::unique_ptr<Ui::DropdownMenu> _attachBotsMenu;
 	std::unique_ptr<FieldAutocomplete> _autocomplete;
 
 	friend class FieldHeader;
@@ -307,6 +323,7 @@ private:
 	const std::unique_ptr<Controls::VoiceRecordBar> _voiceRecordBar;
 
 	const SendMenu::Type _sendMenuType;
+	const Fn<void(not_null<DocumentData*>)> _unavailableEmojiPasted;
 
 	rpl::event_stream<Api::SendOptions> _sendCustomRequests;
 	rpl::event_stream<> _cancelRequests;
@@ -317,7 +334,7 @@ private:
 	rpl::event_stream<QString> _sendCommandRequests;
 	rpl::event_stream<not_null<QKeyEvent*>> _scrollKeyEvents;
 	rpl::event_stream<not_null<QKeyEvent*>> _editLastMessageRequests;
-	rpl::event_stream<> _attachRequests;
+	rpl::event_stream<std::optional<bool>> _attachRequests;
 	rpl::event_stream<ReplyNextRequest> _replyNextRequests;
 
 	TextUpdateEvents _textUpdateEvents = TextUpdateEvents()
@@ -328,6 +345,7 @@ private:
 	crl::time _saveDraftStart = 0;
 	bool _saveDraftText = false;
 	base::Timer _saveDraftTimer;
+	base::Timer _saveCloudDraftTimer;
 
 	UserData *_inlineBot = nullptr;
 	QString _inlineBotUsername;
@@ -336,9 +354,7 @@ private:
 	bool _isInlineBot = false;
 	bool _botCommandShown = false;
 
-	Fn<void()> _previewCancel;
-	Fn<void(Data::PreviewState)> _previewSetState;
-	Data::PreviewState _previewState = Data::PreviewState();
+	std::unique_ptr<WebpageProcessor> _preview;
 
 	rpl::lifetime _uploaderSubscriptions;
 

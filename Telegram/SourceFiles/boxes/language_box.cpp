@@ -21,19 +21,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/ripple_animation.h"
 #include "ui/toast/toast.h"
 #include "ui/text/text_options.h"
+#include "ui/painter.h"
 #include "storage/localstorage.h"
+#include "boxes/translate_box.h"
 #include "ui/boxes/confirm_box.h"
 #include "mainwidget.h"
 #include "mainwindow.h"
 #include "core/application.h"
 #include "lang/lang_instance.h"
 #include "lang/lang_cloud_manager.h"
+#include "settings/settings_common.h"
 #include "styles/style_layers.h"
 #include "styles/style_boxes.h"
 #include "styles/style_info.h"
 #include "styles/style_passport.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_menu_icons.h"
+#include "styles/style_settings.h"
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QClipboard>
@@ -372,8 +376,8 @@ void Rows::ensureRippleBySelection(not_null<Row*> row, Selection selected) {
 	const auto menu = v::is<MenuSelection>(selected);
 	const auto menuArea = menuToggleArea(row);
 	auto mask = menu
-		? Ui::RippleAnimation::ellipseMask(menuArea.size())
-		: Ui::RippleAnimation::rectMask({ width(), row->height });
+		? Ui::RippleAnimation::EllipseMask(menuArea.size())
+		: Ui::RippleAnimation::RectMask({ width(), row->height });
 	ripple = std::make_unique<Ui::RippleAnimation>(
 		st::defaultRippleAnimation,
 		std::move(mask),
@@ -412,7 +416,7 @@ bool Rows::hasMenu(not_null<const Row*> row) const {
 }
 
 void Rows::share(not_null<const Row*> row) const {
-	const auto link = qsl("https://t.me/setlanguage/") + row->data.id;
+	const auto link = u"https://t.me/setlanguage/"_q + row->data.id;
 	QGuiApplication::clipboard()->setText(link);
 	Ui::Toast::Show(tr::lng_username_copied(tr::now));
 }
@@ -1094,7 +1098,72 @@ void LanguageBox::prepare() {
 
 	setTitle(tr::lng_languages());
 
-	const auto select = createMultiSelect();
+	const auto topContainer = Ui::CreateChild<Ui::VerticalLayout>(this);
+	Settings::AddSubsectionTitle(
+		topContainer,
+		tr::lng_translate_settings_subtitle());
+
+	const auto translateEnabled = Settings::AddButton(
+		topContainer,
+		tr::lng_translate_settings_show(),
+		st::settingsButtonNoIcon
+	)->toggleOn(rpl::single(Core::App().settings().translateButtonEnabled()));
+
+	translateEnabled->toggledValue(
+	) | rpl::filter([](bool checked) {
+		return (checked != Core::App().settings().translateButtonEnabled());
+	}) | rpl::start_with_next([=](bool checked) {
+		Core::App().settings().setTranslateButtonEnabled(checked);
+		Core::App().saveSettingsDelayed();
+	}, translateEnabled->lifetime());
+
+	using Locales = std::vector<QLocale>;
+	const auto label = lifetime().make_state<rpl::event_stream<Locales>>();
+	const auto translateSkipWrap = topContainer->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			topContainer,
+			object_ptr<Ui::VerticalLayout>(topContainer)));
+	translateSkipWrap->toggle(
+		translateEnabled->toggled(),
+		anim::type::normal);
+	translateSkipWrap->toggleOn(translateEnabled->toggledValue());
+	const auto translateSkip = Settings::AddButtonWithLabel(
+		translateSkipWrap->entity(),
+		tr::lng_translate_settings_choose(),
+		label->events(
+		) | rpl::map([](const Locales &locales) {
+			return (locales.size() > 1)
+				? tr::lng_languages_count(tr::now, lt_count, locales.size())
+				: Ui::LanguageName(locales.front());
+		}),
+		st::settingsButtonNoIcon);
+
+	label->fire(Ui::Translate::LocalesFromSettings());
+	translateSkip->setClickedCallback([=] {
+		Ui::BoxShow(this).showBox(
+			Box(Ui::ChooseLanguageBox, [=](std::vector<QLocale> locales) {
+				label->fire_copy(locales);
+				const auto result = ranges::views::all(
+					locales
+				) | ranges::views::transform([](const QLocale &l) {
+					return int(l.language());
+				}) | ranges::to_vector;
+				Core::App().settings().setSkipTranslationForLanguages(result);
+				Core::App().saveSettingsDelayed();
+			}, Ui::Translate::LocalesFromSettings()),
+			Ui::LayerOption::KeepOther);
+	});
+	Settings::AddSkip(topContainer);
+	Settings::AddDividerText(
+		topContainer,
+		tr::lng_translate_settings_about());
+
+	const auto select = topContainer->add(
+		object_ptr<Ui::MultiSelect>(
+			topContainer,
+			st::defaultMultiSelect,
+			tr::lng_participant_filter()));
+	topContainer->resizeToWidth(st::boxWidth);
 
 	using namespace rpl::mappers;
 
@@ -1102,17 +1171,21 @@ void LanguageBox::prepare() {
 	const auto inner = setInnerWidget(
 		object_ptr<Content>(this, recent, official),
 		st::boxScroll,
-		select->height());
+		topContainer->height());
 	inner->resizeToWidth(st::boxWidth);
 
 	const auto max = lifetime().make_state<int>(0);
 	rpl::combine(
 		inner->heightValue(),
-		select->heightValue(),
+		topContainer->heightValue(),
 		_1 + _2
 	) | rpl::start_with_next([=](int height) {
 		accumulate_max(*max, height);
 		setDimensions(st::boxWidth, qMin(*max, st::boxMaxListHeight));
+	}, inner->lifetime());
+	topContainer->heightValue(
+	) | rpl::start_with_next([=](int height) {
+		setInnerTopSkip(height);
 	}, inner->lifetime());
 
 	select->setSubmittedCallback([=](Qt::KeyboardModifiers) {
@@ -1177,16 +1250,6 @@ int LanguageBox::rowsInPage() const {
 
 void LanguageBox::setInnerFocus() {
 	_setInnerFocus();
-}
-
-not_null<Ui::MultiSelect*> LanguageBox::createMultiSelect() {
-	const auto result = Ui::CreateChild<Ui::MultiSelect>(
-		this,
-		st::defaultMultiSelect,
-		tr::lng_participant_filter());
-	result->resizeToWidth(st::boxWidth);
-	result->moveToLeft(0, 0);
-	return result;
 }
 
 base::binary_guard LanguageBox::Show() {

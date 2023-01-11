@@ -7,17 +7,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include <rpl/variable.h>
 #include "data/data_search_controller.h"
 #include "window/window_session_controller.h"
-#include "settings/settings_common.h"
+
+namespace Data {
+class ForumTopic;
+} // namespace Data
 
 namespace Ui {
 class SearchFieldController;
 } // namespace Ui
 
-namespace Info {
-namespace Settings {
+namespace Info::Settings {
 
 struct Tag {
 	explicit Tag(not_null<UserData*> self) : self(self) {
@@ -26,23 +27,27 @@ struct Tag {
 	not_null<UserData*> self;
 };
 
-} // namespace Settings
+} // namespace Info::Settings
 
-namespace Downloads {
+namespace Info::Downloads {
 
 struct Tag {
 };
 
-} // namespace Downloads
+} // namespace Info::Downloads
+
+namespace Info {
 
 class Key {
 public:
-	Key(not_null<PeerData*> peer);
+	explicit Key(not_null<PeerData*> peer);
+	explicit Key(not_null<Data::ForumTopic*> topic);
 	Key(Settings::Tag settings);
 	Key(Downloads::Tag downloads);
 	Key(not_null<PollData*> poll, FullMsgId contextId);
 
 	PeerData *peer() const;
+	Data::ForumTopic *topic() const;
 	UserData *settingsSelf() const;
 	bool isDownloads() const;
 	PollData *poll() const;
@@ -55,6 +60,7 @@ private:
 	};
 	std::variant<
 		not_null<PeerData*>,
+		not_null<Data::ForumTopic*>,
 		Settings::Tag,
 		Downloads::Tag,
 		PollKey> _value;
@@ -123,6 +129,9 @@ public:
 
 	PeerData *peer() const;
 	PeerId migratedPeerId() const;
+	Data::ForumTopic *topic() const {
+		return key().topic();
+	}
 	UserData *settingsSelf() const {
 		return key().settingsSelf();
 	}
@@ -212,6 +221,11 @@ public:
 	void showBackFromStack(
 		const Window::SectionShow &params = Window::SectionShow()) override;
 
+	void removeFromStack(const std::vector<Section> &sections) const;
+
+	void takeStepData(not_null<Controller*> another);
+	std::any &stepDataReference();
+
 	rpl::lifetime &lifetime() {
 		return _lifetime;
 	}
@@ -224,6 +238,9 @@ private:
 	void updateSearchControllers(not_null<ContentMemento*> memento);
 	SearchQuery produceSearchQuery(const QString &query) const;
 	void setupMigrationViewer();
+	void setupTopicViewer();
+
+	void replaceWith(std::shared_ptr<Memento> memento);
 
 	not_null<WrapWidget*> _widget;
 	Key _key;
@@ -235,6 +252,9 @@ private:
 	std::unique_ptr<Api::DelayedSearchController> _searchController;
 	rpl::variable<bool> _seachEnabledByContent = false;
 	bool _searchStartsFocused = false;
+
+	// Data between sections based on steps.
+	std::any _stepData;
 
 	rpl::lifetime _lifetime;
 

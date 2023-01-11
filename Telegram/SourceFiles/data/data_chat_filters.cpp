@@ -16,9 +16,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_folder.h"
 #include "data/data_histories.h"
 #include "dialogs/dialogs_main_list.h"
+#include "history/history.h"
 #include "history/history_unread_things.h"
 #include "ui/ui_utility.h"
 #include "main/main_session.h"
+#include "main/main_account.h"
+#include "main/main_app_config.h"
 #include "apiwrap.h"
 
 namespace Data {
@@ -104,6 +107,8 @@ ChatFilter ChatFilter::FromTL(
 			std::move(list),
 			std::move(pinned),
 			{ never.begin(), never.end() });
+	}, [](const MTPDdialogFilterDefault &d) {
+		return ChatFilter();
 	});
 }
 
@@ -199,17 +204,19 @@ bool ChatFilter::contains(not_null<History*> history) const {
 	if (_never.contains(history)) {
 		return false;
 	}
+	const auto state = (_flags & (Flag::NoMuted | Flag::NoRead))
+		? history->chatListBadgesState()
+		: Dialogs::BadgesState();
 	return false
 		|| ((_flags & flag)
 			&& (!(_flags & Flag::NoMuted)
-				|| !history->mute()
-				|| (history->unreadMentions().has()
+				|| !history->muted()
+				|| (state.mention
 					&& history->folderKnown()
 					&& !history->folder()))
 			&& (!(_flags & Flag::NoRead)
-				|| history->unreadCount()
-				|| history->unreadMark()
-				|| history->unreadMentions().has()
+				|| state.unread
+				|| state.mention
 				|| history->fakeUnreadWhileOpened())
 			&& (!(_flags & Flag::NoArchived)
 				|| (history->folderKnown() && !history->folder())))
@@ -217,6 +224,7 @@ bool ChatFilter::contains(not_null<History*> history) const {
 }
 
 ChatFilters::ChatFilters(not_null<Session*> owner) : _owner(owner) {
+	_list.emplace_back();
 	crl::on_main(&owner->session(), [=] { load(); });
 }
 
@@ -225,10 +233,15 @@ ChatFilters::~ChatFilters() = default;
 not_null<Dialogs::MainList*> ChatFilters::chatsList(FilterId filterId) {
 	auto &pointer = _chatsLists[filterId];
 	if (!pointer) {
+		auto limit = rpl::single(rpl::empty_value()) | rpl::then(
+			_owner->session().account().appConfig().refreshed()
+		) | rpl::map([=] {
+			return _owner->pinnedChatsLimit(filterId);
+		});
 		pointer = std::make_unique<Dialogs::MainList>(
 			&_owner->session(),
 			filterId,
-			rpl::single(ChatFilter::kPinnedLimit));
+			_owner->maxPinnedChatsLimitValue(filterId));
 	}
 	return pointer.get();
 }
@@ -287,6 +300,9 @@ void ChatFilters::received(const QVector<MTPDialogFilter> &list) {
 		applyRemove(position);
 		changed = true;
 	}
+	if (!ranges::contains(begin(_list), end(_list), 0, &ChatFilter::id)) {
+		_list.insert(begin(_list), ChatFilter());
+	}
 	if (changed || !_loaded) {
 		_loaded = true;
 		_listChanged.fire({});
@@ -342,6 +358,16 @@ void ChatFilters::remove(FilterId id) {
 	}
 	applyRemove(i - begin(_list));
 	_listChanged.fire({});
+}
+
+void ChatFilters::moveAllToFront() {
+	const auto i = ranges::find(_list, FilterId(), &ChatFilter::id);
+	if (!_list.empty() && i == begin(_list)) {
+		return;
+	} else if (i != end(_list)) {
+		_list.erase(i);
+	}
+	_list.insert(begin(_list), ChatFilter());
 }
 
 void ChatFilters::applyRemove(int position) {
@@ -450,6 +476,7 @@ const ChatFilter &ChatFilters::applyUpdatedPinned(
 	const auto i = ranges::find(_list, id, &ChatFilter::id);
 	Assert(i != end(_list));
 
+	const auto limit = _owner->pinnedChatsLimit(id);
 	auto always = i->always();
 	auto pinned = std::vector<not_null<History*>>();
 	pinned.reserve(dialogs.size());
@@ -457,7 +484,7 @@ const ChatFilter &ChatFilters::applyUpdatedPinned(
 		if (const auto history = row.history()) {
 			if (always.contains(history)) {
 				pinned.push_back(history);
-			} else if (always.size() < ChatFilter::kPinnedLimit) {
+			} else if (always.size() < limit) {
 				always.insert(history);
 				pinned.push_back(history);
 			}
@@ -507,6 +534,32 @@ bool ChatFilters::archiveNeeded() const {
 
 const std::vector<ChatFilter> &ChatFilters::list() const {
 	return _list;
+}
+
+FilterId ChatFilters::defaultId() const {
+	return lookupId(0);
+}
+
+FilterId ChatFilters::lookupId(int index) const {
+	Expects(index >= 0 && index < _list.size());
+
+	if (_owner->session().user()->isPremium() || !_list.front().id()) {
+		return _list[index].id();
+	}
+	const auto i = ranges::find(_list, FilterId(0), &ChatFilter::id);
+	return !index
+		? FilterId()
+		: (index <= int(i - begin(_list)))
+		? _list[index - 1].id()
+		: _list[index].id();
+}
+
+bool ChatFilters::loaded() const {
+	return _loaded;
+}
+
+bool ChatFilters::has() const {
+	return _list.size() > 1;
 }
 
 rpl::producer<> ChatFilters::changed() const {

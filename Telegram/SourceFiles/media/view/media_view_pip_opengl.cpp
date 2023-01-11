@@ -307,6 +307,7 @@ void Pip::RendererGL::paintTransformedVideoFrame(
 	program->bind();
 	const auto nv12 = (data.format == Streaming::FrameFormat::NV12);
 	const auto yuv = data.yuv;
+	const auto nv12changed = (_chromaNV12 != nv12);
 
 	const auto upload = (_trackFrameIndex != data.index);
 	_trackFrameIndex = data.index;
@@ -331,13 +332,14 @@ void Pip::RendererGL::paintTransformedVideoFrame(
 			nv12 ? GL_RG : GL_ALPHA,
 			nv12 ? GL_RG : GL_ALPHA,
 			yuv->chromaSize,
-			_chromaSize,
+			nv12changed ? QSize() : _chromaSize,
 			yuv->u.stride / (nv12 ? 2 : 1),
 			yuv->u.data);
 		if (nv12) {
 			_chromaSize = yuv->chromaSize;
 			_f->glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 		}
+		_chromaNV12 = nv12;
 	}
 	if (!nv12) {
 		_f->glActiveTexture(GL_TEXTURE2);
@@ -495,7 +497,7 @@ void Pip::RendererGL::uploadTexture(
 void Pip::RendererGL::paintRadialLoading(
 		QRect inner,
 		float64 controlsShown) {
-	paintUsingRaster(_radialImage, inner, [&](Painter &&p) {
+	paintUsingRaster(_radialImage, inner, [&](QPainter &&p) {
 		// Raster renderer paints content, then radial loading, then fade.
 		// Here we paint fade together with the content, so we should emulate
 		// radial loading being under the fade.
@@ -519,14 +521,14 @@ void Pip::RendererGL::paintRadialLoading(
 }
 
 void Pip::RendererGL::paintPlayback(QRect outer, float64 shown) {
-	paintUsingRaster(_playbackImage, outer, [&](Painter &&p) {
+	paintUsingRaster(_playbackImage, outer, [&](QPainter &&p) {
 		const auto newOuter = QRect(QPoint(), outer.size());
 		_owner->paintPlaybackContent(p, newOuter, shown);
 	}, kPlaybackOffset, true);
 }
 
 void Pip::RendererGL::paintVolumeController(QRect outer, float64 shown) {
-	paintUsingRaster(_volumeControllerImage, outer, [&](Painter &&p) {
+	paintUsingRaster(_volumeControllerImage, outer, [&](QPainter &&p) {
 		const auto newOuter = QRect(QPoint(), outer.size());
 		_owner->paintVolumeControllerContent(p, newOuter, shown);
 	}, kVolumeControllerOffset, true);
@@ -696,7 +698,7 @@ void Pip::RendererGL::invalidateControls() {
 void Pip::RendererGL::paintUsingRaster(
 		Ui::GL::Image &image,
 		QRect rect,
-		Fn<void(Painter&&)> method,
+		Fn<void(QPainter&&)> method,
 		int bufferOffset,
 		bool transparent) {
 	auto raster = image.takeImage();
@@ -716,7 +718,7 @@ void Pip::RendererGL::paintUsingRaster(
 	if (transparent) {
 		raster.fill(Qt::transparent);
 	}
-	method(Painter(&raster));
+	method(QPainter(&raster));
 
 	_f->glActiveTexture(GL_TEXTURE0);
 

@@ -17,10 +17,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 
 namespace Api {
-
 namespace {
 
-MessageIdsList HistoryItemsFromTL(
+constexpr auto kSearchPerPage = 50;
+
+[[nodiscard]] MessageIdsList HistoryItemsFromTL(
 		not_null<Data::Session*> data,
 		const QVector<MTPMessage> &messages) {
 	auto result = MessageIdsList();
@@ -44,12 +45,13 @@ MessageIdsList HistoryItemsFromTL(
 
 } // namespace
 
-MessagesSearch::MessagesSearch(
-	not_null<Main::Session*> session,
-	not_null<History*> history)
-: _session(session)
-, _history(history)
-, _api(&session->mtp()) {
+MessagesSearch::MessagesSearch(not_null<History*> history)
+: _history(history) {
+}
+
+MessagesSearch::~MessagesSearch() {
+	_history->owner().histories().cancelRequest(
+		base::take(_searchInHistoryRequest));
 }
 
 void MessagesSearch::searchMessages(const QString &query, PeerData *from) {
@@ -81,7 +83,7 @@ void MessagesSearch::searchRequest() {
 		const auto flags = _from
 			? MTP_flags(MTPmessages_Search::Flag::f_from_id)
 			: MTP_flags(0);
-		_requestId = _api.request(MTPmessages_Search(
+		_requestId = _history->session().api().request(MTPmessages_Search(
 			flags,
 			_history->peer->input,
 			MTP_string(_query),
@@ -94,7 +96,7 @@ void MessagesSearch::searchRequest() {
 			MTP_int(0), // max_date
 			MTP_int(_offsetId), // offset_id
 			MTP_int(0), // add_offset
-			MTP_int(SearchPerPage),
+			MTP_int(kSearchPerPage),
 			MTP_int(0), // max_id
 			MTP_int(0), // min_id
 			MTP_long(0) // hash
@@ -105,17 +107,18 @@ void MessagesSearch::searchRequest() {
 		}).fail([=](const MTP::Error &error, mtpRequestId id) {
 			_searchInHistoryRequest = 0;
 
+			if (_requestId == id) {
+				_requestId = 0;
+			}
 			if (error.type() == u"SEARCH_QUERY_EMPTY"_q) {
 				_messagesFounds.fire({ 0, MessageIdsList(), nextToken });
-			} else if (_requestId == id) {
-				_requestId = 0;
 			}
 
 			finish();
 		}).send();
 		return _requestId;
 	};
-	_searchInHistoryRequest = _session->data().histories().sendRequest(
+	_searchInHistoryRequest = _history->owner().histories().sendRequest(
 		_history,
 		Data::Histories::RequestType::History,
 		std::move(callback));
@@ -128,7 +131,7 @@ void MessagesSearch::searchReceived(
 	if (requestId != _requestId) {
 		return;
 	}
-	auto &owner = _session->data();
+	auto &owner = _history->owner();
 	auto found = result.match([&](const MTPDmessages_messages &data) {
 		if (_requestId != 0) {
 			// Don't apply cached data!
@@ -149,20 +152,24 @@ void MessagesSearch::searchReceived(
 		const auto total = int(data.vcount().v);
 		return FoundMessages{ total, std::move(items), nextToken };
 	}, [&](const MTPDmessages_channelMessages &data) {
-		if (const auto channel = _history->peer->asChannel()) {
-			channel->ptsReceived(data.vpts().v);
-		} else {
-			LOG(("API Error: "
-				"received messages.channelMessages when no channel "
-				"was passed!"));
-		}
 		if (_requestId != 0) {
 			// Don't apply cached data!
 			owner.processUsers(data.vusers());
 			owner.processChats(data.vchats());
 		}
+		if (const auto channel = _history->peer->asChannel()) {
+			channel->ptsReceived(data.vpts().v);
+			if (_requestId != 0) {
+				// Don't apply cached data!
+				channel->processTopics(data.vtopics());
+			}
+		} else {
+			LOG(("API Error: "
+				"received messages.channelMessages when no channel "
+				"was passed!"));
+		}
 		auto items = HistoryItemsFromTL(&owner, data.vmessages().v);
-		const auto total = int(data.vmessages().v.size());
+		const auto total = int(data.vcount().v);
 		return FoundMessages{ total, std::move(items), nextToken };
 	}, [](const MTPDmessages_messagesNotModified &data) {
 		return FoundMessages{};

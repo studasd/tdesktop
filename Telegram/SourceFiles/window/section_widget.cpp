@@ -10,10 +10,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwidget.h"
 #include "ui/ui_utility.h"
 #include "ui/chat/chat_theme.h"
+#include "ui/toasts/common_toasts.h"
+#include "ui/painter.h"
+#include "boxes/premium_preview_box.h"
 #include "data/data_peer.h"
+#include "data/data_user.h"
+#include "data/data_document.h"
 #include "data/data_changes.h"
 #include "data/data_session.h"
 #include "data/data_cloud_themes.h"
+#include "data/data_message_reactions.h"
+#include "data/data_peer_values.h"
+#include "history/history.h"
+#include "history/history_item.h"
+#include "settings/settings_premium.h"
 #include "main/main_session.h"
 #include "window/section_memento.h"
 #include "window/window_slide_animation.h"
@@ -133,7 +143,9 @@ void SectionWidget::setGeometryWithTopMoved(
 void SectionWidget::showAnimated(
 		SlideDirection direction,
 		const SectionSlideParams &params) {
-	if (_showAnimation) return;
+	if (_showAnimation) {
+		return;
+	}
 
 	showChildren();
 	auto myContentCache = grabForShowAnimation(params);
@@ -150,6 +162,7 @@ void SectionWidget::showAnimated(
 	_showAnimation->setTopBarShadow(params.withTopBarShadow);
 	_showAnimation->setWithFade(params.withFade);
 	_showAnimation->setTopSkip(params.topSkip);
+	_showAnimation->setTopBarMask(params.topMask);
 	_showAnimation->start();
 
 	show();
@@ -174,20 +187,43 @@ void SectionWidget::PaintBackground(
 		not_null<Ui::ChatTheme*> theme,
 		not_null<QWidget*> widget,
 		QRect clip) {
-	Painter p(widget);
+	PaintBackground(
+		theme,
+		widget,
+		controller->content()->height(),
+		controller->content()->backgroundFromY(),
+		clip);
+}
 
+void SectionWidget::PaintBackground(
+		not_null<Ui::ChatTheme*> theme,
+		not_null<QWidget*> widget,
+		int fillHeight,
+		int fromy,
+		QRect clip) {
+	auto p = QPainter(widget);
+	if (fromy) {
+		p.translate(0, fromy);
+		clip = clip.translated(0, -fromy);
+	}
+	PaintBackground(p, theme, QSize(widget->width(), fillHeight), clip);
+}
+
+void SectionWidget::PaintBackground(
+		QPainter &p,
+		not_null<Ui::ChatTheme*> theme,
+		QSize fill,
+		QRect clip) {
 	const auto &background = theme->background();
 	if (background.colorForFill) {
 		p.fillRect(clip, *background.colorForFill);
 		return;
 	}
 	const auto &gradient = background.gradientForFill;
-	const auto fill = QSize(widget->width(), controller->content()->height());
-	auto fromy = controller->content()->backgroundFromY();
 	auto state = theme->backgroundState(fill);
 	const auto paintCache = [&](const Ui::CachedBackground &cache) {
 		const auto to = QRect(
-			QPoint(cache.x, fromy + cache.y),
+			QPoint(cache.x, cache.y),
 			cache.pixmap.size() / cIntRetinaFactor());
 		if (cache.waitingForNegativePattern) {
 			// While we wait for pattern being loaded we paint just gradient.
@@ -216,11 +252,15 @@ void SectionWidget::PaintBackground(
 	const auto goodNow = hasNow && (state.now.area == fill);
 	const auto useCache = goodNow || !gradient.isNull();
 	if (useCache) {
-		if (state.shown < 1. && !gradient.isNull()) {
+		const auto fade = (state.shown < 1. && !gradient.isNull());
+		if (fade) {
 			paintCache(state.was);
 			p.setOpacity(state.shown);
 		}
 		paintCache(state.now);
+		if (fade) {
+			p.setOpacity(1.);
+		}
 		return;
 	}
 	const auto &prepared = background.prepared;
@@ -246,12 +286,12 @@ void SectionWidget::PaintBackground(
 		const auto w = tiled.width() / cRetinaFactor();
 		const auto h = tiled.height() / cRetinaFactor();
 		const auto sx = qFloor(left / w);
-		const auto sy = qFloor((top - fromy) / h);
+		const auto sy = qFloor(top / h);
 		const auto cx = qCeil(right / w);
-		const auto cy = qCeil((bottom - fromy) / h);
+		const auto cy = qCeil(bottom / h);
 		for (auto i = sx; i < cx; ++i) {
 			for (auto j = sy; j < cy; ++j) {
-				p.drawImage(QPointF(i * w, fromy + j * h), tiled);
+				p.drawImage(QPointF(i * w, j * h), tiled);
 			}
 		}
 	} else {
@@ -259,15 +299,13 @@ void SectionWidget::PaintBackground(
 		const auto rects = Ui::ComputeChatBackgroundRects(
 			fill,
 			prepared.size());
-		auto to = rects.to;
-		to.moveTop(to.top() + fromy);
-		p.drawImage(to, prepared, rects.from);
+		p.drawImage(rects.to, prepared, rects.from);
 	}
 }
 
 void SectionWidget::paintEvent(QPaintEvent *e) {
 	if (_showAnimation) {
-		Painter p(this);
+		auto p = QPainter(this);
 		_showAnimation->paintContents(p);
 	}
 }
@@ -320,6 +358,37 @@ auto ChatThemeValueFromPeer(
 			? std::move(overriden.theme)
 			: std::move(cloud);
 	});
+}
+
+bool ShowSendPremiumError(
+		not_null<SessionController*> controller,
+		not_null<DocumentData*> document) {
+	if (!document->isPremiumSticker()
+		|| document->session().premium()) {
+		return false;
+	}
+	ShowStickerPreviewBox(controller, document);
+	return true;
+}
+
+bool ShowReactPremiumError(
+		not_null<SessionController*> controller,
+		not_null<HistoryItem*> item,
+		const Data::ReactionId &id) {
+	if (controller->session().premium()
+		|| ranges::contains(item->chosenReactions(), id)) {
+		return false;
+	}
+	const auto &list = controller->session().data().reactions().list(
+		Data::Reactions::Type::Active);
+	const auto i = ranges::find(list, id, &Data::Reaction::id);
+	if (i == end(list) || !i->premium) {
+		if (!id.custom()) {
+			return false;
+		}
+	}
+	ShowPremiumPreviewBox(controller, PremiumPreview::InfiniteReactions);
+	return true;
 }
 
 } // namespace Window

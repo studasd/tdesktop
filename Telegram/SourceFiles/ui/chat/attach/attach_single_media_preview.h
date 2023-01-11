@@ -32,12 +32,14 @@ public:
 		QImage preview,
 		bool animated,
 		bool sticker,
+		bool spoiler,
 		const QString &animatedPreviewPath,
 		AttachControls::Type type);
 
 protected:
+	bool supportsSpoilers() const override;
 	bool drawBackground() const override;
-	bool tryPaintAnimation(Painter &p) override;
+	bool tryPaintAnimation(QPainter &p) override;
 	bool isAnimatedPreviewReady() const override;
 
 private:

@@ -12,10 +12,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/labels.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/popup_menu.h"
+#include "ui/painter.h"
 #include "core/application.h"
 #include "calls/calls_instance.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "history/history_item_helpers.h"
 #include "mainwidget.h"
 #include "window/window_session_controller.h"
 #include "main/main_session.h"
@@ -108,7 +110,16 @@ public:
 		Fn<void()> updateCallback) override;
 	void rightActionStopLastRipple() override;
 
-	int nameIconWidth() const override {
+	int paintNameIconGetWidth(
+			Painter &p,
+			Fn<void()> repaint,
+			crl::time now,
+			int nameLeft,
+			int nameTop,
+			int nameWidth,
+			int availableWidth,
+			int outerWidth,
+			bool selected) override {
 		return 0;
 	}
 	QSize rightActionSize() const override {
@@ -199,7 +210,7 @@ void BoxController::Row::refreshStatus() {
 		return;
 	}
 	auto text = [this] {
-		auto time = ItemDateTime(_items.front()).time().toString(cTimeFormat());
+		auto time = QLocale().toString(ItemDateTime(_items.front()).time(), QLocale::ShortFormat);
 		auto today = QDateTime::currentDateTime().date();
 		if (_date == today) {
 			return tr::lng_call_box_status_today(tr::now, lt_time, time);
@@ -248,7 +259,7 @@ BoxController::Row::CallType BoxController::Row::ComputeCallType(
 
 void BoxController::Row::rightActionAddRipple(QPoint point, Fn<void()> updateCallback) {
 	if (!_actionRipple) {
-		auto mask = Ui::RippleAnimation::ellipseMask(
+		auto mask = Ui::RippleAnimation::EllipseMask(
 			QSize(_st->rippleAreaSize, _st->rippleAreaSize));
 		_actionRipple = std::make_unique<Ui::RippleAnimation>(
 			_st->ripple,

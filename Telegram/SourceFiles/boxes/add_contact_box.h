@@ -35,15 +35,11 @@ class LinkButton;
 class UserpicButton;
 } // namespace Ui
 
-constexpr auto kMaxBioLength = 70;
-
 enum class PeerFloodType {
 	Send,
 	InviteGroup,
 	InviteChannel,
 };
-
-[[nodiscard]] style::InputField CreateBioFieldStyle();
 
 [[nodiscard]] TextWithEntities PeerFloodErrorText(
 	not_null<Main::Session*> session,
@@ -99,6 +95,7 @@ public:
 		Group,
 		Channel,
 		Megagroup,
+		Forum,
 	};
 	GroupInfoBox(
 		QWidget*,
@@ -142,6 +139,7 @@ private:
 	mtpRequestId _creationRequestId = 0;
 	bool _creatingInviteLink = false;
 	ChannelData *_createdChannel = nullptr;
+	TimeId _ttlPeriod = 0;
 
 };
 
@@ -247,30 +245,5 @@ private:
 
 	mtpRequestId _requestId = 0;
 	QString _sentName;
-
-};
-
-class RevokePublicLinkBox final : public Ui::BoxContent {
-public:
-	RevokePublicLinkBox(
-		QWidget*,
-		not_null<Main::Session*> session,
-		Fn<void()> revokeCallback);
-
-protected:
-	void prepare() override;
-
-	void resizeEvent(QResizeEvent *e) override;
-
-private:
-	const not_null<Main::Session*> _session;
-
-	object_ptr<Ui::FlatLabel> _aboutRevoke;
-
-	class Inner;
-	QPointer<Inner> _inner;
-
-	int _innerTop = 0;
-	Fn<void()> _revokeCallback;
 
 };

@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/runtime_composer.h"
 
 struct HistoryDocumentNamed;
+struct HistoryDocumentThumbed;
 
 namespace Data {
 class DocumentMedia;
@@ -53,6 +54,7 @@ public:
 	}
 
 	TextWithEntities getCaption() const override;
+	void hideSpoilers() override;
 	bool needsBubble() const override {
 		return true;
 	}
@@ -68,7 +70,7 @@ public:
 		const PaintContext &context,
 		const QRect &geometry,
 		RectParts sides,
-		RectParts corners,
+		Ui::BubbleRounding rounding,
 		float64 highlightOpacity,
 		not_null<uint64*> cacheKey,
 		not_null<QPixmap*> cache) const override;
@@ -95,9 +97,9 @@ protected:
 
 private:
 	struct StateFromPlayback {
-		int statusSize = 0;
+		int64 statusSize = 0;
 		bool showPause = false;
-		int realDuration = 0;
+		TimeId realDuration = 0;
 	};
 	enum class LayoutMode {
 		Full,
@@ -108,7 +110,8 @@ private:
 		Painter &p,
 		const PaintContext &context,
 		int width,
-		LayoutMode mode) const;
+		LayoutMode mode,
+		Ui::BubbleRounding outsideRounding) const;
 	[[nodiscard]] TextState textState(
 		QPoint point,
 		QSize layout,
@@ -122,9 +125,22 @@ private:
 	QSize countCurrentSize(int newWidth) override;
 
 	void createComponents(bool caption);
-	void fillNamedFromData(HistoryDocumentNamed *named);
+	void fillNamedFromData(not_null<HistoryDocumentNamed*> named);
 
-	void setStatusSize(int newSize, qint64 realDuration = 0) const;
+	[[nodiscard]] Ui::BubbleRounding thumbRounding(
+		LayoutMode mode,
+		Ui::BubbleRounding outsideRounding) const;
+	void validateThumbnail(
+		not_null<const HistoryDocumentThumbed*> thumbed,
+		int size,
+		Ui::BubbleRounding rounding) const;
+	void fillThumbnailOverlay(
+		QPainter &p,
+		QRect rect,
+		Ui::BubbleRounding rounding,
+		const PaintContext &context) const;
+
+	void setStatusSize(int64 newSize, TimeId realDuration = 0) const;
 	bool updateStatusText() const; // returns showPause
 
 	[[nodiscard]] bool downloadInCorner() const;
@@ -141,6 +157,25 @@ private:
 	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
 	mutable QImage _iconCache;
 	mutable QImage _cornerDownloadCache;
+
+	class TooltipFilename {
+	public:
+		void setElided(bool value);
+		void setMoused(bool value);
+		void setTooltipText(QString text);
+		void updateTooltipForLink(ClickHandler *link);
+		void updateTooltipForState(TextState &state) const;
+	private:
+		ClickHandler *_lastLink = nullptr;
+		bool _elided = false;
+		bool _moused = false;
+		bool _stale = false;
+		QString _tooltip;
+	};
+
+	mutable TooltipFilename _tooltipFilename;
+
+	bool _transcribedRound = false;
 
 };
 

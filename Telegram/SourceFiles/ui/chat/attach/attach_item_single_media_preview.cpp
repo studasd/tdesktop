@@ -190,11 +190,15 @@ void ItemSingleMediaPreview::startStreamedPlayer() {
 	_streamed->play(options);
 }
 
+bool ItemSingleMediaPreview::supportsSpoilers() const {
+	return false; // We are not allowed to change existing spoiler setting.
+}
+
 bool ItemSingleMediaPreview::drawBackground() const {
 	return true; // A sticker can't be here.
 }
 
-bool ItemSingleMediaPreview::tryPaintAnimation(Painter &p) {
+bool ItemSingleMediaPreview::tryPaintAnimation(QPainter &p) {
 	checkStreamedIsStarted();
 	if (_streamed
 		&& _streamed->player().ready()

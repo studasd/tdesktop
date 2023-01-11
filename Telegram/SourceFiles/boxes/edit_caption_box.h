@@ -27,7 +27,6 @@ class AbstractSinglePreview;
 class InputField;
 class EmojiButton;
 class VerticalLayout;
-class FadeShadow;
 enum class AlbumType;
 } // namespace Ui
 
@@ -51,9 +50,9 @@ private:
 	void rebuildPreview();
 	void setupEditEventHandler();
 	void setupPhotoEditorEventHandler();
-	void setupShadows();
 	void setupField();
 	void setupControls();
+	void setInitialText();
 
 	void updateBoxSize();
 	void captionResized();
@@ -64,11 +63,14 @@ private:
 
 	void setupDragArea();
 
+	bool validateLength(const QString &text) const;
+	void applyChanges();
 	void save();
 
 	bool fileFromClipboard(not_null<const QMimeData*> data);
 
-	int errorTopSkip() const;
+	[[nodiscard]] int errorTopSkip() const;
+	[[nodiscard]] bool hasSpoiler() const;
 
 	bool setPreparedList(Ui::PreparedList &&list);
 
@@ -81,9 +83,9 @@ private:
 	const base::unique_qptr<Ui::ScrollArea> _scroll;
 	const base::unique_qptr<Ui::InputField> _field;
 	const base::unique_qptr<Ui::EmojiButton> _emojiToggle;
-	const base::unique_qptr<Ui::FadeShadow> _topShadow, _bottomShadow;
 
 	base::unique_qptr<Ui::AbstractSinglePreview> _content;
+	Fn<bool()> _previewHasSpoiler;
 	base::unique_qptr<ChatHelpers::TabbedPanel> _emojiPanel;
 	base::unique_qptr<QObject> _emojiFilter;
 

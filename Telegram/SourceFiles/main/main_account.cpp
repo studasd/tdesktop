@@ -169,7 +169,9 @@ void Account::createSession(
 			MTPint(), // bot_info_version
 			MTPVector<MTPRestrictionReason>(),
 			MTPstring(), // bot_inline_placeholder
-			MTPstring()), // lang_code
+			MTPstring(), // lang_code
+			MTPEmojiStatus(),
+			MTPVector<MTPUsername>()),
 		serialized,
 		streamVersion,
 		std::move(settings));
@@ -597,6 +599,16 @@ void Account::destroyStaleAuthorizationKeys() {
 			resetAuthorizationKeys();
 			return;
 		}
+	}
+}
+
+void Account::setHandleLoginCode(Fn<void(QString)> callback) {
+	_handleLoginCode = std::move(callback);
+}
+
+void Account::handleLoginCode(const QString &code) const {
+	if (_handleLoginCode) {
+		_handleLoginCode(code);
 	}
 }
 

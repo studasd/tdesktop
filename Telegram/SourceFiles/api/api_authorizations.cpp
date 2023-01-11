@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unixtime.h"
 #include "core/changelogs.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "lang/lang_keys.h"
 
 namespace Api {
@@ -33,8 +34,8 @@ Authorizations::Entry ParseEntry(const MTPDauthorization &data) {
 		|| isTest;
 
 	const auto appName = isDesktop
-		? QString("Telegram Desktop%1").arg(isTest ? " (GitHub)" : QString())
-		: qs(data.vapp_name());// +qsl(" for ") + qs(d.vplatform());
+		? u"Telegram Desktop%1"_q.arg(isTest ? " (GitHub)" : QString())
+		: qs(data.vapp_name());// + u" for "_q + qs(d.vplatform());
 	const auto appVer = [&] {
 		const auto version = qs(data.vapp_version());
 		if (isDesktop) {
@@ -78,12 +79,16 @@ Authorizations::Entry ParseEntry(const MTPDauthorization &data) {
 		const auto nowDate = now.date();
 		const auto lastDate = lastTime.date();
 		if (lastDate == nowDate) {
-			result.active = lastTime.toString(cTimeFormat());
+			result.active = QLocale().toString(
+				lastTime.time(),
+				QLocale::ShortFormat);
 		} else if (lastDate.year() == nowDate.year()
 			&& lastDate.weekNumber() == nowDate.weekNumber()) {
 			result.active = langDayOfWeek(lastDate);
 		} else {
-			result.active = lastDate.toString(cDateFormat());
+			result.active = QLocale().toString(
+				lastDate,
+				QLocale::ShortFormat);
 		}
 	}
 	result.location = country;

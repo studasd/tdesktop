@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "intro/intro_signup.h"
 #include "intro/intro_password_check.h"
+#include "core/file_utilities.h"
 #include "core/update_checker.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
@@ -99,8 +100,18 @@ CodeWidget::CodeWidget(
 
 	_code->setDigitsCountMax(getData()->codeLength);
 
-	setTitleText(rpl::single(Ui::FormatPhone(getData()->phone)));
 	updateDescText();
+	setTitleText(_isFragment.value(
+	) | rpl::map([=](bool isFragment) {
+		return !isFragment
+			? rpl::single(Ui::FormatPhone(getData()->phone))
+			: tr::lng_intro_fragment_title();
+	}) | rpl::flatten_latest());
+
+	account->setHandleLoginCode([=](const QString &code) {
+		_code->setText(code);
+		submitCode();
+	});
 }
 
 void CodeWidget::refreshLang() {
@@ -117,9 +128,18 @@ int CodeWidget::errorTop() const {
 
 void CodeWidget::updateDescText() {
 	const auto byTelegram = getData()->codeByTelegram;
+	const auto isFragment = !getData()->codeByFragmentUrl.isEmpty();
+	_isFragment = isFragment;
 	setDescriptionText(
-		(byTelegram ? tr::lng_code_from_telegram : tr::lng_code_desc)(
-			Ui::Text::RichLangValue));
+		isFragment
+			? tr::lng_intro_fragment_about(
+				lt_phone_number,
+				rpl::single(TextWithEntities{
+					.text = Ui::FormatPhone(getData()->phone)
+				}),
+				Ui::Text::RichLangValue)
+			: (byTelegram ? tr::lng_code_from_telegram : tr::lng_code_desc)(
+				Ui::Text::RichLangValue));
 	if (getData()->codeByTelegram) {
 		_noTelegramCode->show();
 		_callTimer.cancel();
@@ -145,18 +165,18 @@ void CodeWidget::updateCallText() {
 				return tr::lng_code_call(
 					tr::now,
 					lt_minutes,
-					qsl("%1:%2"
+					(u"%1:%2"_q
 					).arg(_callTimeout / 3600
 					).arg((_callTimeout / 60) % 60, 2, 10, QChar('0')),
 					lt_seconds,
-					qsl("%1").arg(_callTimeout % 60, 2, 10, QChar('0')));
+					u"%1"_q.arg(_callTimeout % 60, 2, 10, QChar('0')));
 			} else {
 				return tr::lng_code_call(
 					tr::now,
 					lt_minutes,
 					QString::number(_callTimeout / 60),
 					lt_seconds,
-					qsl("%1").arg(_callTimeout % 60, 2, 10, QChar('0')));
+					u"%1"_q.arg(_callTimeout % 60, 2, 10, QChar('0')));
 			}
 		} break;
 		case CallStatus::Calling:
@@ -204,6 +224,7 @@ void CodeWidget::activate() {
 
 void CodeWidget::finished() {
 	Step::finished();
+	account().setHandleLoginCode(nullptr);
 	_checkRequestTimer.cancel();
 	_callTimer.cancel();
 	apiClear();
@@ -277,13 +298,13 @@ void CodeWidget::codeSubmitFail(const MTP::Error &error) {
 	stopCheck();
 	_sentRequest = 0;
 	auto &err = error.type();
-	if (err == qstr("PHONE_NUMBER_INVALID")
-		|| err == qstr("PHONE_CODE_EXPIRED")
-		|| err == qstr("PHONE_NUMBER_BANNED")) { // show error
+	if (err == u"PHONE_NUMBER_INVALID"_q
+		|| err == u"PHONE_CODE_EXPIRED"_q
+		|| err == u"PHONE_NUMBER_BANNED"_q) { // show error
 		goBack();
-	} else if (err == qstr("PHONE_CODE_EMPTY") || err == qstr("PHONE_CODE_INVALID")) {
+	} else if (err == u"PHONE_CODE_EMPTY"_q || err == u"PHONE_CODE_INVALID"_q) {
 		showCodeError(tr::lng_bad_code());
-	} else if (err == qstr("SESSION_PASSWORD_NEEDED")) {
+	} else if (err == u"SESSION_PASSWORD_NEEDED"_q) {
 		_checkRequestTimer.callEach(1000);
 		_sentRequest = api().request(MTPaccount_GetPassword(
 		)).done([=](const MTPaccount_Password &result) {
@@ -300,7 +321,7 @@ void CodeWidget::codeSubmitFail(const MTP::Error &error) {
 
 void CodeWidget::codeChanged() {
 	hideError();
-	submit();
+	submitCode();
 }
 
 void CodeWidget::sendCall() {
@@ -346,7 +367,7 @@ void CodeWidget::gotPassword(const MTPaccount_Password &result) {
 		LOG(("API Error: No current password received on login."));
 		_code->setFocus();
 		return;
-	} else if (!getData()->pwdState.request) {
+	} else if (!getData()->pwdState.hasPassword) {
 		const auto callback = [=](Fn<void()> &&close) {
 			Core::UpdateApplication();
 			close();
@@ -362,10 +383,18 @@ void CodeWidget::gotPassword(const MTPaccount_Password &result) {
 }
 
 void CodeWidget::submit() {
+	if (getData()->codeByFragmentUrl.isEmpty()) {
+		submitCode();
+	} else {
+		File::OpenUrl(getData()->codeByFragmentUrl);
+	}
+}
+
+void CodeWidget::submitCode() {
 	const auto text = QString(
 		_code->getLastText()
 	).remove(
-		QRegularExpression("[^\\d]")
+		TextUtilities::RegExpDigitsExclude()
 	).mid(0, getData()->codeLength);
 
 	if (_sentRequest
@@ -381,14 +410,32 @@ void CodeWidget::submit() {
 	_sentCode = text;
 	getData()->pwdState = Core::CloudPasswordState();
 	_sentRequest = api().request(MTPauth_SignIn(
+		MTP_flags(MTPauth_SignIn::Flag::f_phone_code),
 		MTP_string(getData()->phone),
 		MTP_bytes(getData()->phoneHash),
-		MTP_string(_sentCode)
+		MTP_string(_sentCode),
+		MTPEmailVerification()
 	)).done([=](const MTPauth_Authorization &result) {
 		codeSubmitDone(result);
 	}).fail([=](const MTP::Error &error) {
 		codeSubmitFail(error);
 	}).handleFloodErrors().send();
+}
+
+rpl::producer<QString> CodeWidget::nextButtonText() const {
+	return _isFragment.value(
+	) | rpl::map([=](bool isFragment) {
+		return isFragment
+			? tr::lng_intro_fragment_button()
+			: Step::nextButtonText();
+	}) | rpl::flatten_latest();
+}
+
+rpl::producer<const style::RoundButton*> CodeWidget::nextButtonStyle() const {
+	return _isFragment.value(
+	) | rpl::map([](bool isFragment) {
+		return isFragment ? &st::introFragmentButton : nullptr;
+	});
 }
 
 void CodeWidget::noTelegramCode() {

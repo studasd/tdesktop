@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/abstract_box.h"
 #include "ui/chat/attach/attach_prepare.h"
 #include "ui/chat/attach/attach_send_files_way.h"
+#include "ui/widgets/popup_menu.h"
 #include "storage/localimageloader.h"
 #include "storage/storage_media_prepare.h"
 
@@ -36,6 +37,7 @@ class EmojiButton;
 class AlbumPreview;
 class VerticalLayout;
 class FlatLabel;
+class PopupMenu;
 } // namespace Ui
 
 namespace Window {
@@ -57,7 +59,7 @@ public:
 		not_null<Window::SessionController*> controller,
 		Ui::PreparedList &&list,
 		const TextWithTags &caption,
-		SendLimit limit,
+		not_null<PeerData*> peer,
 		Api::SendType sendType,
 		SendMenu::Type sendMenuType);
 
@@ -106,7 +108,8 @@ private:
 		[[nodiscard]] rpl::producer<int> itemModifyRequest() const;
 
 		void setSendWay(Ui::SendFilesWay way);
-		void applyAlbumOrder();
+		void toggleSpoilers(bool enabled);
+		void applyChanges();
 
 	private:
 		base::unique_qptr<Ui::RpWidget> _preview;
@@ -117,16 +120,24 @@ private:
 		bool _isSingleMedia = false;
 
 	};
+
 	void initSendWay();
 	void initPreview();
+	[[nodiscard]] bool hasSendMenu() const;
+	[[nodiscard]] bool hasSpoilerMenu() const;
+	[[nodiscard]] bool allWithSpoilers();
+	void addMenuButton();
+	void applyBlockChanges();
+	void toggleSpoilers(bool enabled);
 
-	void refreshControls();
+	bool validateLength(const QString &text) const;
+	void refreshButtons();
+	void refreshControls(bool initial = false);
 	void setupSendWayControls();
 	void setupCaption();
-	void setupShadows();
 
 	void setupEmojiPanel();
-	void updateSendWayControlsVisibility();
+	void updateSendWayControls();
 	void updateEmojiPanelGeometry();
 	void emojiFilterForGeometry(not_null<QEvent*> event);
 
@@ -152,7 +163,7 @@ private:
 	void pushBlock(int from, int till);
 
 	void openDialogToAddFileToAlbum();
-	void refreshAllAfterChanges(int fromItem);
+	void refreshAllAfterChanges(int fromItem, Fn<void()> perform = nullptr);
 
 	void enqueueNextPrepare();
 	void addPreparedAsyncFile(Ui::PreparedFile &&file);
@@ -168,6 +179,7 @@ private:
 
 	SendLimit _sendLimit = SendLimit::Many;
 	SendMenu::Type _sendMenuType = SendMenu::Type();
+	bool _allowEmojiWithoutPremium = false;
 
 	Fn<void(
 		Ui::PreparedList &&list,
@@ -179,12 +191,14 @@ private:
 	bool _confirmed = false;
 
 	object_ptr<Ui::InputField> _caption = { nullptr };
+	TextWithTags _prefilledCaptionText;
 	object_ptr<Ui::EmojiButton> _emojiToggle = { nullptr };
 	base::unique_qptr<ChatHelpers::TabbedPanel> _emojiPanel;
 	base::unique_qptr<QObject> _emojiFilter;
 
 	object_ptr<Ui::Checkbox> _groupFiles = { nullptr };
 	object_ptr<Ui::Checkbox> _sendImagesAsPhotos = { nullptr };
+	object_ptr<Ui::Checkbox> _wayRemember = { nullptr };
 	object_ptr<Ui::FlatLabel> _hintLabel = { nullptr };
 	rpl::variable<Ui::SendFilesWay> _sendWay = Ui::SendFilesWay();
 
@@ -196,6 +210,8 @@ private:
 	std::vector<Block> _blocks;
 	Fn<void()> _whenReadySend;
 	bool _preparing = false;
+
+	base::unique_qptr<Ui::PopupMenu> _menu;
 
 	QPointer<Ui::RoundButton> _send;
 	QPointer<Ui::RoundButton> _addFile;

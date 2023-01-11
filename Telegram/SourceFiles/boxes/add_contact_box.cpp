@@ -11,24 +11,30 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/random.h"
 #include "ui/boxes/confirm_box.h"
 #include "boxes/peer_list_controllers.h"
+#include "boxes/premium_limits_box.h"
 #include "boxes/peers/add_participants_box.h"
 #include "boxes/peers/edit_peer_common.h"
 #include "boxes/peers/edit_participant_box.h"
 #include "boxes/peers/edit_participants_box.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "chat_helpers/emoji_suggestions_widget.h"
 #include "countries/countries_instance.h" // Countries::ExtractPhoneCode.
 #include "window/window_session_controller.h"
+#include "menu/menu_ttl.h"
+#include "ui/controls/userpic_button.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/toast/toast.h"
-#include "ui/special_buttons.h"
-#include "ui/special_fields.h"
+#include "ui/widgets/fields/special_fields.h"
+#include "ui/widgets/popup_menu.h"
+#include "ui/text/format_values.h"
 #include "ui/text/text_options.h"
 #include "ui/text/text_utilities.h"
 #include "ui/unread_badge.h"
 #include "ui/ui_utility.h"
+#include "ui/painter.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_user.h"
@@ -39,8 +45,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_invite_links.h"
 #include "api/api_peer_photo.h"
 #include "main/main_session.h"
-#include "facades.h"
+#include "styles/style_info.h"
 #include "styles/style_layers.h"
+#include "styles/style_menu_icons.h"
 #include "styles/style_boxes.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_widgets.h"
@@ -51,19 +58,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace {
 
 bool IsValidPhone(QString phone) {
-	phone = phone.replace(QRegularExpression(qsl("[^\\d]")), QString());
+	phone = phone.replace(QRegularExpression(u"[^\\d]"_q), QString());
 	return (phone.length() >= 8)
-		|| (phone == qsl("333"))
-		|| (phone.startsWith(qsl("42"))
+		|| (phone == u"333"_q)
+		|| (phone.startsWith(u"42"_q)
 			&& (phone.length() == 2
 				|| phone.length() == 5
 				|| phone.length() == 6
-				|| phone == qsl("4242")));
+				|| phone == u"4242"_q));
 }
 
 void ChatCreateDone(
 		not_null<Window::SessionNavigation*> navigation,
 		QImage image,
+		TimeId ttlPeriod,
 		const MTPUpdates &updates) {
 	navigation->session().api().applyUpdates(updates);
 
@@ -95,7 +103,10 @@ void ChatCreateDone(
 					chat,
 					std::move(image));
 			}
-			Ui::showPeerHistory(chat, ShowAtUnreadMsgId);
+			if (ttlPeriod) {
+				chat->setMessagesTTL(ttlPeriod);
+			}
+			navigation->showPeerHistory(chat);
 		};
 	if (!success) {
 		LOG(("API Error: chat not found in updates "
@@ -105,20 +116,12 @@ void ChatCreateDone(
 
 } // namespace
 
-style::InputField CreateBioFieldStyle() {
-	auto result = st::newGroupDescription;
-	result.textMargins.setRight(
-		st::boxTextFont->spacew
-		+ st::boxTextFont->width(QString::number(kMaxBioLength)));
-	return result;
-}
-
 TextWithEntities PeerFloodErrorText(
 		not_null<Main::Session*> session,
 		PeerFloodType type) {
 	const auto link = Ui::Text::Link(
 		tr::lng_cant_more_info(tr::now),
-		session->createInternalLinkFull(qsl("spambot")));
+		session->createInternalLinkFull(u"spambot"_q));
 	return ((type == PeerFloodType::InviteGroup)
 		? tr::lng_cant_invite_not_contact
 		: tr::lng_cant_send_to_not_contact)(
@@ -206,48 +209,6 @@ void ShowAddParticipantsError(
 	Ui::show(Ui::MakeInformBox(text), Ui::LayerOption::KeepOther);
 }
 
-class RevokePublicLinkBox::Inner : public TWidget {
-public:
-	Inner(
-		QWidget *parent,
-		not_null<Main::Session*> session,
-		Fn<void()> revokeCallback);
-
-protected:
-	void mouseMoveEvent(QMouseEvent *e) override;
-	void mousePressEvent(QMouseEvent *e) override;
-	void mouseReleaseEvent(QMouseEvent *e) override;
-	void paintEvent(QPaintEvent *e) override;
-
-private:
-	struct ChatRow {
-		ChatRow(not_null<PeerData*> peer) : peer(peer) {
-		}
-
-		not_null<PeerData*> peer;
-		mutable std::shared_ptr<Data::CloudImageView> userpic;
-		Ui::Text::String name, status;
-	};
-	void paintChat(Painter &p, const ChatRow &row, bool selected) const;
-	void updateSelected();
-
-	const not_null<Main::Session*> _session;
-	MTP::Sender _api;
-
-	PeerData *_selected = nullptr;
-	PeerData *_pressed = nullptr;
-
-	std::vector<ChatRow> _rows;
-
-	int _rowsTop = 0;
-	int _rowHeight = 0;
-	int _revokeWidth = 0;
-
-	Fn<void()> _revokeCallback;
-	mtpRequestId _revokeRequestId = 0;
-
-};
-
 AddContactBox::AddContactBox(
 	QWidget*,
 	not_null<Main::Session*> session)
@@ -317,7 +278,7 @@ void AddContactBox::setInnerFocus() {
 void AddContactBox::paintEvent(QPaintEvent *e) {
 	BoxContent::paintEvent(e);
 
-	Painter p(this);
+	auto p = QPainter(this);
 	if (_retrying) {
 		p.setPen(st::boxTextFg);
 		p.setFont(st::boxTextFont);
@@ -413,6 +374,8 @@ void AddContactBox::save() {
 		firstName = lastName;
 		lastName = QString();
 	}
+	const auto weak = Ui::MakeWeak(this);
+	const auto session = _session;
 	_sentName = firstName;
 	_contactId = base::RandomValue<uint64>();
 	_addRequest = _session->api().request(MTPcontacts_ImportContacts(
@@ -423,18 +386,17 @@ void AddContactBox::save() {
 				MTP_string(phone),
 				MTP_string(firstName),
 				MTP_string(lastName)))
-	)).done(crl::guard(this, [=](
+	)).done(crl::guard(weak, [=](
 			const MTPcontacts_ImportedContacts &result) {
-		const auto &data = result.match([](
-				const auto &data) -> const MTPDcontacts_importedContacts& {
-			return data;
-		});
-		_session->data().processUsers(data.vusers());
-
+		const auto &data = result.data();
+		session->data().processUsers(data.vusers());
+		if (!weak) {
+			return;
+		}
 		const auto extractUser = [&](const MTPImportedContact &data) {
 			return data.match([&](const MTPDimportedContact &data) {
 				return (data.vclient_id().v == _contactId)
-					? _session->data().userLoaded(data.vuser_id())
+					? session->data().userLoaded(data.vuser_id())
 					: nullptr;
 			});
 		};
@@ -444,9 +406,13 @@ void AddContactBox::save() {
 			: extractUser(list.front());
 		if (user) {
 			if (user->isContact() || user->session().supportMode()) {
-				Ui::showPeerHistory(user, ShowAtTheEndMsgId);
+				if (const auto window = user->session().tryResolveWindow()) {
+					window->showPeerHistory(user);
+				}
 			}
-			Ui::hideLayer();
+			if (weak) { // showPeerHistory could close the box.
+				getDelegate()->hideLayer();
+			}
 		} else if (isBoxShown()) {
 			hideChildren();
 			_retrying = true;
@@ -499,11 +465,9 @@ void GroupInfoBox::prepare() {
 	_photo.create(
 		this,
 		&_navigation->parentController()->window(),
-		((_type == Type::Channel)
-			? tr::lng_create_channel_crop
-			: tr::lng_create_group_crop)(tr::now),
-		Ui::UserpicButton::Role::ChangePhoto,
+		Ui::UserpicButton::Role::ChoosePhoto,
 		st::defaultUserpicButton);
+	_photo->showCustomOnChosen();
 	_title.create(
 		this,
 		st::defaultInputField,
@@ -558,6 +522,39 @@ void GroupInfoBox::prepare() {
 			: tr::lng_create_group_next()),
 		[=] { submit(); });
 	addButton(tr::lng_cancel(), [this] { closeBox(); });
+
+	if (_type == Type::Group) {
+		const auto top = addTopButton(st::infoTopBarMenu);
+		const auto menu =
+			top->lifetime().make_state<base::unique_qptr<Ui::PopupMenu>>();
+		top->setClickedCallback([=] {
+			*menu = base::make_unique_q<Ui::PopupMenu>(
+				top,
+				st::popupMenuWithIcons);
+
+			const auto text = tr::lng_manage_messages_ttl_menu(tr::now)
+				+ (_ttlPeriod
+					? ('\t' + Ui::FormatTTLTiny(_ttlPeriod))
+					: QString());
+			(*menu)->addAction(
+				text,
+				[=, show = std::make_shared<Ui::BoxShow>(this)] {
+					show->showBox(Box(TTLMenu::TTLBox, TTLMenu::Args{
+						.show = show,
+						.startTtl = _ttlPeriod,
+						.about = nullptr,
+						.callback = crl::guard(this, [=](
+								TimeId t,
+								Fn<void()> close) {
+							_ttlPeriod = t;
+							close();
+						}),
+					}));
+				}, &st::menuIconTTL);
+			(*menu)->popup(QCursor::pos());
+			return true;
+		});
+	}
 
 	updateMaxHeight();
 }
@@ -636,14 +633,19 @@ void GroupInfoBox::createGroup(
 		return;
 	}
 	_creationRequestId = _api.request(MTPmessages_CreateChat(
+		MTP_flags(_ttlPeriod
+			? MTPmessages_CreateChat::Flag::f_ttl_period
+			: MTPmessages_CreateChat::Flags(0)),
 		MTP_vector<TLUsers>(inputs),
-		MTP_string(title)
+		MTP_string(title),
+		MTP_int(_ttlPeriod)
 	)).done([=](const MTPUpdates &result) {
 		auto image = _photo->takeResultImage();
+		const auto period = _ttlPeriod;
 		const auto navigation = _navigation;
 
-		Ui::hideLayer(); // Destroys 'this'.
-		ChatCreateDone(navigation, std::move(image), result);
+		getDelegate()->hideLayer(); // Destroys 'this'.
+		ChatCreateDone(navigation, std::move(image), period, result);
 	}).fail([=](const MTP::Error &error) {
 		const auto &type = error.type();
 		_creationRequestId = 0;
@@ -719,15 +721,19 @@ void GroupInfoBox::createChannel(
 		const QString &description) {
 	Expects(!_creationRequestId);
 
-	const auto flags = (_type == Type::Megagroup)
-		? MTPchannels_CreateChannel::Flag::f_megagroup
-		: MTPchannels_CreateChannel::Flag::f_broadcast;
+	const auto flags = ((_type == Type::Megagroup)
+			? MTPchannels_CreateChannel::Flag::f_megagroup
+			: MTPchannels_CreateChannel::Flag::f_broadcast)
+		| (_ttlPeriod
+			? MTPchannels_CreateChannel::Flag::f_ttl_period
+			: MTPchannels_CreateChannel::Flags(0));
 	_creationRequestId = _api.request(MTPchannels_CreateChannel(
 		MTP_flags(flags),
 		MTP_string(title),
 		MTP_string(description),
 		MTPInputGeoPoint(), // geo_point
-		MTPstring() // address
+		MTPstring(), // address
+		MTP_int((_type == Type::Megagroup) ? _ttlPeriod : 0)
 	)).done([=](const MTPUpdates &result) {
 		_navigation->session().api().applyUpdates(result);
 
@@ -760,6 +766,9 @@ void GroupInfoBox::createChannel(
 						channel,
 						std::move(image));
 				}
+				if (_ttlPeriod && channel->isMegagroup()) {
+					channel->setMessagesTTL(_ttlPeriod);
+				}
 				channel->session().api().requestFullPeer(channel);
 				_createdChannel = channel;
 				checkInviteLink();
@@ -782,7 +791,7 @@ void GroupInfoBox::createChannel(
 				Ui::LayerOption::CloseOther);
 		} else if (type == u"CHANNELS_TOO_MUCH"_q) {
 			controller->show(
-				Ui::MakeInformBox(tr::lng_cant_do_this()),
+				Box(ChannelsLimitBox, &controller->session()),
 				Ui::LayerOption::CloseOther); // TODO
 		}
 	}).send();
@@ -891,7 +900,7 @@ SetupChannelBox::SetupChannelBox(
 	this,
 	st::setupChannelLink,
 	nullptr,
-	channel->username,
+	channel->username(),
 	channel->session().createInternalLink(QString()))
 , _checkTimer([=] { check(); }) {
 }
@@ -942,10 +951,10 @@ void SetupChannelBox::prepare() {
 }
 
 void SetupChannelBox::setInnerFocus() {
-	if (_link->isHidden()) {
-		setFocus();
-	} else {
+	if (!_link->isHidden()) {
 		_link->setFocusFast();
+	} else {
+		BoxContent::setInnerFocus();
 	}
 }
 
@@ -1104,7 +1113,9 @@ void SetupChannelBox::mousePressEvent(QMouseEvent *e) {
 		return;
 	} else if (!_channel->inviteLink().isEmpty()) {
 		QGuiApplication::clipboard()->setText(_channel->inviteLink());
-		Ui::Toast::Show(tr::lng_create_channel_link_copied(tr::now));
+		Ui::Toast::Show(
+			Ui::BoxShow(this).toastParent(),
+			tr::lng_create_channel_link_copied(tr::now));
 	} else if (_channel->isFullLoaded() && !_creatingInviteLink) {
 		_creatingInviteLink = true;
 		_channel->session().api().inviteLinks().create(_channel);
@@ -1134,7 +1145,7 @@ void SetupChannelBox::save() {
 			MTP_string(_sentUsername)
 		)).done([=] {
 			_channel->setName(
-				TextUtilities::SingleLine(_channel->name),
+				TextUtilities::SingleLine(_channel->name()),
 				_sentUsername);
 			closeBox();
 		}).fail([=](const MTP::Error &error) {
@@ -1207,7 +1218,7 @@ void SetupChannelBox::handleChange() {
 
 void SetupChannelBox::check() {
 	if (_checkRequestId) {
-		_channel->session().api().request(_checkRequestId).cancel();
+		_api.request(_checkRequestId).cancel();
 	}
 	const auto link = _link->text().trimmed();
 	if (link.size() >= Ui::EditPeer::kMinUsernameLength) {
@@ -1218,7 +1229,7 @@ void SetupChannelBox::check() {
 		)).done([=](const MTPBool &result) {
 			_checkRequestId = 0;
 			_errorText = (mtpIsTrue(result)
-					|| _checkUsername == _channel->username)
+					|| _checkUsername == _channel->username())
 				? QString()
 				: tr::lng_create_channel_link_occupied(tr::now);
 			_goodText = _errorText.isEmpty()
@@ -1242,9 +1253,7 @@ void SetupChannelBox::privacyChanged(Privacy value) {
 				check();
 			});
 			Ui::show(
-				Box<RevokePublicLinkBox>(
-					&_channel->session(),
-					callback),
+				Box(PublicLinksLimitBox, _navigation, callback),
 				Ui::LayerOption::KeepOther);
 			return;
 		}
@@ -1269,6 +1278,8 @@ SetupChannelBox::UsernameResult SetupChannelBox::parseError(
 		return UsernameResult::Invalid;
 	} else if (error == u"USERNAME_OCCUPIED"_q) {
 		return UsernameResult::Occupied;
+	} else if (error == u"USERNAME_PURCHASE_AVAILABLE"_q) {
+		return UsernameResult::Occupied;
 	} else if (error == u"USERNAMES_UNAVAILABLE"_q) {
 		return UsernameResult::Occupied;
 	} else if (error == u"CHANNEL_PUBLIC_GROUP_NA"_q) {
@@ -1282,9 +1293,9 @@ SetupChannelBox::UsernameResult SetupChannelBox::parseError(
 
 void SetupChannelBox::updateFail(UsernameResult result) {
 	if ((result == UsernameResult::Ok)
-		|| (_sentUsername == _channel->username)) {
+		|| (_sentUsername == _channel->username())) {
 		_channel->setName(
-			TextUtilities::SingleLine(_channel->name),
+			TextUtilities::SingleLine(_channel->name()),
 			TextUtilities::SingleLine(_sentUsername));
 		closeBox();
 	} else if (result == UsernameResult::Invalid) {
@@ -1304,7 +1315,7 @@ void SetupChannelBox::updateFail(UsernameResult result) {
 
 void SetupChannelBox::checkFail(UsernameResult result) {
 	if (result == UsernameResult::NA) {
-		Ui::hideLayer();
+		getDelegate()->hideLayer();
 	} else if (result == UsernameResult::ChatsTooMuch) {
 		if (_existing) {
 			showRevokePublicLinkBoxForEdit();
@@ -1316,7 +1327,7 @@ void SetupChannelBox::checkFail(UsernameResult result) {
 		_errorText = tr::lng_create_channel_link_invalid(tr::now);
 		update();
 	} else if ((result == UsernameResult::Occupied)
-			&& _checkUsername != _channel->username) {
+			&& _checkUsername != _channel->username()) {
 		_errorText = tr::lng_create_channel_link_occupied(tr::now);
 		update();
 	} else {
@@ -1336,15 +1347,13 @@ void SetupChannelBox::showRevokePublicLinkBoxForEdit() {
 	};
 	closeBox();
 	Ui::show(
-		Box<RevokePublicLinkBox>(
-			&channel->session(),
-			callback),
+		Box(PublicLinksLimitBox, navigation, callback),
 		Ui::LayerOption::KeepOther);
 }
 
 void SetupChannelBox::firstCheckFail(UsernameResult result) {
 	if (result == UsernameResult::NA) {
-		Ui::hideLayer();
+		getDelegate()->hideLayer();
 	} else if (result == UsernameResult::ChatsTooMuch) {
 		if (_existing) {
 			showRevokePublicLinkBoxForEdit();
@@ -1393,6 +1402,18 @@ void EditNameBox::prepare() {
 
 	connect(_first, &Ui::InputField::submitted, [=] { submit(); });
 	connect(_last, &Ui::InputField::submitted, [=] { submit(); });
+
+	_first->customTab(true);
+	_last->customTab(true);
+
+	QObject::connect(
+		_first,
+		&Ui::InputField::tabbed,
+		[=] { _last->setFocus(); });
+	QObject::connect(
+		_last,
+		&Ui::InputField::tabbed,
+		[=] { _first->setFocus(); });
 }
 
 void EditNameBox::setInnerFocus() {
@@ -1480,7 +1501,7 @@ void EditNameBox::saveSelfFail(const QString &error) {
 			TextUtilities::SingleLine(_first->getLastText().trimmed()),
 			TextUtilities::SingleLine(_last->getLastText().trimmed()),
 			QString(),
-			TextUtilities::SingleLine(_user->username));
+			TextUtilities::SingleLine(_user->username()));
 		closeBox();
 	} else if (error == "FIRSTNAME_INVALID") {
 		_first->setFocus();
@@ -1491,252 +1512,4 @@ void EditNameBox::saveSelfFail(const QString &error) {
 	} else {
 		_first->setFocus();
 	}
-}
-
-RevokePublicLinkBox::Inner::Inner(
-	QWidget *parent,
-	not_null<Main::Session*> session,
-	Fn<void()> revokeCallback)
-: TWidget(parent)
-, _session(session)
-, _api(&_session->mtp())
-, _rowHeight(st::contactsPadding.top()
-	+ st::contactsPhotoSize
-	+ st::contactsPadding.bottom())
-, _revokeWidth(st::normalFont->width(
-	tr::lng_channels_too_much_public_revoke(tr::now)))
-, _revokeCallback(std::move(revokeCallback)) {
-	setMouseTracking(true);
-
-	resize(width(), 5 * _rowHeight);
-
-	_api.request(MTPchannels_GetAdminedPublicChannels(
-		MTP_flags(0)
-	)).done([=](const MTPmessages_Chats &result) {
-		const auto &chats = result.match([](const auto &data) {
-			return data.vchats().v;
-		});
-		for (const auto &chat : chats) {
-			if (const auto peer = _session->data().processChat(chat)) {
-				if (!peer->isChannel() || peer->userName().isEmpty()) {
-					continue;
-				}
-
-				auto row = ChatRow(peer);
-				row.peer = peer;
-				row.name.setText(
-					st::contactsNameStyle,
-					peer->name,
-					Ui::NameTextOptions());
-				row.status.setMarkedText(
-					st::defaultTextStyle,
-					_session->createInternalLink(
-						Ui::Text::Link(peer->userName())));
-				_rows.push_back(std::move(row));
-			}
-		}
-		resize(width(), _rows.size() * _rowHeight);
-		update();
-	}).send();
-}
-
-RevokePublicLinkBox::RevokePublicLinkBox(
-	QWidget*,
-	not_null<Main::Session*> session,
-	Fn<void()> revokeCallback)
-: _session(session)
-, _aboutRevoke(
-	this,
-	tr::lng_channels_too_much_public_about(tr::now),
-	st::aboutRevokePublicLabel)
-, _revokeCallback(std::move(revokeCallback)) {
-}
-
-void RevokePublicLinkBox::prepare() {
-	_innerTop = st::boxPadding.top()
-		+ _aboutRevoke->height()
-		+ st::boxPadding.top();
-	_inner = setInnerWidget(object_ptr<Inner>(this, _session, [=] {
-		const auto callback = _revokeCallback;
-		closeBox();
-		if (callback) {
-			callback();
-		}
-	}), st::boxScroll, _innerTop);
-
-	addButton(tr::lng_cancel(), [=] { closeBox(); });
-
-	_session->downloaderTaskFinished(
-	) | rpl::start_with_next([=] {
-		update();
-	}, lifetime());
-
-	_inner->resizeToWidth(st::boxWideWidth);
-	setDimensions(st::boxWideWidth, _innerTop + _inner->height());
-}
-
-void RevokePublicLinkBox::Inner::mouseMoveEvent(QMouseEvent *e) {
-	updateSelected();
-}
-
-void RevokePublicLinkBox::Inner::updateSelected() {
-	const auto point = mapFromGlobal(QCursor::pos());
-	PeerData *selected = nullptr;
-	auto top = _rowsTop;
-	for (const auto &row : _rows) {
-		const auto revokeLink = style::rtlrect(
-			width()
-				- st::contactsPadding.right()
-				- st::contactsCheckPosition.x()
-				- _revokeWidth,
-			top
-				+ st::contactsPadding.top()
-				+ (st::contactsPhotoSize - st::normalFont->height) / 2,
-			_revokeWidth,
-			st::normalFont->height,
-			width());
-		if (revokeLink.contains(point)) {
-			selected = row.peer;
-			break;
-		}
-		top += _rowHeight;
-	}
-	if (selected != _selected) {
-		_selected = selected;
-		setCursor((_selected || _pressed)
-			? style::cur_pointer
-			: style::cur_default);
-		update();
-	}
-}
-
-void RevokePublicLinkBox::Inner::mousePressEvent(QMouseEvent *e) {
-	if (_pressed != _selected) {
-		_pressed = _selected;
-		update();
-	}
-}
-
-void RevokePublicLinkBox::Inner::mouseReleaseEvent(QMouseEvent *e) {
-	const auto pressed = base::take(_pressed);
-	setCursor((_selected || _pressed)
-		? style::cur_pointer
-		: style::cur_default);
-	if (pressed && pressed == _selected) {
-		const auto textMethod = pressed->isMegagroup()
-			? tr::lng_channels_too_much_public_revoke_confirm_group
-			: tr::lng_channels_too_much_public_revoke_confirm_channel;
-		const auto text = textMethod(
-			tr::now,
-			lt_link,
-			_session->createInternalLink(pressed->userName()),
-			lt_group,
-			pressed->name);
-		const auto confirmText = tr::lng_channels_too_much_public_revoke(
-			tr::now);
-		auto callback = crl::guard(this, [=](Fn<void()> &&close) {
-			if (_revokeRequestId) {
-				return;
-			}
-			_revokeRequestId = _api.request(MTPchannels_UpdateUsername(
-				pressed->asChannel()->inputChannel,
-				MTP_string()
-			)).done([=, close = std::move(close)] {
-				close();
-				if (const auto callback = _revokeCallback) {
-					callback();
-				}
-			}).send();
-		});
-		Ui::show(
-			Ui::MakeConfirmBox({
-				.text = text,
-				.confirmed = std::move(callback),
-				.confirmText = confirmText,
-			}),
-			Ui::LayerOption::KeepOther);
-	}
-}
-
-void RevokePublicLinkBox::Inner::paintEvent(QPaintEvent *e) {
-	Painter p(this);
-	p.translate(0, _rowsTop);
-	for (const auto &row : _rows) {
-		paintChat(p, row, (row.peer == _selected));
-		p.translate(0, _rowHeight);
-	}
-}
-
-void RevokePublicLinkBox::resizeEvent(QResizeEvent *e) {
-	BoxContent::resizeEvent(e);
-
-	_aboutRevoke->moveToLeft(st::boxPadding.left(), st::boxPadding.top());
-}
-
-void RevokePublicLinkBox::Inner::paintChat(
-		Painter &p,
-		const ChatRow &row,
-		bool selected) const {
-	const auto peer = row.peer;
-	peer->paintUserpicLeft(
-		p,
-		row.userpic,
-		st::contactsPadding.left(),
-		st::contactsPadding.top(),
-		width(),
-		st::contactsPhotoSize);
-
-	p.setPen(st::contactsNameFg);
-
-	const auto namex = st::contactsPadding.left()
-		+ st::contactsPhotoSize
-		+ st::contactsPadding.left();
-	auto namew = width()
-		- namex
-		- st::contactsPadding.right()
-		- (_revokeWidth + st::contactsCheckPosition.x() * 2);
-
-	const auto badgeStyle = Ui::PeerBadgeStyle{
-		&st::dialogsVerifiedIcon,
-		&st::attentionButtonFg
-	};
-	namew -= Ui::DrawPeerBadgeGetWidth(
-		peer,
-		p,
-		QRect(
-			namex,
-			st::contactsPadding.top() + st::contactsNameTop,
-			row.name.maxWidth(),
-			st::contactsNameStyle.font->height),
-		namew,
-		width(),
-		badgeStyle);
-	row.name.drawLeftElided(
-		p,
-		namex,
-		st::contactsPadding.top() + st::contactsNameTop,
-		namew,
-		width());
-
-	p.setFont(selected ? st::linkOverFont : st::linkFont);
-	p.setPen(selected
-		? st::defaultLinkButton.overColor
-		: st::defaultLinkButton.color);
-	p.drawTextRight(
-		st::contactsPadding.right() + st::contactsCheckPosition.x(),
-		st::contactsPadding.top()
-			+ (st::contactsPhotoSize - st::normalFont->height) / 2,
-		width(),
-		tr::lng_channels_too_much_public_revoke(tr::now),
-		_revokeWidth);
-
-	p.setPen(st::contactsStatusFg);
-	p.setTextPalette(st::revokePublicLinkStatusPalette);
-	row.status.drawLeftElided(
-		p,
-		namex,
-		st::contactsPadding.top() + st::contactsStatusTop,
-		namew,
-		width());
-	p.restoreTextPalette();
 }

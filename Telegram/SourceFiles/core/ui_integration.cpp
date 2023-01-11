@@ -7,11 +7,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/ui_integration.h"
 
+#include "api/api_text_entities.h"
 #include "core/local_url_handlers.h"
 #include "core/file_utilities.h"
 #include "core/application.h"
 #include "core/sandbox.h"
 #include "core/click_handler_types.h"
+#include "data/stickers/data_custom_emoji.h"
+#include "data/data_session.h"
+#include "ui/text/text_custom_emoji.h"
 #include "ui/basic_click_handlers.h"
 #include "ui/emoji_config.h"
 #include "lang/lang_keys.h"
@@ -20,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_session.h"
 #include "main/main_app_config.h"
+#include "window/window_controller.h"
 #include "mainwindow.h"
 
 namespace Core {
@@ -119,8 +124,8 @@ QString UiIntegration::angleBackendFilePath() {
 }
 
 void UiIntegration::textActionsUpdated() {
-	if (const auto window = App::wnd()) {
-		window->updateGlobalMenu();
+	if (const auto window = Core::App().primaryWindow()) {
+		window->widget()->updateGlobalMenu();
 	}
 }
 
@@ -130,10 +135,6 @@ void UiIntegration::activationFromTopPanel() {
 
 bool UiIntegration::screenIsLocked() {
 	return Core::App().screenIsLocked();
-}
-
-QString UiIntegration::timeFormat() {
-	return cTimeFormat();
 }
 
 std::shared_ptr<ClickHandler> UiIntegration::createLinkHandler(
@@ -159,13 +160,13 @@ std::shared_ptr<ClickHandler> UiIntegration::createLinkHandler(
 		using HashtagMentionType = MarkedTextContext::HashtagMentionType;
 		if (my && my->type == HashtagMentionType::Twitter) {
 			return std::make_shared<UrlClickHandler>(
-				(qsl("https://twitter.com/hashtag/")
+				(u"https://twitter.com/hashtag/"_q
 					+ data.data.mid(1)
-					+ qsl("?src=hash")),
+					+ u"?src=hash"_q),
 				true);
 		} else if (my && my->type == HashtagMentionType::Instagram) {
 			return std::make_shared<UrlClickHandler>(
-				(qsl("https://instagram.com/explore/tags/")
+				(u"https://instagram.com/explore/tags/"_q
 					+ data.data.mid(1)
 					+ '/'),
 				true);
@@ -179,11 +180,11 @@ std::shared_ptr<ClickHandler> UiIntegration::createLinkHandler(
 		using HashtagMentionType = MarkedTextContext::HashtagMentionType;
 		if (my && my->type == HashtagMentionType::Twitter) {
 			return std::make_shared<UrlClickHandler>(
-				qsl("https://twitter.com/") + data.data.mid(1),
+				u"https://twitter.com/"_q + data.data.mid(1),
 				true);
 		} else if (my && my->type == HashtagMentionType::Instagram) {
 			return std::make_shared<UrlClickHandler>(
-				qsl("https://instagram.com/") + data.data.mid(1) + '/',
+				u"https://instagram.com/"_q + data.data.mid(1) + '/',
 				true);
 		}
 		return std::make_shared<MentionClickHandler>(data.data);
@@ -222,10 +223,10 @@ bool UiIntegration::handleUrlClick(
 	if (UrlClickHandler::IsEmail(url)) {
 		File::OpenEmailLink(url);
 		return true;
-	} else if (local.startsWith(qstr("tg://"), Qt::CaseInsensitive)) {
+	} else if (local.startsWith(u"tg://"_q, Qt::CaseInsensitive)) {
 		Core::App().openLocalUrl(local, context);
 		return true;
-	} else if (local.startsWith(qstr("internal:"), Qt::CaseInsensitive)) {
+	} else if (local.startsWith(u"internal:"_q, Qt::CaseInsensitive)) {
 		Core::App().openInternalUrl(local, context);
 		return true;
 	}
@@ -237,20 +238,33 @@ bool UiIntegration::handleUrlClick(
 		File::OpenUrl(UrlWithAutoLoginToken(url, std::move(parsed), domain));
 	}
 	return true;
+}
 
+std::unique_ptr<Ui::Text::CustomEmoji> UiIntegration::createCustomEmoji(
+		const QString &data,
+		const std::any &context) {
+	const auto my = std::any_cast<MarkedTextContext>(&context);
+	if (!my || !my->session) {
+		return nullptr;
+	}
+	auto result = my->session->data().customEmojiManager().create(
+		data,
+		my->customEmojiRepaint);
+	if (my->customEmojiLoopLimit > 0) {
+		return std::make_unique<Ui::Text::LimitedLoopsEmoji>(
+			std::move(result),
+			my->customEmojiLoopLimit);
+	}
+	return result;
+}
+
+Fn<void()> UiIntegration::createSpoilerRepaint(const std::any &context) {
+	const auto my = std::any_cast<MarkedTextContext>(&context);
+	return my ? my->customEmojiRepaint : nullptr;
 }
 
 rpl::producer<> UiIntegration::forcePopupMenuHideRequests() {
 	return Core::App().passcodeLockChanges() | rpl::to_empty;
-}
-
-QString UiIntegration::convertTagToMimeTag(const QString &tagId) {
-	if (TextUtilities::IsMentionLink(tagId)) {
-		if (const auto session = Core::App().activeAccount().maybeSession()) {
-			return tagId + ':' + QString::number(session->userId().bare);
-		}
-	}
-	return tagId;
 }
 
 const Ui::Emoji::One *UiIntegration::defaultEmojiVariant(
@@ -264,7 +278,7 @@ const Ui::Emoji::One *UiIntegration::defaultEmojiVariant(
 	const auto result = (i != end(variants))
 		? emoji->variant(i->second)
 		: emoji;
-	Core::App().settings().incrementRecentEmoji(result);
+	Core::App().settings().incrementRecentEmoji({ result });
 	return result;
 }
 
@@ -323,6 +337,44 @@ QString UiIntegration::phraseFormattingMonospace() {
 QString UiIntegration::phraseFormattingSpoiler() {
 	return tr::lng_menu_formatting_spoiler(tr::now);
 }
+
+QString UiIntegration::phraseButtonOk() {
+	return tr::lng_box_ok(tr::now);
+}
+
+QString UiIntegration::phraseButtonClose() {
+	return tr::lng_close(tr::now);
+}
+
+QString UiIntegration::phraseButtonCancel() {
+	return tr::lng_cancel(tr::now);
+}
+
+QString UiIntegration::phrasePanelCloseWarning() {
+	return tr::lng_bot_close_warning_title(tr::now);
+}
+
+QString UiIntegration::phrasePanelCloseUnsaved() {
+	return tr::lng_bot_close_warning(tr::now);
+}
+
+QString UiIntegration::phrasePanelCloseAnyway() {
+	return tr::lng_bot_close_warning_sure(tr::now);
+}
+
+#if 0 // disabled for now
+QString UiIntegration::phraseBotSharePhone() {
+	return tr::lng_bot_share_phone(tr::now);
+}
+
+QString UiIntegration::phraseBotSharePhoneTitle() {
+	return tr::lng_settings_phone_label(tr::now);
+}
+
+QString UiIntegration::phraseBotSharePhoneConfirm() {
+	return tr::lng_bot_share_phone_confirm(tr::now);
+}
+#endif
 
 bool OpenGLLastCheckFailed() {
 	return QFile::exists(OpenGLCheckFilePath());

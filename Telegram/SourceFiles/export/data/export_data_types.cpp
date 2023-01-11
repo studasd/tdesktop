@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/mime_type.h"
 #include "core/utils.h"
 #include <QtCore/QDateTime>
+#include <QtCore/QTimeZone>
 #include <QtCore/QRegularExpression>
 #include <QtGui/QImageReader>
 #include <range/v3/algorithm/max_element.hpp>
@@ -30,7 +31,7 @@ constexpr auto kMigratedMessagesIdShift = -1'000'000'000;
 
 QString PrepareFileNameDatePart(TimeId date) {
 	return date
-		? ('@' + QString::fromUtf8(FormatDateTime(date, '-', '-', '_')))
+		? ('@' + QString::fromUtf8(FormatDateTime(date, 0, '-', '-', '_')))
 		: QString();
 }
 
@@ -154,7 +155,8 @@ std::vector<TextPart> ParseText(
 			[](const MTPDmessageEntityBlockquote&) {
 				return Type::Blockquote; },
 			[](const MTPDmessageEntityBankCard&) { return Type::BankCard; },
-			[](const MTPDmessageEntitySpoiler&) { return Type::Spoiler; });
+			[](const MTPDmessageEntitySpoiler&) { return Type::Spoiler; },
+			[](const MTPDmessageEntityCustomEmoji&) { return Type::CustomEmoji; });
 		part.text = mid(start, length);
 		part.additional = entity.match(
 		[](const MTPDmessageEntityPre &data) {
@@ -163,6 +165,8 @@ std::vector<TextPart> ParseText(
 			return ParseString(data.vurl());
 		}, [](const MTPDmessageEntityMentionName &data) {
 			return NumberToString(data.vuser_id().v);
+		}, [](const MTPDmessageEntityCustomEmoji &data) {
+			return NumberToString(data.vdocument_id().v);
 		}, [](const auto &) { return Utf8String(); });
 
 		result.push_back(std::move(part));
@@ -280,6 +284,9 @@ void ParseAttributes(
 		}, [&](const MTPDdocumentAttributeSticker &data) {
 			result.isSticker = true;
 			result.stickerEmoji = ParseString(data.valt());
+		}, [&](const MTPDdocumentAttributeCustomEmoji &data) {
+			result.isSticker = true;
+			result.stickerEmoji = ParseString(data.valt());
 		}, [&](const MTPDdocumentAttributeVideo &data) {
 			if (data.is_round_message()) {
 				result.isVideoMessage = true;
@@ -318,30 +325,30 @@ QString ComputeDocumentName(
 	}
 	const auto mimeString = QString::fromUtf8(data.mime);
 	const auto mimeType = Core::MimeTypeForName(mimeString);
-	const auto hasMimeType = [&](QLatin1String mime) {
+	const auto hasMimeType = [&](const auto &mime) {
 		return !mimeString.compare(mime, Qt::CaseInsensitive);
 	};
 	const auto patterns = mimeType.globPatterns();
 	const auto pattern = patterns.isEmpty() ? QString() : patterns.front();
 	if (data.isVoiceMessage) {
-		const auto isMP3 = hasMimeType(qstr("audio/mp3"));
-		return qsl("audio_")
+		const auto isMP3 = hasMimeType(u"audio/mp3"_q);
+		return u"audio_"_q
 			+ QString::number(++context.audios)
 			+ PrepareFileNameDatePart(date)
-			+ (isMP3 ? qsl(".mp3") : qsl(".ogg"));
+			+ (isMP3 ? u".mp3"_q : u".ogg"_q);
 	} else if (data.isVideoFile) {
 		const auto extension = pattern.isEmpty()
-			? qsl(".mov")
+			? u".mov"_q
 			: QString(pattern).replace('*', QString());
-		return qsl("video_")
+		return u"video_"_q
 			+ QString::number(++context.videos)
 			+ PrepareFileNameDatePart(date)
 			+ extension;
 	} else {
 		const auto extension = pattern.isEmpty()
-			? qsl(".unknown")
+			? u".unknown"_q
 			: QString(pattern).replace('*', QString());
-		return qsl("file_")
+		return u"file_"_q
 			+ QString::number(++context.files)
 			+ PrepareFileNameDatePart(date)
 			+ extension;
@@ -1022,6 +1029,8 @@ ServiceAction ParseServiceAction(
 		auto content = ActionPaymentSent();
 		content.currency = ParseString(data.vcurrency());
 		content.amount = data.vtotal_amount().v;
+		content.recurringInit = data.is_recurring_init();
+		content.recurringUsed = data.is_recurring_used();
 		result.content = content;
 	}, [&](const MTPDmessageActionPhoneCall &data) {
 		auto content = ActionPhoneCall();
@@ -1130,6 +1139,42 @@ ServiceAction ParseServiceAction(
 		};
 	}, [&](const MTPDmessageActionChatJoinedByRequest &data) {
 		result.content = ActionChatJoinedByRequest();
+	}, [&](const MTPDmessageActionWebViewDataSentMe &data) {
+		// Should not be in user inbox.
+	}, [&](const MTPDmessageActionWebViewDataSent &data) {
+		auto content = ActionWebViewDataSent();
+		content.text = ParseString(data.vtext());
+		result.content = content;
+	}, [&](const MTPDmessageActionGiftPremium &data) {
+		auto content = ActionGiftPremium();
+		content.cost = Ui::FillAmountAndCurrency(
+			data.vamount().v,
+			qs(data.vcurrency())).toUtf8();
+		content.months = data.vmonths().v;
+		result.content = content;
+	}, [&](const MTPDmessageActionTopicCreate &data) {
+		auto content = ActionTopicCreate();
+		content.title = ParseString(data.vtitle());
+		result.content = content;
+	}, [&](const MTPDmessageActionTopicEdit &data) {
+		auto content = ActionTopicEdit();
+		if (const auto title = data.vtitle()) {
+			content.title = ParseString(*title);
+		}
+		if (const auto icon = data.vicon_emoji_id()) {
+			content.iconEmojiId = icon->v;
+		}
+		result.content = content;
+	}, [&](const MTPDmessageActionSuggestProfilePhoto &data) {
+		auto content = ActionSuggestProfilePhoto();
+		content.photo = ParsePhoto(
+			data.vphoto(),
+			mediaFolder
+			+ "photos/"
+			+ PreparePhotoFileName(++context.photos, date));
+		result.content = content;
+	}, [&](const MTPDmessageActionAttachMenuBotAllowed &data) {
+		result.content = ActionAttachMenuBotAllowed();
 	}, [](const MTPDmessageActionEmpty &data) {});
 	return result;
 }
@@ -1138,6 +1183,9 @@ File &Message::file() {
 	const auto content = &action.content;
 	if (const auto photo = std::get_if<ActionChatEditPhoto>(content)) {
 		return photo->photo.image.file;
+	} else if (const auto photo = std::get_if<ActionSuggestProfilePhoto>(
+			content)) {
+		return photo->photo.image.file;
 	}
 	return media.file();
 }
@@ -1145,6 +1193,9 @@ File &Message::file() {
 const File &Message::file() const {
 	const auto content = &action.content;
 	if (const auto photo = std::get_if<ActionChatEditPhoto>(content)) {
+		return photo->photo.image.file;
+	} else if (const auto photo = std::get_if<ActionSuggestProfilePhoto>(
+			content)) {
 		return photo->photo.image.file;
 	}
 	return media.file();
@@ -1802,6 +1853,7 @@ Utf8String FormatPhoneNumber(const Utf8String &phoneNumber) {
 
 Utf8String FormatDateTime(
 		TimeId date,
+		bool hasTimeZone,
 		QChar dateSeparator,
 		QChar timeSeparator,
 		QChar separator) {
@@ -1809,14 +1861,21 @@ Utf8String FormatDateTime(
 		return Utf8String();
 	}
 	const auto value = QDateTime::fromSecsSinceEpoch(date);
+	const auto timeZoneOffset = hasTimeZone
+		? separator + value.timeZone().displayName(
+			QTimeZone::StandardTime,
+			QTimeZone::OffsetName)
+		: QString();
 	return (QString("%1") + dateSeparator + "%2" + dateSeparator + "%3"
 		+ separator + "%4" + timeSeparator + "%5" + timeSeparator + "%6"
+		+ "%7"
 	).arg(value.date().day(), 2, 10, QChar('0')
 	).arg(value.date().month(), 2, 10, QChar('0')
 	).arg(value.date().year()
 	).arg(value.time().hour(), 2, 10, QChar('0')
 	).arg(value.time().minute(), 2, 10, QChar('0')
 	).arg(value.time().second(), 2, 10, QChar('0')
+	).arg(timeZoneOffset
 	).toUtf8();
 }
 

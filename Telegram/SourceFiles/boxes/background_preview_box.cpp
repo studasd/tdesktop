@@ -17,9 +17,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/toast/toast.h"
 #include "ui/image/image.h"
 #include "ui/widgets/checkbox.h"
+#include "ui/painter.h"
 #include "ui/ui_utility.h"
 #include "history/history.h"
-#include "history/history_message.h"
+#include "history/history_item.h"
 #include "history/view/history_view_message.h"
 #include "main/main_session.h"
 #include "apiwrap.h"
@@ -258,7 +259,9 @@ void BackgroundPreviewBox::apply() {
 void BackgroundPreviewBox::share() {
 	QGuiApplication::clipboard()->setText(
 		_paper.shareUrl(&_controller->session()));
-	Ui::Toast::Show(tr::lng_background_link_copied(tr::now));
+	Ui::Toast::Show(
+		Ui::BoxShow(this).toastParent(),
+		tr::lng_background_link_copied(tr::now));
 }
 
 void BackgroundPreviewBox::paintEvent(QPaintEvent *e) {
@@ -355,7 +358,8 @@ void BackgroundPreviewBox::paintTexts(Painter &p, crl::time ms) {
 	auto context = _controller->defaultChatTheme()->preparePaintContext(
 		_chatStyle.get(),
 		rect(),
-		rect());
+		rect(),
+		_controller->isGifPausedAtLeastFor(Window::GifPauseReason::Layer));
 	p.translate(0, textsTop());
 	paintDate(p);
 
@@ -550,7 +554,7 @@ bool BackgroundPreviewBox::Start(
 		controller->show(Box<BackgroundPreviewBox>(
 			controller,
 			result.withUrlParams(params)));
-	}), crl::guard(controller, [=](const MTP::Error &error) {
+	}), crl::guard(controller, [=] {
 		controller->show(Ui::MakeInformBox(tr::lng_background_bad_link()));
 	}));
 	return true;

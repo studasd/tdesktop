@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/widgets/menu/menu_action.h"
 #include "ui/effects/ripple_animation.h"
+#include "ui/painter.h"
 #include "lang/lang_keys.h"
 #include "base/call_delayed.h"
 #include "base/unixtime.h"
@@ -137,10 +138,7 @@ void ActionWithTimer::refreshAutoDeleteText() {
 	const auto left = (_destroyAt > now) ? (_destroyAt - now) : 0;
 	const auto text = [&] {
 		const auto duration = (left >= 86400)
-			? tr::lng_group_call_duration_days(
-				tr::now,
-				lt_count,
-				((left + 43200) / 86400))
+			? tr::lng_days(tr::now, lt_count, ((left + 43200) / 86400))
 			: (left >= 3600)
 			? QString("%1:%2:%3"
 			).arg(left / 3600
@@ -191,10 +189,7 @@ void ActionWithTimer::prepare() {
 			+ padding.right();
 	};
 	const auto maxWidth1 = ttlMaxWidth("23:59:59");
-	const auto maxWidth2 = ttlMaxWidth(tr::lng_group_call_duration_days(
-		tr::now,
-		lt_count,
-		7));
+	const auto maxWidth2 = ttlMaxWidth(tr::lng_days(tr::now, lt_count, 7));
 
 	const auto w = std::clamp(
 		std::max({ goodWidth, maxWidth1, maxWidth2 }),
@@ -218,7 +213,7 @@ QPoint ActionWithTimer::prepareRippleStartPosition() const {
 }
 
 QImage ActionWithTimer::prepareRippleMask() const {
-	return Ui::RippleAnimation::rectMask(size());
+	return Ui::RippleAnimation::RectMask(size());
 }
 
 int ActionWithTimer::contentHeight() const {

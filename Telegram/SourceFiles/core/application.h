@@ -7,15 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "core/core_settings.h"
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/mtproto_proxy_data.h"
 #include "base/timer.h"
 
-class MainWindow;
-class MainWidget;
-class FileUploader;
-class Translator;
+class History;
 
 namespace Platform {
 class Integration;
@@ -69,6 +65,7 @@ class Instance;
 } // namespace Audio
 namespace View {
 class OverlayWidget;
+struct OpenRequest;
 } // namespace View
 namespace Player {
 class FloatController;
@@ -103,6 +100,8 @@ namespace Core {
 
 class Launcher;
 struct LocalUrlHandler;
+class Settings;
+class Tray;
 
 enum class LaunchState {
 	Running,
@@ -147,10 +146,12 @@ public:
 	[[nodiscard]] Data::DownloadManager &downloadManager() const {
 		return *_downloadManager;
 	}
+	[[nodiscard]] Tray &tray() const {
+		return *_tray;
+	}
 
 	// Windows interface.
 	bool hasActiveWindow(not_null<Main::Session*> session) const;
-	void saveCurrentDraftsToHistories();
 	[[nodiscard]] Window::Controller *primaryWindow() const;
 	[[nodiscard]] Window::Controller *activeWindow() const;
 	[[nodiscard]] Window::Controller *separateWindowForPeer(
@@ -158,14 +159,17 @@ public:
 	Window::Controller *ensureSeparateWindowForPeer(
 		not_null<PeerData*> peer,
 		MsgId showAtMsgId);
+	void closeWindow(not_null<Window::Controller*> window);
+	void windowActivated(not_null<Window::Controller*> window);
 	bool closeActiveWindow();
 	bool minimizeActiveWindow();
 	[[nodiscard]] QWidget *getFileDialogParent();
 	void notifyFileDialogShown(bool shown);
 	void checkSystemDarkMode();
+	[[nodiscard]] bool isActiveForTrayMenu() const;
+	void closeChatFromWindows(not_null<PeerData*> peer);
 
 	// Media view interface.
-	void checkMediaViewActivation();
 	bool hideMediaView();
 
 	[[nodiscard]] QPoint getPointForCallPanelCenter() const;
@@ -174,6 +178,9 @@ public:
 	[[nodiscard]] Settings &settings();
 	void saveSettingsDelayed(crl::time delay = kDefaultSaveDelay);
 	void saveSettings();
+
+	[[nodiscard]] bool canReadDefaultDownloadPath(bool always = false) const;
+	[[nodiscard]] bool canSaveFileWithoutAskingForPath() const;
 
 	// Fallback config and proxy.
 	[[nodiscard]] MTP::Config &fallbackProductionConfig() const;
@@ -202,7 +209,7 @@ public:
 	[[nodiscard]] bool exportPreventsQuit();
 
 	// Main::Session component.
-	Main::Session *maybeActiveSession() const;
+	Main::Session *maybePrimarySession() const;
 	[[nodiscard]] int unreadBadge() const;
 	[[nodiscard]] bool unreadBadgeMuted() const;
 	[[nodiscard]] rpl::producer<> unreadBadgeChanges() const;
@@ -231,6 +238,7 @@ public:
 
 	// Internal links.
 	void checkStartUrl();
+	void checkSendPaths();
 	bool openLocalUrl(const QString &url, QVariant context);
 	bool openInternalUrl(const QString &url, QVariant context);
 	[[nodiscard]] QString changelogLink() const;
@@ -258,6 +266,7 @@ public:
 	[[nodiscard]] bool downloadPreventsQuit();
 	void checkLocalTime();
 	void lockByPasscode();
+	void maybeLockByPasscode();
 	void unlockPasscode();
 	[[nodiscard]] bool passcodeLocked() const;
 	rpl::producer<bool> passcodeLockChanges() const;
@@ -291,8 +300,6 @@ public:
 
 	void preventOrInvoke(Fn<void()> &&callback);
 
-	void call_handleObservables();
-
 	// Global runtime variables.
 	void setScreenIsLocked(bool locked);
 	bool screenIsLocked() const;
@@ -316,6 +323,11 @@ private:
 	void startDomain();
 	void startEmojiImageLoader();
 	void startSystemDarkModeViewer();
+	void startTray();
+
+	void enumerateWindows(
+		Fn<void(not_null<Window::Controller*>)> callback) const;
+	void processSecondaryWindow(not_null<Window::Controller*> window);
 
 	friend void QuitAttempt();
 	void quitDelayed();
@@ -376,6 +388,8 @@ private:
 	std::unique_ptr<Lang::Translator> _translator;
 	QPointer<Ui::BoxContent> _badProxyDisableBox;
 
+	const std::unique_ptr<Tray> _tray;
+
 	std::unique_ptr<Media::Player::FloatController> _floatPlayers;
 	Media::Player::FloatDelegate *_defaultFloatPlayerDelegate = nullptr;
 	Media::Player::FloatDelegate *_replacementFloatPlayerDelegate = nullptr;
@@ -393,6 +407,8 @@ private:
 		QPointer<QObject> filter;
 	};
 	base::flat_map<not_null<QWidget*>, LeaveFilter> _leaveFilters;
+
+	rpl::event_stream<Media::View::OpenRequest> _openInMediaViewRequests;
 
 	rpl::lifetime _lifetime;
 

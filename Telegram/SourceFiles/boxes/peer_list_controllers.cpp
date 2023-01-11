@@ -11,106 +11,38 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/random.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/widgets/checkbox.h"
+#include "ui/painter.h"
 #include "ui/ui_utility.h"
 #include "main/main_session.h"
 #include "data/data_session.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_user.h"
+#include "data/data_forum.h"
+#include "data/data_forum_topic.h"
 #include "data/data_folder.h"
 #include "data/data_histories.h"
 #include "data/data_changes.h"
+#include "dialogs/ui/dialogs_layout.h"
 #include "apiwrap.h"
 #include "mainwidget.h"
 #include "mainwindow.h"
 #include "lang/lang_keys.h"
 #include "history/history.h"
+#include "history/history_item.h"
 #include "dialogs/dialogs_main_list.h"
 #include "window/window_session_controller.h" // showAddContact()
 #include "base/unixtime.h"
-#include "facades.h"
 #include "styles/style_boxes.h"
 #include "styles/style_profile.h"
+#include "styles/style_dialogs.h"
 
 namespace {
 
 constexpr auto kSortByOnlineThrottle = 3 * crl::time(1000);
-
-void ShareBotGame(not_null<UserData*> bot, not_null<PeerData*> chat) {
-	const auto history = chat->owner().history(chat);
-	auto &histories = history->owner().histories();
-	const auto requestType = Data::Histories::RequestType::Send;
-	histories.sendRequest(history, requestType, [=](Fn<void()> finish) {
-		const auto randomId = base::RandomValue<uint64>();
-		const auto api = &chat->session().api();
-		history->sendRequestId = api->request(MTPmessages_SendMedia(
-			MTP_flags(0),
-			chat->input,
-			MTP_int(0),
-			MTP_inputMediaGame(
-				MTP_inputGameShortName(
-					bot->inputUser,
-					MTP_string(bot->botInfo->shareGameShortName))),
-			MTP_string(),
-			MTP_long(randomId),
-			MTPReplyMarkup(),
-			MTPVector<MTPMessageEntity>(),
-			MTP_int(0), // schedule_date
-			MTPInputPeer() // send_as
-		)).done([=](const MTPUpdates &result) {
-			api->applyUpdates(result, randomId);
-			finish();
-		}).fail([=](const MTP::Error &error) {
-			api->sendMessageFail(error, chat);
-			finish();
-		}).afterRequest(
-			history->sendRequestId
-		).send();
-		return history->sendRequestId;
-	});
-	Ui::hideLayer();
-	Ui::showPeerHistory(chat, ShowAtUnreadMsgId);
-}
-
-void AddBotToGroup(not_null<UserData*> bot, not_null<PeerData*> chat) {
-	if (bot->isBot() && !bot->botInfo->startGroupToken.isEmpty()) {
-		chat->session().api().sendBotStart(bot, chat);
-	} else {
-		chat->session().api().chatParticipants().add(chat, { 1, bot });
-	}
-	Ui::hideLayer();
-	Ui::showPeerHistory(chat, ShowAtUnreadMsgId);
-}
+constexpr auto kSearchPerPage = 50;
 
 } // namespace
-
-// Not used for now.
-//
-//MembersAddButton::MembersAddButton(QWidget *parent, const style::TwoIconButton &st) : RippleButton(parent, st.ripple)
-//, _st(st) {
-//	resize(_st.width, _st.height);
-//	setCursor(style::cur_pointer);
-//}
-//
-//void MembersAddButton::paintEvent(QPaintEvent *e) {
-//	Painter p(this);
-//
-//	auto ms = crl::now();
-//	auto over = isOver();
-//	auto down = isDown();
-//
-//	((over || down) ? _st.iconBelowOver : _st.iconBelow).paint(p, _st.iconPosition, width());
-//	paintRipple(p, _st.rippleAreaPosition.x(), _st.rippleAreaPosition.y(), ms);
-//	((over || down) ? _st.iconAboveOver : _st.iconAbove).paint(p, _st.iconPosition, width());
-//}
-//
-//QImage MembersAddButton::prepareRippleMask() const {
-//	return Ui::RippleAnimation::ellipseMask(QSize(_st.rippleAreaSize, _st.rippleAreaSize));
-//}
-//
-//QPoint MembersAddButton::prepareRippleStartPosition() const {
-//	return mapFromGlobal(QCursor::pos()) - _st.rippleAreaPosition;
-//}
 
 object_ptr<Ui::BoxContent> PrepareContactsBox(
 		not_null<Window::SessionController*> sessionController) {
@@ -359,7 +291,8 @@ QString ChatsListBoxController::emptyBoxText() const {
 	return tr::lng_contacts_not_found(tr::now);
 }
 
-std::unique_ptr<PeerListRow> ChatsListBoxController::createSearchRow(not_null<PeerData*> peer) {
+std::unique_ptr<PeerListRow> ChatsListBoxController::createSearchRow(
+		not_null<PeerData*> peer) {
 	return createRow(peer->owner().history(peer));
 }
 
@@ -444,7 +377,10 @@ std::unique_ptr<PeerListRow> ContactsBoxController::createSearchRow(
 }
 
 void ContactsBoxController::rowClicked(not_null<PeerListRow*> row) {
-	Ui::showPeerHistory(row->peer(), ShowAtUnreadMsgId);
+	const auto peer = row->peer();
+	if (const auto window = peer->session().tryResolveWindow()) {
+		window->showPeerHistory(row->peer());
+	}
 }
 
 void ContactsBoxController::setSortMode(SortMode mode) {
@@ -524,144 +460,14 @@ std::unique_ptr<PeerListRow> ContactsBoxController::createRow(
 	return std::make_unique<PeerListRow>(user);
 }
 
-void AddBotToGroupBoxController::Start(not_null<UserData*> bot) {
-	auto initBox = [=](not_null<PeerListBox*> box) {
-		box->addButton(tr::lng_cancel(), [box] { box->closeBox(); });
-	};
-	Ui::show(Box<PeerListBox>(
-		std::make_unique<AddBotToGroupBoxController>(bot),
-		std::move(initBox)));
-}
-
-AddBotToGroupBoxController::AddBotToGroupBoxController(
-	not_null<UserData*> bot)
-: ChatsListBoxController(SharingBotGame(bot)
-	? std::make_unique<PeerListGlobalSearchController>(&bot->session())
-	: nullptr)
-, _bot(bot) {
-}
-
-Main::Session &AddBotToGroupBoxController::session() const {
-	return _bot->session();
-}
-
-void AddBotToGroupBoxController::rowClicked(not_null<PeerListRow*> row) {
-	if (sharingBotGame()) {
-		shareBotGame(row->peer());
-	} else {
-		addBotToGroup(row->peer());
-	}
-}
-
-void AddBotToGroupBoxController::shareBotGame(not_null<PeerData*> chat) {
-	auto send = crl::guard(this, [bot = _bot, chat] {
-		ShareBotGame(bot, chat);
-	});
-	auto confirmText = [chat] {
-		if (chat->isUser()) {
-			return tr::lng_bot_sure_share_game(tr::now, lt_user, chat->name);
-		}
-		return tr::lng_bot_sure_share_game_group(tr::now, lt_group, chat->name);
-	}();
-	Ui::show(
-		Ui::MakeConfirmBox({
-			.text = confirmText,
-			.confirmed = std::move(send),
-		}),
-		Ui::LayerOption::KeepOther);
-}
-
-void AddBotToGroupBoxController::addBotToGroup(not_null<PeerData*> chat) {
-	if (const auto megagroup = chat->asMegagroup()) {
-		if (!megagroup->canAddMembers()) {
-			Ui::show(
-				Ui::MakeInformBox(tr::lng_error_cant_add_member()),
-				Ui::LayerOption::KeepOther);
-			return;
-		}
-	}
-	auto send = crl::guard(this, [bot = _bot, chat] {
-		AddBotToGroup(bot, chat);
-	});
-	auto confirmText = tr::lng_bot_sure_invite(tr::now, lt_group, chat->name);
-	Ui::show(
-		Ui::MakeConfirmBox({ confirmText, send }),
-		Ui::LayerOption::KeepOther);
-}
-
-auto AddBotToGroupBoxController::createRow(not_null<History*> history)
--> std::unique_ptr<ChatsListBoxController::Row> {
-	if (!needToCreateRow(history->peer)) {
-		return nullptr;
-	}
-	return std::make_unique<Row>(history);
-}
-
-bool AddBotToGroupBoxController::needToCreateRow(
-		not_null<PeerData*> peer) const {
-	if (sharingBotGame()) {
-		if (!peer->canWrite()
-			|| peer->amRestricted(ChatRestriction::SendGames)) {
-			return false;
-		}
-		return true;
-	}
-	if (const auto chat = peer->asChat()) {
-		return chat->canAddMembers();
-	} else if (const auto group = peer->asMegagroup()) {
-		return group->canAddMembers();
-	}
-	return false;
-}
-
-bool AddBotToGroupBoxController::SharingBotGame(not_null<UserData*> bot) {
-	const auto &info = bot->botInfo;
-	return (info && !info->shareGameShortName.isEmpty());
-}
-
-bool AddBotToGroupBoxController::sharingBotGame() const {
-	return SharingBotGame(_bot);
-}
-
-QString AddBotToGroupBoxController::emptyBoxText() const {
-	return !session().data().chatsListLoaded()
-		? tr::lng_contacts_loading(tr::now)
-		: sharingBotGame()
-		? tr::lng_bot_no_chats(tr::now)
-		: tr::lng_bot_no_groups(tr::now);
-}
-
-QString AddBotToGroupBoxController::noResultsText() const {
-	return !session().data().chatsListLoaded()
-		? tr::lng_contacts_loading(tr::now)
-		: sharingBotGame()
-		? tr::lng_bot_chats_not_found(tr::now)
-		: tr::lng_bot_groups_not_found(tr::now);
-}
-
-void AddBotToGroupBoxController::updateLabels() {
-	setSearchNoResultsText(noResultsText());
-}
-
-void AddBotToGroupBoxController::prepareViewHook() {
-	delegate()->peerListSetTitle(sharingBotGame()
-		? tr::lng_bot_choose_chat()
-		: tr::lng_bot_choose_group());
-	updateLabels();
-	session().data().chatsListLoadedEvents(
-	) | rpl::filter([=](Data::Folder *folder) {
-		return !folder;
-	}) | rpl::start_with_next([=] {
-		updateLabels();
-	}, lifetime());
-}
-
 ChooseRecipientBoxController::ChooseRecipientBoxController(
 	not_null<Main::Session*> session,
-	FnMut<void(not_null<PeerData*>)> callback)
+	FnMut<void(not_null<Data::Thread*>)> callback,
+	Fn<bool(not_null<Data::Thread*>)> filter)
 : ChatsListBoxController(session)
 , _session(session)
-, _callback(std::move(callback)) {
+, _callback(std::move(callback))
+, _filter(std::move(filter)) {
 }
 
 Main::Session &ChooseRecipientBoxController::session() const {
@@ -673,10 +479,52 @@ void ChooseRecipientBoxController::prepareViewHook() {
 }
 
 void ChooseRecipientBoxController::rowClicked(not_null<PeerListRow*> row) {
-	auto weak = base::make_weak(this);
+	auto guard = base::make_weak(this);
+	const auto peer = row->peer();
+	if (const auto forum = peer->forum()) {
+		const auto weak = std::make_shared<QPointer<Ui::BoxContent>>();
+		auto callback = [=](not_null<Data::ForumTopic*> topic) {
+			const auto exists = guard.get();
+			if (!exists) {
+				if (*weak) {
+					(*weak)->closeBox();
+				}
+				return;
+			}
+			auto onstack = std::move(_callback);
+			onstack(topic);
+			if (guard) {
+				_callback = std::move(onstack);
+			} else if (*weak) {
+				(*weak)->closeBox();
+			}
+		};
+		const auto filter = [=](not_null<Data::ForumTopic*> topic) {
+			return guard && (!_filter || _filter(topic));
+		};
+		auto owned = Box<PeerListBox>(
+			std::make_unique<ChooseTopicBoxController>(
+				forum,
+				std::move(callback),
+				filter),
+			[=](not_null<PeerListBox*> box) {
+				box->addButton(tr::lng_cancel(), [=] {
+					box->closeBox();
+				});
+
+				forum->destroyed(
+				) | rpl::start_with_next([=] {
+					box->closeBox();
+				}, box->lifetime());
+			});
+		*weak = owned.data();
+		delegate()->peerListShowBox(std::move(owned));
+		return;
+	}
+	const auto history = peer->owner().history(peer);
 	auto callback = std::move(_callback);
-	callback(row->peer());
-	if (weak) {
+	callback(history);
+	if (guard) {
 		_callback = std::move(callback);
 	}
 }
@@ -684,7 +532,224 @@ void ChooseRecipientBoxController::rowClicked(not_null<PeerListRow*> row) {
 auto ChooseRecipientBoxController::createRow(
 		not_null<History*> history) -> std::unique_ptr<Row> {
 	const auto peer = history->peer;
-	const auto skip = (peer->isBroadcast() && !peer->canWrite())
-		|| peer->isRepliesChat();
+	const auto skip = _filter
+		? !_filter(history)
+		: ((peer->isBroadcast() && !peer->canWrite())
+			|| (peer->isUser() && !peer->canWrite())
+			|| peer->isRepliesChat());
 	return skip ? nullptr : std::make_unique<Row>(history);
 }
+
+ChooseTopicSearchController::ChooseTopicSearchController(
+	not_null<Data::Forum*> forum)
+: _forum(forum)
+, _api(&forum->session().mtp())
+, _timer([=] { searchOnServer(); }) {
+}
+
+void ChooseTopicSearchController::searchQuery(const QString &query) {
+	if (_query != query) {
+		_query = query;
+		_api.request(base::take(_requestId)).cancel();
+		_offsetDate = 0;
+		_offsetId = 0;
+		_offsetTopicId = 0;
+		_allLoaded = false;
+		if (!_query.isEmpty()) {
+			_timer.callOnce(AutoSearchTimeout);
+		} else {
+			_timer.cancel();
+		}
+	}
+}
+
+void ChooseTopicSearchController::searchOnServer() {
+	_requestId = _api.request(MTPchannels_GetForumTopics(
+		MTP_flags(MTPchannels_GetForumTopics::Flag::f_q),
+		_forum->channel()->inputChannel,
+		MTP_string(_query),
+		MTP_int(_offsetDate),
+		MTP_int(_offsetId),
+		MTP_int(_offsetTopicId),
+		MTP_int(kSearchPerPage)
+	)).done([=](const MTPmessages_ForumTopics &result) {
+		_requestId = 0;
+		const auto savedTopicId = _offsetTopicId;
+		const auto byCreation = result.data().is_order_by_create_date();
+		_forum->applyReceivedTopics(result, [&](
+				not_null<Data::ForumTopic*> topic) {
+			_offsetTopicId = topic->rootId();
+			if (byCreation) {
+				_offsetDate = topic->creationDate();
+				if (const auto last = topic->lastServerMessage()) {
+					_offsetId = last->id;
+				}
+			} else if (const auto last = topic->lastServerMessage()) {
+				_offsetId = last->id;
+				_offsetDate = last->date();
+			}
+			delegate()->peerListSearchAddRow(topic->rootId().bare);
+		});
+		if (_offsetTopicId != savedTopicId) {
+			delegate()->peerListSearchRefreshRows();
+		} else {
+			_allLoaded = true;
+		}
+	}).fail([=] {
+		_allLoaded = true;
+	}).send();
+}
+
+bool ChooseTopicSearchController::isLoading() {
+	return _timer.isActive() || _requestId;
+}
+
+bool ChooseTopicSearchController::loadMoreRows() {
+	if (!isLoading()) {
+		searchOnServer();
+	}
+	return !_allLoaded;
+}
+
+ChooseTopicBoxController::Row::Row(not_null<Data::ForumTopic*> topic)
+: PeerListRow(topic->rootId().bare)
+, _topic(topic) {
+}
+
+QString ChooseTopicBoxController::Row::generateName() {
+	return _topic->title();
+}
+
+QString ChooseTopicBoxController::Row::generateShortName() {
+	return _topic->title();
+}
+
+auto ChooseTopicBoxController::Row::generatePaintUserpicCallback(
+	bool forceRound)
+-> PaintRoundImageCallback {
+	return [=](
+			Painter &p,
+			int x,
+			int y,
+			int outerWidth,
+			int size) {
+		auto view = Ui::PeerUserpicView();
+		p.translate(x, y);
+		_topic->paintUserpic(p, view, {
+			.st = &st::forumTopicRow,
+			.currentBg = st::windowBg,
+			.now = crl::now(),
+			.width = outerWidth,
+			.paused = false,
+		});
+		p.translate(-x, -y);
+	};
+}
+
+auto ChooseTopicBoxController::Row::generateNameFirstLetters() const
+-> const base::flat_set<QChar> & {
+	return _topic->chatListFirstLetters();
+}
+
+auto ChooseTopicBoxController::Row::generateNameWords() const
+-> const base::flat_set<QString> & {
+	return _topic->chatListNameWords();
+}
+
+ChooseTopicBoxController::ChooseTopicBoxController(
+	not_null<Data::Forum*> forum,
+	FnMut<void(not_null<Data::ForumTopic*>)> callback,
+	Fn<bool(not_null<Data::ForumTopic*>)> filter)
+: PeerListController(std::make_unique<ChooseTopicSearchController>(forum))
+, _forum(forum)
+, _callback(std::move(callback))
+, _filter(std::move(filter)) {
+	setStyleOverrides(&st::chooseTopicList);
+
+	_forum->chatsListChanges(
+	) | rpl::start_with_next([=] {
+		refreshRows();
+	}, lifetime());
+
+	_forum->topicDestroyed(
+	) | rpl::start_with_next([=](not_null<Data::ForumTopic*> topic) {
+		const auto id = PeerListRowId(topic->rootId().bare);
+		if (const auto row = delegate()->peerListFindRow(id)) {
+			delegate()->peerListRemoveRow(row);
+			delegate()->peerListRefreshRows();
+		}
+	}, lifetime());
+}
+
+Main::Session &ChooseTopicBoxController::session() const {
+	return _forum->session();
+}
+
+void ChooseTopicBoxController::rowClicked(not_null<PeerListRow*> row) {
+	const auto weak = base::make_weak(this);
+	auto onstack = base::take(_callback);
+	onstack(static_cast<Row*>(row.get())->topic());
+	if (weak) {
+		_callback = std::move(onstack);
+	}
+}
+
+void ChooseTopicBoxController::prepare() {
+	delegate()->peerListSetTitle(tr::lng_forward_choose());
+	setSearchNoResultsText(tr::lng_blocked_list_not_found(tr::now));
+	delegate()->peerListSetSearchMode(PeerListSearchMode::Enabled);
+	refreshRows(true);
+
+	session().changes().entryUpdates(
+		Data::EntryUpdate::Flag::Repaint
+	) | rpl::start_with_next([=](const Data::EntryUpdate &update) {
+		if (const auto topic = update.entry->asTopic()) {
+			if (topic->forum() == _forum) {
+				const auto id = topic->rootId().bare;
+				if (const auto row = delegate()->peerListFindRow(id)) {
+					delegate()->peerListUpdateRow(row);
+				}
+			}
+		}
+	}, lifetime());
+}
+
+void ChooseTopicBoxController::refreshRows(bool initial) {
+	auto added = false;
+	for (const auto &row : _forum->topicsList()->indexed()->all()) {
+		if (const auto topic = row->topic()) {
+			const auto id = topic->rootId().bare;
+			auto already = delegate()->peerListFindRow(id);
+			if (initial || !already) {
+				if (auto created = createRow(topic)) {
+					delegate()->peerListAppendRow(std::move(created));
+					added = true;
+				}
+			} else if (already->isSearchResult()) {
+				delegate()->peerListAppendFoundRow(already);
+				added = true;
+			}
+		}
+	}
+	if (added) {
+		delegate()->peerListRefreshRows();
+	}
+}
+
+void ChooseTopicBoxController::loadMoreRows() {
+	_forum->requestTopics();
+}
+
+std::unique_ptr<PeerListRow> ChooseTopicBoxController::createSearchRow(
+		PeerListRowId id) {
+	if (const auto topic = _forum->topicFor(MsgId(id))) {
+		return std::make_unique<Row>(topic);
+	}
+	return nullptr;
+}
+
+auto ChooseTopicBoxController::createRow(not_null<Data::ForumTopic*> topic)
+-> std::unique_ptr<Row> {
+	const auto skip = _filter ? !_filter(topic) : !topic->canWrite();
+	return skip ? nullptr : std::make_unique<Row>(topic);
+};

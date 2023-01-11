@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_pts_waiter.h"
 #include "data/data_location.h"
 #include "data/data_chat_participant_status.h"
+#include "data/data_peer_bot_commands.h"
+#include "data/data_user_names.h"
 
 struct ChannelLocation {
 	QString address;
@@ -52,12 +54,20 @@ enum class ChannelDataFlag {
 	HasLink = (1 << 18),
 	SlowmodeEnabled = (1 << 19),
 	NoForwards = (1 << 20),
+	JoinToWrite = (1 << 21),
+	RequestToJoin = (1 << 22),
+	Forum = (1 << 23),
+	AntiSpam = (1 << 24),
+	ParticipantsHidden = (1 << 25),
 };
 inline constexpr bool is_flag_type(ChannelDataFlag) { return true; };
 using ChannelDataFlags = base::flags<ChannelDataFlag>;
 
 class MegagroupInfo {
 public:
+	MegagroupInfo();
+	~MegagroupInfo();
+
 	struct Admin {
 		explicit Admin(ChatAdminRightsInfo rights)
 		: rights(rights) {
@@ -83,14 +93,15 @@ public:
 	const ChannelLocation *getLocation() const;
 	void setLocation(const ChannelLocation &location);
 
-	bool updateBotCommands(const MTPVector<MTPBotInfo> &data);
-	bool updateBotCommands(
-		UserId botId,
-		const MTPVector<MTPBotCommand> &data);
-	[[nodiscard]] auto botCommands() const
-		-> const base::flat_map<UserId, std::vector<BotCommand>> & {
+	Data::ChatBotCommands::Changed setBotCommands(
+		const std::vector<Data::BotCommands> &commands);
+	[[nodiscard]] const Data::ChatBotCommands &botCommands() const {
 		return _botCommands;
 	}
+
+	void ensureForum(not_null<ChannelData*> that);
+	[[nodiscard]] Data::Forum *forum() const;
+	[[nodiscard]] std::unique_ptr<Data::Forum> takeForumData();
 
 	std::deque<not_null<UserData*>> lastParticipants;
 	base::flat_map<not_null<UserData*>, Admin> lastAdmins;
@@ -118,11 +129,12 @@ public:
 private:
 	ChatData *_migratedFrom = nullptr;
 	ChannelLocation _location;
-	base::flat_map<UserId, std::vector<BotCommand>> _botCommands;
+	Data::ChatBotCommands _botCommands;
+	std::unique_ptr<Data::Forum> _forum;
 
 };
 
-class ChannelData : public PeerData {
+class ChannelData final : public PeerData {
 public:
 	using Flag = ChannelDataFlag;
 	using Flags = Data::Flags<ChannelDataFlags>;
@@ -137,24 +149,24 @@ public:
 	ChannelData(not_null<Data::Session*> owner, PeerId id);
 
 	void setName(const QString &name, const QString &username);
+	void setUsername(const QString &username);
+	void setUsernames(const Data::Usernames &newUsernames);
 	void setPhoto(const MTPChatPhoto &photo);
 	void setAccessHash(uint64 accessHash);
 
-	void setFlags(ChannelDataFlags which) {
-		_flags.set(which);
-	}
-	void addFlags(ChannelDataFlags which) {
-		_flags.add(which);
-	}
-	void removeFlags(ChannelDataFlags which) {
-		_flags.remove(which);
-	}
+	void setFlags(ChannelDataFlags which);
+	void addFlags(ChannelDataFlags which);
+	void removeFlags(ChannelDataFlags which);
 	[[nodiscard]] auto flags() const {
 		return _flags.current();
 	}
 	[[nodiscard]] auto flagsValue() const {
 		return _flags.value();
 	}
+
+	[[nodiscard]] QString username() const;
+	[[nodiscard]] QString editableUsername() const;
+	[[nodiscard]] const std::vector<QString> &usernames() const;
 
 	[[nodiscard]] int membersCount() const {
 		return std::max(_membersCount, 1);
@@ -243,6 +255,9 @@ public:
 	[[nodiscard]] bool isGigagroup() const {
 		return flags() & Flag::Gigagroup;
 	}
+	[[nodiscard]] bool isForum() const {
+		return flags() & Flag::Forum;
+	}
 	[[nodiscard]] bool hasUsername() const {
 		return flags() & Flag::Username;
 	}
@@ -254,6 +269,15 @@ public:
 	}
 	[[nodiscard]] bool amCreator() const {
 		return flags() & Flag::Creator;
+	}
+	[[nodiscard]] bool joinToWrite() const {
+		return flags() & Flag::JoinToWrite;
+	}
+	[[nodiscard]] bool requestToJoin() const {
+		return flags() & Flag::RequestToJoin;
+	}
+	[[nodiscard]] bool antiSpamMode() const {
+		return flags() & Flag::AntiSpam;
 	}
 
 	[[nodiscard]] auto adminRights() const {
@@ -294,7 +318,7 @@ public:
 	void setDefaultRestrictions(ChatRestrictions rights);
 
 	// Like in ChatData.
-	[[nodiscard]] bool canWrite() const;
+	[[nodiscard]] bool canWrite(bool checkForForum = true) const;
 	[[nodiscard]] bool allowsForwarding() const;
 	[[nodiscard]] bool canEditInformation() const;
 	[[nodiscard]] bool canEditPermissions() const;
@@ -411,15 +435,19 @@ public:
 	void setGroupCallDefaultJoinAs(PeerId peerId);
 	[[nodiscard]] PeerId groupCallDefaultJoinAs() const;
 
-	void setAllowedReactions(base::flat_set<QString> list);
-	[[nodiscard]] const base::flat_set<QString> &allowedReactions() const;
+	void setAllowedReactions(Data::AllowedReactions value);
+	[[nodiscard]] const Data::AllowedReactions &allowedReactions() const;
+
+	[[nodiscard]] Data::Forum *forum() const {
+		return mgInfo ? mgInfo->forum() : nullptr;
+	}
+
+	void processTopics(const MTPVector<MTPForumTopic> &topics);
 
 	// Still public data members.
 	uint64 access = 0;
 
 	MTPinputChannel inputChannel = MTP_inputChannelEmpty();
-
-	QString username;
 
 	int32 date = 0;
 	std::unique_ptr<MegagroupInfo> mgInfo;
@@ -443,6 +471,8 @@ private:
 
 	PtsWaiter _ptsWaiter;
 
+	Data::UsernamesInfo _username;
+
 	int _membersCount = -1;
 	int _adminsCount = 1;
 	int _restrictedCount = 0;
@@ -461,15 +491,13 @@ private:
 	QString _inviteLink;
 	std::optional<ChannelData*> _linkedChat;
 
-	base::flat_set<QString> _allowedReactions;
+	Data::AllowedReactions _allowedReactions;
 
 	std::unique_ptr<Data::GroupCall> _call;
 	PeerId _callDefaultJoinAs = 0;
 
 	int _slowmodeSeconds = 0;
 	TimeId _slowmodeLastMessage = 0;
-
-	rpl::lifetime _lifetime;
 
 };
 

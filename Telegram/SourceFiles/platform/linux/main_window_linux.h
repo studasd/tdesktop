@@ -21,12 +21,9 @@ namespace Platform {
 class MainWindow : public Window::MainWindow {
 public:
 	explicit MainWindow(not_null<Window::Controller*> controller);
-
-	void psShowTrayMenu();
-
-	bool isActiveForTrayMenu() override;
-
 	~MainWindow();
+
+	void updateWindowIcon() override;
 
 protected:
 	bool eventFilter(QObject *obj, QEvent *evt) override;
@@ -35,20 +32,12 @@ protected:
 	void unreadCounterChangedHook() override;
 	void updateGlobalMenuHook() override;
 
-	void initTrayMenuHook() override;
-	bool hasTrayIcon() const override;
-
 	void workmodeUpdated(Core::Settings::WorkMode mode) override;
 	void createGlobalMenu() override;
 
-	QSystemTrayIcon *trayIcon = nullptr;
-	QMenu *trayIconMenu = nullptr;
-
-	void psTrayMenuUpdated();
-	void psSetupTrayIcon();
-
 private:
-	base::unique_qptr<Ui::PopupMenu> _trayIconMenuXEmbed;
+	void updateUnityCounter();
+	void handleNativeSurfaceChanged(bool exist);
 
 	QMenuBar *psMainMenu = nullptr;
 	QAction *psLogout = nullptr;
@@ -71,8 +60,8 @@ private:
 	QAction *psMonospace = nullptr;
 	QAction *psClearFormat = nullptr;
 
-	void updateIconCounters();
-	void handleNativeSurfaceChanged(bool exist);
+	QIcon _icon;
+	bool _usingSupportIcon = false;
 
 };
 

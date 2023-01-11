@@ -1065,6 +1065,7 @@ void GroupCall::start(TimeId scheduleDate, bool rtmp) {
 		MTPstring(), // title
 		MTP_int(scheduleDate)
 	)).done([=](const MTPUpdates &result) {
+		_reloadedStaleCall = true;
 		_acceptFields = true;
 		_peer->session().api().applyUpdates(result);
 		_acceptFields = false;
@@ -1393,6 +1394,13 @@ void GroupCall::rejoin(not_null<PeerData*> as) {
 					sendSelfUpdate(SendUpdateType::CameraPaused);
 				}
 				sendPendingSelfUpdates();
+				if (!_reloadedStaleCall
+					&& _state.current() != State::Joining) {
+					if (const auto real = lookupReal()) {
+						_reloadedStaleCall = true;
+						real->reloadIfStale();
+					}
+				}
 			}).fail([=](const MTP::Error &error) {
 				_joinState.finish();
 
@@ -2419,8 +2427,8 @@ bool GroupCall::tryCreateController() {
 		},
 	};
 	if (Logs::DebugEnabled()) {
-		auto callLogFolder = cWorkingDir() + qsl("DebugLogs");
-		auto callLogPath = callLogFolder + qsl("/last_group_call_log.txt");
+		auto callLogFolder = cWorkingDir() + u"DebugLogs"_q;
+		auto callLogPath = callLogFolder + u"/last_group_call_log.txt"_q;
 		auto callLogNative = QDir::toNativeSeparators(callLogPath);
 		descriptor.config.need_log = true;
 #ifdef Q_OS_WIN
@@ -2507,7 +2515,7 @@ void GroupCall::broadcastPartStart(std::shared_ptr<LoadPartTask> task) {
 				: (videoQuality == Quality::Medium)
 				? 1
 				: 0)),
-		MTP_int(0),
+		MTP_long(0),
 		MTP_int(128 * 1024)
 	)).done([=](
 			const MTPupload_File &result,
@@ -3474,6 +3482,7 @@ void GroupCall::destroyController() {
 		DEBUG_LOG(("Call Info: Destroying call controller.."));
 		invalidate_weak_ptrs(&_instanceGuard);
 
+		_instance->stop();
 		crl::async([
 			instance = base::take(_instance),
 			done = _delegate->groupCallAddAsyncWaiter()
@@ -3489,6 +3498,8 @@ void GroupCall::destroyScreencast() {
 	if (_screenInstance) {
 		DEBUG_LOG(("Call Info: Destroying call screen controller.."));
 		invalidate_weak_ptrs(&_screenInstanceGuard);
+
+		_screenInstance->stop();
 		crl::async([
 			instance = base::take(_screenInstance),
 			done = _delegate->groupCallAddAsyncWaiter()

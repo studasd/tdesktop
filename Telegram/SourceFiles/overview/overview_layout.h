@@ -27,6 +27,10 @@ class PhotoMedia;
 class DocumentMedia;
 } // namespace Data
 
+namespace Ui {
+class SpoilerAnimation;
+} // namespace Ui
+
 namespace Overview {
 namespace Layout {
 
@@ -36,9 +40,12 @@ class Delegate;
 
 class PaintContext : public PaintContextBase {
 public:
-	PaintContext(crl::time ms, bool selecting) : PaintContextBase(ms, selecting) {
+	PaintContext(crl::time ms, bool selecting, bool paused)
+	: PaintContextBase(ms, selecting)
+	, paused(paused) {
 	}
 	bool skipBorder = false;
+	bool paused = false;
 
 };
 
@@ -102,6 +109,9 @@ public:
 
 	void clickHandlerActiveChanged(const ClickHandlerPtr &action, bool active) override;
 
+	virtual void clearSpoiler() {
+	}
+
 	~RadialProgressItem();
 
 protected:
@@ -144,23 +154,27 @@ protected:
 class StatusText {
 public:
 	// duration = -1 - no duration, duration = -2 - "GIF" duration
-	void update(int newSize, int fullSize, int duration, crl::time realDuration);
-	void setSize(int newSize);
+	void update(
+		int64 newSize,
+		int64 fullSize,
+		TimeId duration,
+		TimeId realDuration);
+	void setSize(int64 newSize);
 
-	int size() const {
+	[[nodiscard]] int64 size() const {
 		return _size;
 	}
-	QString text() const {
+	[[nodiscard]] QString text() const {
 		return _text;
 	}
 
 private:
 	// >= 0 will contain download / upload string, _size = loaded bytes
 	// < 0 will contain played string, _size = -(seconds + 1) played
-	// 0x7FFFFFF0 will contain status for not yet downloaded file
-	// 0x7FFFFFF1 will contain status for already downloaded file
-	// 0x7FFFFFF2 will contain status for failed to download / upload file
-	int _size = 0;
+	// 0xFFFFFFF0LL will contain status for not yet downloaded file
+	// 0xFFFFFFF1LL will contain status for already downloaded file
+	// 0xFFFFFFF2LL will contain status for failed to download / upload file
+	int64 _size = 0;
 	QString _text;
 
 };
@@ -174,7 +188,8 @@ public:
 	Photo(
 		not_null<Delegate*> delegate,
 		not_null<HistoryItem*> parent,
-		not_null<PhotoData*> photo);
+		not_null<PhotoData*> photo,
+		bool spoiler);
 
 	void initDimensions() override;
 	int32 resizeGetHeight(int32 width) override;
@@ -188,10 +203,12 @@ public:
 private:
 	void ensureDataMediaCreated() const;
 	void setPixFrom(not_null<Image*> image);
+	void clearSpoiler();
 
 	const not_null<PhotoData*> _data;
 	mutable std::shared_ptr<Data::PhotoMedia> _dataMedia;
 	ClickHandlerPtr _link;
+	std::unique_ptr<Ui::SpoilerAnimation> _spoiler;
 
 	QPixmap _pix;
 	bool _goodLoaded = false;
@@ -251,7 +268,7 @@ private:
 	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
 	StatusText _status;
 
-	QPixmap _thumb;
+	QImage _thumb;
 	bool _thumbGood = false;
 
 };
@@ -261,7 +278,8 @@ public:
 	Video(
 		not_null<Delegate*> delegate,
 		not_null<HistoryItem*> parent,
-		not_null<DocumentData*> video);
+		not_null<DocumentData*> video,
+		bool spoiler);
 	~Video();
 
 	void initDimensions() override;
@@ -272,6 +290,7 @@ public:
 		StateRequest request) const override;
 
 	void clearHeavyPart() override;
+	void clearSpoiler() override;
 
 protected:
 	float64 dataProgress() const override;
@@ -288,6 +307,8 @@ private:
 	StatusText _status;
 
 	QString _duration;
+	std::unique_ptr<Ui::SpoilerAnimation> _spoiler;
+
 	QPixmap _pix;
 	bool _pixBlurred = true;
 
@@ -328,7 +349,7 @@ private:
 	const style::OverviewFileLayout &_st;
 
 	Ui::Text::String _name, _details;
-	int _nameVersion;
+	int _nameVersion = 0;
 
 	void updateName();
 	bool updateStatusText();
@@ -365,7 +386,7 @@ protected:
 
 private:
 	[[nodiscard]] bool downloadInCorner() const;
-	void drawCornerDownload(Painter &p, bool selected, const PaintContext *context) const;
+	void drawCornerDownload(QPainter &p, bool selected, const PaintContext *context) const;
 	[[nodiscard]] TextState cornerDownloadTextState(
 		QPoint point,
 		StateRequest request) const;
@@ -387,8 +408,9 @@ private:
 
 	Ui::Text::String _name;
 	QString _date, _ext;
-	int32 _datew, _extw;
-	int32 _thumbw;
+	int _datew = 0;
+	int _extw = 0;
+	int _thumbw = 0;
 
 	bool withThumb() const;
 	bool updateStatusText();
@@ -428,16 +450,16 @@ private:
 	std::shared_ptr<Data::DocumentMedia> _documentMedia;
 	int _pixw = 0;
 	int _pixh = 0;
-	Ui::Text::String _text = { st::msgMinWidth };
+	Ui::Text::String _text;
 	QPixmap _thumbnail;
 	bool _thumbnailBlurred = true;
 
 	struct LinkEntry {
-		LinkEntry() : width(0) {
-		}
+		LinkEntry() = default;
 		LinkEntry(const QString &url, const QString &text);
+
 		QString text;
-		int32 width;
+		int width = 0;
 		std::shared_ptr<TextClickHandler> lnk;
 	};
 	QVector<LinkEntry> _links;

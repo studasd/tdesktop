@@ -47,6 +47,7 @@ SingleMediaPreview *SingleMediaPreview::Create(
 		preview,
 		animated,
 		Core::IsMimeSticker(file.information->filemime),
+		file.spoiler,
 		animationPreview ? file.path : QString(),
 		type);
 }
@@ -57,6 +58,7 @@ SingleMediaPreview::SingleMediaPreview(
 	QImage preview,
 	bool animated,
 	bool sticker,
+	bool spoiler,
 	const QString &animatedPreviewPath,
 	AttachControls::Type type)
 : AbstractSingleMediaPreview(parent, type)
@@ -67,20 +69,24 @@ SingleMediaPreview::SingleMediaPreview(
 
 	preparePreview(preview);
 	prepareAnimatedPreview(animatedPreviewPath, animated);
-	updatePhotoEditorButton();
+	setSpoiler(spoiler);
+}
+
+bool SingleMediaPreview::supportsSpoilers() const {
+	return !_sticker || sendWay().sendImagesAsPhotos();
 }
 
 bool SingleMediaPreview::drawBackground() const {
 	return !_sticker;
 }
 
-bool SingleMediaPreview::tryPaintAnimation(Painter &p) {
+bool SingleMediaPreview::tryPaintAnimation(QPainter &p) {
 	if (_gifPreview && _gifPreview->started()) {
 		const auto paused = _gifPaused();
 		const auto frame = _gifPreview->current({
 			.frame = QSize(previewWidth(), previewHeight()),
 		}, paused ? 0 : crl::now());
-		p.drawPixmap(previewLeft(), previewTop(), frame);
+		p.drawImage(previewLeft(), previewTop(), frame);
 		return true;
 	} else if (_lottiePreview && _lottiePreview->ready()) {
 		const auto frame = _lottiePreview->frame();

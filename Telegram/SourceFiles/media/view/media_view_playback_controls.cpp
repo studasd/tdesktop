@@ -140,7 +140,7 @@ MenuSpeedItem::MenuSpeedItem(
 
 	paintRequest(
 	) | rpl::start_with_next([=](const QRect &clip) {
-		Painter p(this);
+		auto p = QPainter(this);
 
 		const auto selected = isSelected();
 		p.fillRect(clip, selected ? st.itemBgOver : st.itemBg);
@@ -425,7 +425,7 @@ float64 PlaybackControls::countDownloadedTillPercent(
 	return (_loadingReady - header) / float64(_loadingTotal - header);
 }
 
-void PlaybackControls::setLoadingProgress(int ready, int total) {
+void PlaybackControls::setLoadingProgress(int64 ready, int64 total) {
 	if (_loadingReady == ready && _loadingTotal == total) {
 		return;
 	}
@@ -568,7 +568,7 @@ void PlaybackControls::updateDownloadProgressPosition() {
 }
 
 void PlaybackControls::paintEvent(QPaintEvent *e) {
-	Painter p(this);
+	auto p = QPainter(this);
 
 	if (_fadeAnimation->paint(p)) {
 		return;

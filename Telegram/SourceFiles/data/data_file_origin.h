@@ -29,6 +29,18 @@ struct FileOriginUserPhoto {
 	}
 };
 
+struct FileOriginFullUser {
+	FileOriginFullUser(UserId userId)
+	: userId(userId) {
+	}
+
+	UserId userId = 0;
+
+	inline bool operator<(const FileOriginFullUser &other) const {
+		return userId < other.userId;
+	}
+};
+
 struct FileOriginPeerPhoto {
 	explicit FileOriginPeerPhoto(PeerId peerId) : peerId(peerId) {
 	}
@@ -96,21 +108,38 @@ struct FileOriginTheme {
 	}
 };
 
+struct FileOriginRingtones {
+	inline bool operator<(const FileOriginRingtones &) const {
+		return false;
+	}
+};
+
+struct FileOriginPremiumPreviews {
+	inline bool operator<(const FileOriginPremiumPreviews &) const {
+		return false;
+	}
+};
+
 struct FileOrigin {
 	using Variant = std::variant<
 		v::null_t,
 		FileOriginMessage,
 		FileOriginUserPhoto,
+		FileOriginFullUser,
 		FileOriginPeerPhoto,
 		FileOriginStickerSet,
 		FileOriginSavedGifs,
 		FileOriginWallpaper,
-		FileOriginTheme>;
+		FileOriginTheme,
+		FileOriginRingtones,
+		FileOriginPremiumPreviews>;
 
 	FileOrigin() = default;
 	FileOrigin(FileOriginMessage data) : data(data) {
 	}
 	FileOrigin(FileOriginUserPhoto data) : data(data) {
+	}
+	FileOrigin(FileOriginFullUser data) : data(data) {
 	}
 	FileOrigin(FileOriginPeerPhoto data) : data(data) {
 	}
@@ -121,6 +150,10 @@ struct FileOrigin {
 	FileOrigin(FileOriginWallpaper data) : data(data) {
 	}
 	FileOrigin(FileOriginTheme data) : data(data) {
+	}
+	FileOrigin(FileOriginRingtones data) : data(data) {
+	}
+	FileOrigin(FileOriginPremiumPreviews data) : data(data) {
 	}
 
 	explicit operator bool() const {
@@ -159,6 +192,7 @@ struct UpdatedFileReferences {
 
 UpdatedFileReferences GetFileReferences(const MTPmessages_Messages &data);
 UpdatedFileReferences GetFileReferences(const MTPphotos_Photos &data);
+UpdatedFileReferences GetFileReferences(const MTPusers_UserFull &data);
 UpdatedFileReferences GetFileReferences(
 	const MTPmessages_RecentStickers &data);
 UpdatedFileReferences GetFileReferences(
@@ -167,5 +201,11 @@ UpdatedFileReferences GetFileReferences(const MTPmessages_StickerSet &data);
 UpdatedFileReferences GetFileReferences(const MTPmessages_SavedGifs &data);
 UpdatedFileReferences GetFileReferences(const MTPWallPaper &data);
 UpdatedFileReferences GetFileReferences(const MTPTheme &data);
+UpdatedFileReferences GetFileReferences(
+	const MTPaccount_SavedRingtones &data);
+UpdatedFileReferences GetFileReferences(const MTPhelp_PremiumPromo &data);
+
+// Admin Log Event.
+UpdatedFileReferences GetFileReferences(const MTPMessageMedia &data);
 
 } // namespace Data

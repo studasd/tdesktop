@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ui/text/text_options.h"
 #include "ui/image/image_prepare.h"
+#include "ui/painter.h"
 #include "styles/style_chat.h"
 #include "styles/palette.h"
 
@@ -41,9 +42,13 @@ namespace {
 
 } // namespace
 
-MessageBar::MessageBar(not_null<QWidget*> parent, const style::MessageBar &st)
+MessageBar::MessageBar(
+	not_null<QWidget*> parent,
+	const style::MessageBar &st,
+	Fn<bool()> customEmojiPaused)
 : _st(st)
-, _widget(parent) {
+, _widget(parent)
+, _customEmojiPaused(std::move(customEmojiPaused)) {
 	setup();
 
 	style::PaletteChanged(
@@ -52,11 +57,21 @@ MessageBar::MessageBar(not_null<QWidget*> parent, const style::MessageBar &st)
 	}, _widget.lifetime());
 }
 
+void MessageBar::customEmojiRepaint() {
+	if (_customEmojiRepaintScheduled) {
+		return;
+	}
+	_customEmojiRepaintScheduled = true;
+	_widget.update();
+}
+
 void MessageBar::setup() {
 	_widget.resize(0, st::historyReplyHeight);
 	_widget.paintRequest(
 	) | rpl::start_with_next([=](QRect rect) {
 		auto p = Painter(&_widget);
+		p.setInactive(_customEmojiPaused());
+		_customEmojiRepaintScheduled = false;
 		paint(p);
 	}, _widget.lifetime());
 }
@@ -125,6 +140,7 @@ void MessageBar::tweenTo(MessageBarContent &&content) {
 		? RectPart::Bottom
 		: RectPart::None;
 	animation.imageFrom = grabImagePart();
+	animation.spoilerFrom = std::move(_spoiler);
 	animation.bodyOrTextFrom = grabBodyOrTextPart(animation.bodyAnimation);
 	const auto sameLength = SameFirstPartLength(
 		_content.title,
@@ -187,8 +203,18 @@ void MessageBar::tweenTo(MessageBarContent &&content) {
 void MessageBar::updateFromContent(MessageBarContent &&content) {
 	_content = std::move(content);
 	_title.setText(_st.title, _content.title);
-	_text.setMarkedText(_st.text, _content.text, Ui::DialogTextOptions());
+	_text.setMarkedText(
+		_st.text,
+		_content.text,
+		Ui::DialogTextOptions(),
+		_content.context);
 	_image = prepareImage(_content.preview);
+	if (!_content.spoilerRepaint) {
+		_spoiler = nullptr;
+	} else if (!_spoiler) {
+		_spoiler = std::make_unique<SpoilerAnimation>(
+			_content.spoilerRepaint);
+	}
 }
 
 QRect MessageBar::imageRect() const {
@@ -222,7 +248,7 @@ QRect MessageBar::bodyRect(bool withImage) const {
 	const auto top = st::msgReplyPadding.top();
 	const auto width = _widget.width() - left - st::msgReplyPadding.right();
 	const auto height = st::msgReplyBarSize.height();
-	return QRect(left, top, width, height);
+	return QRect(left, top, width, height) - _content.margins;
 }
 
 QRect MessageBar::bodyRect() const {
@@ -239,10 +265,21 @@ auto MessageBar::makeGrabGuard() {
 	auto imageShown = _animation
 		? std::move(_animation->imageShown)
 		: Ui::Animations::Simple();
-	return gsl::finally([&, shown = std::move(imageShown)]() mutable {
+	auto spoiler = std::move(_spoiler);
+	auto fromSpoiler = _animation
+		? std::move(_animation->spoilerFrom)
+		: nullptr;
+	return gsl::finally([
+		&,
+		shown = std::move(imageShown),
+		spoiler = std::move(spoiler),
+		fromSpoiler = std::move(fromSpoiler)
+	]() mutable {
 		if (_animation) {
 			_animation->imageShown = std::move(shown);
+			_animation->spoilerFrom = std::move(fromSpoiler);
 		}
+		_spoiler = std::move(spoiler);
 	});
 }
 
@@ -339,12 +376,20 @@ void MessageBar::paint(Painter &p) {
 		: (_animation->movingTo == RectPart::Top)
 		? (shiftTo - shiftFull)
 		: (shiftTo + shiftFull);
+	const auto now = crl::now();
+	const auto paused = p.inactive();
 
 	paintLeftBar(p);
 
 	if (!_animation) {
 		if (!_image.isNull()) {
-			p.drawPixmap(image, _image);
+			paintImageWithSpoiler(
+				p,
+				image,
+				_image,
+				_spoiler.get(),
+				now,
+				paused);
 		}
 	} else if (!_animation->imageTo.isNull()
 		|| (!_animation->imageFrom.isNull()
@@ -362,14 +407,30 @@ void MessageBar::paint(Painter &p) {
 		}();
 		if (_animation->bodyMoved.animating()) {
 			p.setOpacity(1. - progress);
-			p.drawPixmap(
+			paintImageWithSpoiler(
+				p,
 				rect.translated(0, shiftFrom),
-				_animation->imageFrom);
+				_animation->imageFrom,
+				_animation->spoilerFrom.get(),
+				now,
+				paused);
 			p.setOpacity(progress);
-			p.drawPixmap(rect.translated(0, shiftTo), _animation->imageTo);
+			paintImageWithSpoiler(
+				p,
+				rect.translated(0, shiftTo),
+				_animation->imageTo,
+				_spoiler.get(),
+				now,
+				paused);
 			p.setOpacity(1.);
 		} else {
-			p.drawPixmap(rect, _image);
+			paintImageWithSpoiler(
+				p,
+				rect,
+				_image,
+				_spoiler.get(),
+				now,
+				paused);
 		}
 	}
 	if (!_animation || _animation->bodyAnimation == BodyAnimation::None) {
@@ -384,8 +445,16 @@ void MessageBar::paint(Painter &p) {
 				width);
 		} else {
 			p.setPen(_st.textFg);
-			p.setTextPalette(_st.textPalette);
-			_text.drawLeftElided(p, body.x(), text.y(), body.width(), width);
+			_text.draw(p, {
+				.position = { body.x(), text.y() },
+				.outerWidth = width,
+				.availableWidth = body.width(),
+				.palette = &_st.textPalette,
+				.spoiler = Ui::Text::DefaultSpoilerCache(),
+				.now = now,
+				.paused = paused,
+				.elisionLines = 1,
+			});
 		}
 	} else if (_animation->bodyAnimation == BodyAnimation::Text) {
 		p.setOpacity(1. - progress);
@@ -481,6 +550,21 @@ void MessageBar::ensureGradientsCreated(int size) {
 	auto top = bottom.mirrored();
 	_bottomBarGradient = Images::PixmapFast(std::move(bottom));
 	_topBarGradient = Images::PixmapFast(std::move(top));
+}
+
+void MessageBar::paintImageWithSpoiler(
+		QPainter &p,
+		QRect rect,
+		const QPixmap &image,
+		SpoilerAnimation *spoiler,
+		crl::time now,
+		bool paused) const {
+	p.drawPixmap(rect, image);
+	if (spoiler) {
+		const auto frame = DefaultImageSpoiler().frame(
+			spoiler->index(now, paused));
+		FillSpoilerRect(p, rect, frame);
+	}
 }
 
 void MessageBar::paintLeftBar(Painter &p) {

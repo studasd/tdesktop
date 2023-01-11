@@ -8,7 +8,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/send_action_animations.h"
 
 #include "api/api_send_progress.h"
+#include "base/never_freed_pointer.h"
 #include "ui/effects/animation_value.h"
+#include "ui/painter.h"
 #include "styles/style_widgets.h"
 #include "styles/style_dialogs.h"
 
@@ -42,7 +44,7 @@ public:
 		return width();
 	}
 	virtual void paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -81,7 +83,7 @@ namespace {
 using ImplementationsMap = QMap<
 	Api::SendProgressType,
 	const SendActionAnimation::Impl::MetaData*>;
-NeverFreedPointer<ImplementationsMap> Implementations;
+base::NeverFreedPointer<ImplementationsMap> Implementations;
 
 class TypingAnimation : public SendActionAnimation::Impl {
 public:
@@ -102,7 +104,7 @@ public:
 	}
 
 	void paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -117,7 +119,7 @@ const TypingAnimation::MetaData TypingAnimation::kMeta = {
 };
 
 void TypingAnimation::paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -177,7 +179,7 @@ public:
 	}
 
 	void paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -192,7 +194,7 @@ const RecordAnimation::MetaData RecordAnimation::kMeta = {
 };
 
 void RecordAnimation::paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -243,7 +245,7 @@ public:
 	}
 
 	void paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -258,7 +260,7 @@ const UploadAnimation::MetaData UploadAnimation::kMeta = {
 };
 
 void UploadAnimation::paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -326,14 +328,14 @@ public:
 	bool finishNow() override;
 
 	static void PaintIdle(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
 		int outerWidth);
 
 	void paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -342,7 +344,7 @@ public:
 
 private:
 	static void PaintFrame(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -396,7 +398,7 @@ bool SpeakingAnimation::finishNow() {
 }
 
 void SpeakingAnimation::PaintIdle(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -405,7 +407,7 @@ void SpeakingAnimation::PaintIdle(
 }
 
 void SpeakingAnimation::paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -419,7 +421,7 @@ void SpeakingAnimation::paint(
 }
 
 void SpeakingAnimation::PaintFrame(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -533,12 +535,13 @@ public:
 	}
 
 	void paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
 		int outerWidth,
 		crl::time now) override;
+
 private:
 	const struct {
 		const float64 outWidth;
@@ -562,7 +565,7 @@ const ChooseStickerAnimation::MetaData ChooseStickerAnimation::kMeta = {
 };
 
 void ChooseStickerAnimation::paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -693,7 +696,7 @@ int SendActionAnimation::widthNoMargins() const {
 }
 
 void SendActionAnimation::paint(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,
@@ -705,7 +708,7 @@ void SendActionAnimation::paint(
 }
 
 void SendActionAnimation::PaintSpeakingIdle(
-		Painter &p,
+		QPainter &p,
 		style::color color,
 		int x,
 		int y,

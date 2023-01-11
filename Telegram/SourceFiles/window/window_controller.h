@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Main {
 class Account;
+class Session;
 } // namespace Main
 
 namespace Media::View {
@@ -46,9 +47,17 @@ public:
 
 		return *_account;
 	}
+	[[nodiscard]] Main::Account *maybeAccount() const {
+		return _account;
+	}
+	[[nodiscard]] Main::Session *maybeSession() const;
 	[[nodiscard]] SessionController *sessionController() const {
 		return _sessionController.get();
 	}
+	[[nodiscard]] auto sessionControllerValue() const
+		-> rpl::producer<SessionController*>;
+	[[nodiscard]] auto sessionControllerChanges() const
+		-> rpl::producer<SessionController*>;
 	[[nodiscard]] bool locked() const;
 
 	[[nodiscard]] Adaptive &adaptive() const;
@@ -57,8 +66,6 @@ public:
 
 	void setupPasscodeLock();
 	void clearPasscodeLock();
-	void setupIntro();
-	void setupMain(MsgId singlePeerShowAtMsgId);
 
 	void showLogoutConfirmation();
 
@@ -83,7 +90,9 @@ public:
 
 	void showRightColumn(object_ptr<TWidget> widget);
 
+	void hideLayer(anim::type animated = anim::type::normal);
 	void hideSettingsAndLayer(anim::type animated = anim::type::normal);
+	[[nodiscard]] bool isLayerShown() const;
 
 	void activate();
 	void reActivate();
@@ -97,6 +106,7 @@ public:
 
 	void invokeForSessionController(
 		not_null<Main::Account*> account,
+		PeerData *singlePeer,
 		Fn<void(not_null<SessionController*>)> &&callback);
 
 	void openInMediaView(Media::View::OpenRequest &&request);
@@ -112,6 +122,9 @@ private:
 		PeerData *singlePeer = nullptr;
 	};
 	explicit Controller(CreateArgs &&args);
+
+	void setupIntro(QPixmap oldContentCache);
+	void setupMain(MsgId singlePeerShowAtMsgId, QPixmap oldContentCache);
 
 	void showAccount(
 		not_null<Main::Account*> account,
@@ -131,10 +144,11 @@ private:
 
 	PeerData *_singlePeer = nullptr;
 	Main::Account *_account = nullptr;
+	base::Timer _isActiveTimer;
 	::MainWindow _widget;
 	const std::unique_ptr<Adaptive> _adaptive;
 	std::unique_ptr<SessionController> _sessionController;
-	base::Timer _isActiveTimer;
+	rpl::variable<SessionController*> _sessionControllerValue;
 	QPointer<Ui::BoxContent> _termsBox;
 
 	rpl::event_stream<Media::View::OpenRequest> _openInMediaViewRequests;

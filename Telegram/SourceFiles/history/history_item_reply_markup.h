@@ -22,6 +22,8 @@ enum class ReplyMarkupFlag : uint32 {
 	SingleUse             = (1U << 5),
 	Selective             = (1U << 6),
 	IsNull                = (1U << 7),
+	OnlyBuyButton         = (1U << 8),
+	Persistent            = (1U << 9),
 };
 inline constexpr bool is_flag_type(ReplyMarkupFlag) { return true; }
 using ReplyMarkupFlags = base::flags<ReplyMarkupFlag>;
@@ -41,6 +43,8 @@ struct HistoryMessageMarkupButton {
 		Buy,
 		Auth,
 		UserProfile,
+		WebView,
+		SimpleWebView,
 	};
 
 	HistoryMessageMarkupButton(

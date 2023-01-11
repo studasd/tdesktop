@@ -53,6 +53,8 @@ public:
 	object_ptr<Ui::LayerWidget> moveContentToLayer(
 		QRect bodyGeometry) override;
 
+	rpl::producer<> removeRequests() const override;
+
 	// Float player interface.
 	bool floatPlayerHandleWheelEvent(QEvent *e) override;
 	QRect floatPlayerAvailableRect() override;
@@ -63,6 +65,7 @@ protected:
 
 	void showAnimatedHook(
 		const Window::SectionSlideParams &params) override;
+	void paintEvent(QPaintEvent *e) override;
 
 private:
 	void init();

@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/message_bar.h"
 #include "ui/widgets/shadow.h"
 #include "ui/widgets/buttons.h"
+#include "ui/wrap/fade_wrap.h"
 #include "styles/style_chat.h"
 #include "styles/palette.h"
 
@@ -19,9 +20,11 @@ namespace Ui {
 
 PinnedBar::PinnedBar(
 	not_null<QWidget*> parent,
-	rpl::producer<MessageBarContent> content)
+	Fn<bool()> customEmojiPaused,
+	rpl::producer<> customEmojiPausedChanges)
 : _wrap(parent, object_ptr<RpWidget>(parent))
-, _shadow(std::make_unique<PlainShadow>(_wrap.parentWidget())) {
+, _shadow(std::make_unique<PlainShadow>(_wrap.parentWidget()))
+, _customEmojiPaused(std::move(customEmojiPaused)) {
 	_wrap.hide(anim::type::instant);
 	_shadow->hide();
 
@@ -31,9 +34,25 @@ PinnedBar::PinnedBar(
 	}, lifetime());
 	_wrap.setAttribute(Qt::WA_OpaquePaintEvent);
 
+	if (customEmojiPausedChanges) {
+		std::move(
+			customEmojiPausedChanges
+		) | rpl::start_with_next([=] {
+			_wrap.entity()->update();
+		}, lifetime());
+	}
+}
+
+PinnedBar::~PinnedBar() {
+	_right.button.destroy();
+}
+
+void PinnedBar::setContent(rpl::producer<Ui::MessageBarContent> content) {
+	_contentLifetime.destroy();
+
 	auto copy = std::move(
 		content
-	) | rpl::start_spawning(_wrap.lifetime());
+	) | rpl::start_spawning(_contentLifetime);
 
 	rpl::duplicate(
 		copy
@@ -44,11 +63,17 @@ PinnedBar::PinnedBar(
 		if (creating) {
 			createControls();
 		}
+
+		// In most cases the new right button should arrive
+		// before we want to get its width.
+		const auto right = _right.button ? _right.button->width() : 0;
+		content.margins = { 0, 0, right, 0 };
+
 		_bar->set(std::move(content));
 		if (creating) {
 			_bar->finishAnimating();
 		}
-	}, lifetime());
+	}, _contentLifetime);
 
 	std::move(
 		copy
@@ -64,19 +89,30 @@ PinnedBar::PinnedBar(
 	}, [=] {
 		_forceHidden = true;
 		_wrap.toggle(false, anim::type::normal);
-	}, lifetime());
-}
-
-PinnedBar::~PinnedBar() {
-	_rightButton.destroy();
+	}, _contentLifetime);
 }
 
 void PinnedBar::setRightButton(object_ptr<Ui::RpWidget> button) {
-	_rightButton.destroy();
-	_rightButton = std::move(button);
-	if (_rightButton) {
-		_rightButton->setParent(_wrap.entity());
-		_rightButton->show();
+	const auto hasPrevious = (_right.button != nullptr);
+	if (auto previous = _right.button.release()) {
+		using Unique = base::unique_qptr<Ui::FadeWrapScaled<Ui::RpWidget>>;
+		_right.previousButtonLifetime = previous->shownValue(
+		) | rpl::filter(!rpl::mappers::_1) | rpl::start_with_next([=] {
+			_right.previousButtonLifetime.destroy();
+		});
+		previous->hide(anim::type::normal);
+		_right.previousButtonLifetime.make_state<Unique>(Unique{ previous });
+	}
+	_right.button.create(_wrap.entity(), std::move(button));
+	if (_right.button) {
+		_right.button->setParent(_wrap.entity());
+		if (hasPrevious) {
+			_right.button->setDuration(st::defaultMessageBar.duration);
+			_right.button->show(anim::type::normal);
+		} else {
+			_right.button->setDuration(0);
+			_right.button->show(anim::type::instant);
+		}
 	}
 	if (_bar) {
 		updateControlsGeometry(_wrap.geometry());
@@ -84,14 +120,13 @@ void PinnedBar::setRightButton(object_ptr<Ui::RpWidget> button) {
 }
 
 void PinnedBar::updateControlsGeometry(QRect wrapGeometry) {
-	_bar->widget()->resizeToWidth(
-		wrapGeometry.width() - (_rightButton ? _rightButton->width() : 0));
+	_bar->widget()->resizeToWidth(wrapGeometry.width());
 	const auto hidden = _wrap.isHidden() || !wrapGeometry.height();
 	if (_shadow->isHidden() != hidden) {
 		_shadow->setVisible(!hidden);
 	}
-	if (_rightButton) {
-		_rightButton->moveToRight(0, 0);
+	if (_right.button) {
+		_right.button->moveToRight(0, 0);
 	}
 }
 
@@ -116,19 +151,22 @@ void PinnedBar::createControls() {
 
 	_bar = std::make_unique<MessageBar>(
 		_wrap.entity(),
-		st::defaultMessageBar);
-	if (_rightButton) {
-		_rightButton->raise();
+		st::defaultMessageBar,
+		_customEmojiPaused);
+	if (_right.button) {
+		_right.button->raise();
 	}
 
 	// Clicks.
 	_bar->widget()->setCursor(style::cur_pointer);
 	_bar->widget()->events(
 	) | rpl::filter([=](not_null<QEvent*> event) {
-		return (event->type() == QEvent::MouseButtonPress);
+		return (event->type() == QEvent::MouseButtonPress)
+			&& (static_cast<QMouseEvent*>(event.get())->button()
+					== Qt::LeftButton);
 	}) | rpl::map([=] {
 		return _bar->widget()->events(
-		) | rpl::filter([=](not_null<QEvent*> event) {
+		) | rpl::filter([](not_null<QEvent*> event) {
 			return (event->type() == QEvent::MouseButtonRelease);
 		}) | rpl::take(1) | rpl::filter([=](not_null<QEvent*> event) {
 			return _bar->widget()->rect().contains(
@@ -188,6 +226,12 @@ void PinnedBar::raise() {
 	_shadow->raise();
 }
 
+void PinnedBar::customEmojiRepaint() {
+	if (_bar) {
+		_bar->customEmojiRepaint();
+	}
+}
+
 void PinnedBar::finishAnimating() {
 	_wrap.finishAnimating();
 }
@@ -214,6 +258,18 @@ rpl::producer<int> PinnedBar::heightValue() const {
 
 rpl::producer<> PinnedBar::barClicks() const {
 	return _barClicks.events();
+}
+
+rpl::producer<> PinnedBar::contextMenuRequested() const {
+	return _wrap.entity()->paintRequest(
+	) | rpl::filter([=] {
+		return _bar && _bar->widget();
+	}) | rpl::map([=] {
+		return _bar->widget()->events(
+		) | rpl::filter([](not_null<QEvent*> event) {
+			return (event->type() == QEvent::ContextMenu);
+		}) | rpl::to_empty;
+	}) | rpl::flatten_latest();
 }
 
 } // namespace Ui

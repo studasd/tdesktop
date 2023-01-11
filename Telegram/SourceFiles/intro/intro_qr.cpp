@@ -189,7 +189,11 @@ QrWidget::QrWidget(
 	}, lifetime());
 
 	setupControls();
-	refreshCode();
+	account->mtp().mainDcIdValue(
+	) | rpl::start_with_next([=] {
+		api().request(base::take(_requestId)).cancel();
+		refreshCode();
+	}, lifetime());
 }
 
 int QrWidget::errorTop() const {
@@ -343,7 +347,7 @@ void QrWidget::handleTokenResult(const MTPauth_LoginToken &result) {
 
 void QrWidget::showTokenError(const MTP::Error &error) {
 	_requestId = 0;
-	if (error.type() == qstr("SESSION_PASSWORD_NEEDED")) {
+	if (error.type() == u"SESSION_PASSWORD_NEEDED"_q) {
 		sendCheckPasswordRequest();
 	} else if (base::take(_forceRefresh)) {
 		refreshCode();
@@ -394,7 +398,7 @@ void QrWidget::sendCheckPasswordRequest() {
 				LOG(("API Error: No current password received on login."));
 				goReplace<QrWidget>(Animate::Forward);
 				return;
-			} else if (!getData()->pwdState.request) {
+			} else if (!getData()->pwdState.hasPassword) {
 				const auto callback = [=](Fn<void()> &&close) {
 					Core::UpdateApplication();
 					close();

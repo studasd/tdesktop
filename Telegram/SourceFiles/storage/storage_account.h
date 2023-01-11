@@ -135,6 +135,10 @@ public:
 	void writeRecentMasks();
 	void readInstalledMasks();
 	void readRecentMasks();
+	void writeInstalledCustomEmoji();
+	void writeFeaturedCustomEmoji();
+	void readInstalledCustomEmoji();
+	void readFeaturedCustomEmoji();
 
 	void writeRecentHashtagsAndBots();
 	void readRecentHashtagsAndBots();
@@ -157,6 +161,8 @@ public:
 	[[nodiscard]] bool isBotTrustedOpenGame(PeerId botId);
 	void markBotTrustedPayment(PeerId botId);
 	[[nodiscard]] bool isBotTrustedPayment(PeerId botId);
+	void markBotTrustedOpenWebView(PeerId botId);
+	[[nodiscard]] bool isBotTrustedOpenWebView(PeerId botId);
 
 	[[nodiscard]] bool encrypt(
 		const void *src,
@@ -178,8 +184,9 @@ private:
 		Failed,
 	};
 	enum class BotTrustFlag : uchar {
-		NoOpenGame = (1 << 0),
-		Payment    = (1 << 1),
+		NoOpenGame  = (1 << 0),
+		Payment     = (1 << 1),
+		OpenWebView = (1 << 2),
 	};
 	friend inline constexpr bool is_flag_type(BotTrustFlag) { return true; };
 
@@ -281,6 +288,9 @@ private:
 	FileKey _exportSettingsKey = 0;
 	FileKey _installedMasksKey = 0;
 	FileKey _recentMasksKey = 0;
+	FileKey _installedCustomEmojiKey = 0;
+	FileKey _featuredCustomEmojiKey = 0;
+	FileKey _archivedCustomEmojiKey = 0;
 
 	qint64 _cacheTotalSizeLimit = 0;
 	qint64 _cacheBigFileTotalSizeLimit = 0;
