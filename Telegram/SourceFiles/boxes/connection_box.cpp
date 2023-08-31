@@ -459,7 +459,7 @@ void ProxyRow::paintEvent(QPaintEvent *e) {
 void ProxyRow::paintCheck(Painter &p) {
 	const auto loading = _progress
 		? _progress->computeState()
-		: Ui::RadialState{ 0., 0, FullArcLength };
+		: Ui::RadialState{ 0., 0, arc::kFullLength };
 	const auto toggled = _toggled.value(_view.selected ? 1. : 0.)
 		* (1. - loading.shown);
 	const auto _st = &st::defaultRadio;
@@ -484,7 +484,7 @@ void ProxyRow::paintCheck(Painter &p) {
 			_st->thickness,
 			pen.color(),
 			_st->bg);
-	} else if (loading.arcLength < FullArcLength) {
+	} else if (loading.arcLength < arc::kFullLength) {
 		p.drawArc(rect, loading.arcFrom, loading.arcLength);
 	} else {
 		p.drawEllipse(rect);
@@ -1265,7 +1265,7 @@ object_ptr<Ui::BoxContent> ProxiesBoxController::CreateOwningBox(
 
 object_ptr<Ui::BoxContent> ProxiesBoxController::create() {
 	auto result = Box<ProxiesBox>(this, _settings);
-	_toastParent = Ui::BoxShow(result.data()).toastParent();
+	_show = result->uiShow();
 	for (const auto &item : _list) {
 		updateView(item);
 	}
@@ -1548,9 +1548,7 @@ void ProxiesBoxController::share(const ProxyData &proxy) {
 		+ ((proxy.type == Type::Mtproto && !proxy.password.isEmpty())
 			? "&secret=" + proxy.password : "");
 	QGuiApplication::clipboard()->setText(link);
-	if (_toastParent) {
-		Ui::Toast::Show(_toastParent, tr::lng_username_copied(tr::now));
-	}
+	_show->showToast(tr::lng_username_copied(tr::now));
 }
 
 ProxiesBoxController::~ProxiesBoxController() {

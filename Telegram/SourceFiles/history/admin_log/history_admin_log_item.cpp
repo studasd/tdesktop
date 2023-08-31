@@ -226,6 +226,7 @@ TextWithEntities GenerateAdminChangeText(
 		{ Flag::PinMessages, tr::lng_admin_log_admin_pin_messages },
 		{ Flag::ManageCall, tr::lng_admin_log_admin_manage_calls },
 		{ Flag::AddAdmins, tr::lng_admin_log_admin_add_admins },
+		{ Flag::Anonymous, tr::lng_admin_log_admin_remain_anonymous },
 	};
 	phraseMap[Flag::InviteByLinkOrAdd] = invitePhrase;
 	phraseMap[Flag::ManageCall] = callPhrase;
@@ -255,8 +256,17 @@ QString GeneratePermissionsChangeText(
 
 	static auto phraseMap = std::map<Flags, tr::phrase<>>{
 		{ Flag::ViewMessages, tr::lng_admin_log_banned_view_messages },
-		{ Flag::SendMessages, tr::lng_admin_log_banned_send_messages },
-		{ Flag::SendMedia, tr::lng_admin_log_banned_send_media },
+		{ Flag::SendOther, tr::lng_admin_log_banned_send_messages },
+		{ Flag::SendPhotos, tr::lng_admin_log_banned_send_photos },
+		{ Flag::SendVideos, tr::lng_admin_log_banned_send_videos },
+		{ Flag::SendMusic, tr::lng_admin_log_banned_send_music },
+		{ Flag::SendFiles, tr::lng_admin_log_banned_send_files },
+		{
+			Flag::SendVoiceMessages,
+			tr::lng_admin_log_banned_send_voice_messages },
+		{
+			Flag::SendVideoMessages,
+			tr::lng_admin_log_banned_send_video_messages },
 		{ Flag::SendStickers
 			| Flag::SendGifs
 			| Flag::SendInline
@@ -346,9 +356,6 @@ QString GenerateInviteLinkText(const MTPExportedChatInvite &data) {
 	const auto label = ExtractInviteLinkLabel(data);
 	return label.isEmpty() ? ExtractInviteLink(data).replace(
 		u"https://"_q,
-		QString()
-	).replace(
-		u"t.me/+"_q,
 		QString()
 	).replace(
 		u"t.me/joinchat/"_q,
@@ -553,10 +560,20 @@ auto GenerateParticipantChangeText(
 		switch (participant.type()) {
 		case Api::ChatParticipant::Type::Creator: {
 			// No valid string here :(
+			const auto user = GenerateParticipantString(
+				&channel->session(),
+				peerId);
+			if (peerId == channel->session().userPeerId()) {
+				return GenerateAdminChangeText(
+					channel,
+					user,
+					participant.rights(),
+					oldRights);
+			}
 			return tr::lng_admin_log_transferred(
 				tr::now,
 				lt_user,
-				GenerateParticipantString(&channel->session(), peerId),
+				user,
 				Ui::Text::WithEntities);
 		}
 		case Api::ChatParticipant::Type::Admin: {
@@ -803,7 +820,7 @@ void GenerateItems(
 	const auto makeSimpleTextMessage = [&](TextWithEntities &&text) {
 		const auto bodyFlags = MessageFlag::HasFromId
 			| MessageFlag::AdminLogEntry;
-		const auto bodyReplyTo = MsgId();
+		const auto bodyReplyTo = FullReplyTo();
 		const auto bodyViaBotId = UserId();
 		const auto bodyGroupedId = uint64();
 		return history->makeMessage(
@@ -1111,7 +1128,7 @@ void GenerateItems(
 				if (const auto controller = my.sessionWindow.get()) {
 					controller->show(
 						Box<StickerSetBox>(
-							controller,
+							controller->uiShow(),
 							Data::FromInputSet(set),
 							Data::StickersType::Stickers),
 						Ui::LayerOption::CloseOther);
@@ -1383,9 +1400,13 @@ void GenerateItems(
 
 	const auto createParticipantJoinByInvite = [&](
 			const LogJoinByInvite &data) {
-		const auto text = (channel->isMegagroup()
-			? tr::lng_admin_log_participant_joined_by_link
-			: tr::lng_admin_log_participant_joined_by_link_channel);
+		const auto text = data.is_via_chatlist()
+			? (channel->isMegagroup()
+				? tr::lng_admin_log_participant_joined_by_filter_link
+				: tr::lng_admin_log_participant_joined_by_filter_link_channel)
+			: (channel->isMegagroup()
+				? tr::lng_admin_log_participant_joined_by_link
+				: tr::lng_admin_log_participant_joined_by_link_channel);
 		addInviteLinkServiceMessage(
 			text(
 				tr::now,

@@ -11,7 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/shadow.h"
 #include "ui/widgets/buttons.h"
 #include "ui/wrap/fade_wrap.h"
-#include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 #include "styles/palette.h"
 
 #include <QtGui/QtEvents>
@@ -27,6 +27,14 @@ PinnedBar::PinnedBar(
 , _customEmojiPaused(std::move(customEmojiPaused)) {
 	_wrap.hide(anim::type::instant);
 	_shadow->hide();
+
+	_shadow->showOn(rpl::combine(
+		_wrap.shownValue(),
+		_wrap.heightValue(),
+		rpl::mappers::_1 && rpl::mappers::_2 > 0
+	) | rpl::filter([=](bool shown) {
+		return (shown == _shadow->isHidden());
+	}));
 
 	_wrap.entity()->paintRequest(
 	) | rpl::start_with_next([=](QRect clip) {
@@ -121,10 +129,6 @@ void PinnedBar::setRightButton(object_ptr<Ui::RpWidget> button) {
 
 void PinnedBar::updateControlsGeometry(QRect wrapGeometry) {
 	_bar->widget()->resizeToWidth(wrapGeometry.width());
-	const auto hidden = _wrap.isHidden() || !wrapGeometry.height();
-	if (_shadow->isHidden() != hidden) {
-		_shadow->setVisible(!hidden);
-	}
 	if (_right.button) {
 		_right.button->moveToRight(0, 0);
 	}
@@ -208,7 +212,8 @@ void PinnedBar::show() {
 	_forceHidden = false;
 	if (_shouldBeShown) {
 		_wrap.show(anim::type::instant);
-		_shadow->show();
+	} else if (!_wrap.isHidden() && !_wrap.animating()) {
+		_wrap.hide(anim::type::instant);
 	}
 }
 
@@ -218,7 +223,6 @@ void PinnedBar::hide() {
 	}
 	_forceHidden = true;
 	_wrap.hide(anim::type::instant);
-	_shadow->hide();
 }
 
 void PinnedBar::raise() {

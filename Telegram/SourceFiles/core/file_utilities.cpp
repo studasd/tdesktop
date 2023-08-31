@@ -138,9 +138,9 @@ void OpenEmailLink(const QString &email) {
 	});
 }
 
-void OpenWith(const QString &filepath, QPoint menuPosition) {
+void OpenWith(const QString &filepath) {
 	InvokeQueued(QCoreApplication::instance(), [=] {
-		if (!Platform::File::UnsafeShowOpenWithDropdown(filepath, menuPosition)) {
+		if (!Platform::File::UnsafeShowOpenWithDropdown(filepath)) {
 			Ui::PreventDelayedActivation();
 			if (!Platform::File::UnsafeShowOpenWith(filepath)) {
 				Platform::File::UnsafeLaunch(filepath);
@@ -334,7 +334,7 @@ QString ImagesOrAllFilter() {
 }
 
 QString PhotoVideoFilesFilter() {
-	return u"Image and Video Files (*.png *.jpg *.jpeg *.mp4 *.mov);;"_q
+	return u"Image and Video Files (*.png *.jpg *.jpeg *.mp4 *.mov *.m4v);;"_q
 		+ AllFilesFilter();
 }
 
@@ -371,6 +371,9 @@ bool GetDefault(
 		? parent->window()
 		: Core::App().getFileDialogParent();
 	Core::App().notifyFileDialogShown(true);
+	const auto guard = gsl::finally([] {
+		Core::App().notifyFileDialogShown(false);
+	});
 	if (type == Type::ReadFiles) {
 		files = QFileDialog::getOpenFileNames(resolvedParent, caption, startFile, filter);
 		QString path = files.isEmpty() ? QString() : QFileInfo(files.back()).absoluteDir().absolutePath();
@@ -386,7 +389,6 @@ bool GetDefault(
 	} else {
 		file = QFileDialog::getOpenFileName(resolvedParent, caption, startFile, filter);
 	}
-	Core::App().notifyFileDialogShown(false);
 
 	if (file.isEmpty()) {
 		files = QStringList();

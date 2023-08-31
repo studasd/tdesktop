@@ -18,8 +18,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_forum_topic.h"
 #include "data/data_media_types.h"
 #include "data/data_message_reactions.h"
-#include "data/data_scheduled_messages.h"
 #include "data/data_session.h"
+#include "data/data_stories.h"
 #include "data/data_user.h"
 #include "history/history.h"
 #include "history/history_item.h"
@@ -41,15 +41,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace {
 
-[[nodiscard]] bool HasInlineItems(const HistoryItemsList &items) {
-	for (const auto &item : items) {
-		if (item->viaBot()) {
-			return true;
-		}
-	}
-	return false;
-}
-
 bool PeerCallKnown(not_null<PeerData*> peer) {
 	if (peer->groupCall() != nullptr) {
 		return true;
@@ -70,30 +61,35 @@ QString GetErrorTextForSending(
 	const auto topic = forum
 		? forum->topicFor(request.topicRootId)
 		: nullptr;
-	if (!(topic ? topic->canWrite() : peer->canWrite())) {
-		return tr::lng_forward_cant(tr::now);
+	const auto thread = topic
+		? not_null<Data::Thread*>(topic)
+		: peer->owner().history(peer);
+	if (request.story) {
+		if (const auto error = request.story->errorTextForForward(thread)) {
+			return *error;
+		}
 	}
-
 	if (request.forward) {
 		for (const auto &item : *request.forward) {
-			if (const auto media = item->media()) {
-				const auto error = media->errorTextForForward(peer);
-				if (!error.isEmpty() && error != u"skip"_q) {
-					return error;
-				}
+			if (const auto error = item->errorTextForForward(thread)) {
+				return *error;
 			}
 		}
 	}
-	const auto error = Data::RestrictionError(
-		peer,
-		ChatRestriction::SendInline);
-	if (error && request.forward && HasInlineItems(*request.forward)) {
-		return *error;
+	const auto hasText = (request.text && !request.text->empty());
+	if (hasText) {
+		const auto error = Data::RestrictionError(
+			peer,
+			ChatRestriction::SendOther);
+		if (error) {
+			return *error;
+		} else if (!Data::CanSendTexts(thread)) {
+			return tr::lng_forward_cant(tr::now);
+		}
 	}
-
 	if (peer->slowmodeApplied()) {
-		const auto hasText = (request.text && !request.text->empty());
 		const auto count = (hasText ? 1 : 0)
+			+ (request.story ? 1 : 0)
 			+ (request.forward ? int(request.forward->size()) : 0);
 		if (const auto history = peer->owner().historyLoaded(peer)) {
 			if (!request.ignoreSlowmodeCountdown
@@ -104,7 +100,7 @@ QString GetErrorTextForSending(
 		}
 		if (request.text && request.text->text.size() > MaxMessageSize) {
 			return tr::lng_slowmode_too_long(tr::now);
-		} else if (hasText && count > 1) {
+		} else if ((hasText || request.story) && count > 1) {
 			return tr::lng_slowmode_no_many(tr::now);
 		} else if (count > 1) {
 			const auto albumForward = [&] {
@@ -143,7 +139,7 @@ QString GetErrorTextForSending(
 	return GetErrorTextForSending(thread->peer(), std::move(request));
 }
 
-void RequestDependentMessageData(
+void RequestDependentMessageItem(
 		not_null<HistoryItem*> item,
 		PeerId peerId,
 		MsgId msgId) {
@@ -161,6 +157,23 @@ void RequestDependentMessageData(
 	history->session().api().requestMessageData(
 		(peerId ? history->owner().peer(peerId) : history->peer),
 		msgId,
+		done);
+}
+
+void RequestDependentMessageStory(
+		not_null<HistoryItem*> item,
+		PeerId peerId,
+		StoryId storyId) {
+	const auto fullId = item->fullId();
+	const auto history = item->history();
+	const auto session = &history->session();
+	const auto done = [=] {
+		if (const auto item = session->data().message(fullId)) {
+			item->updateDependencyItem();
+		}
+	};
+	history->owner().stories().resolve(
+		{ peerId ? peerId : history->peer->id, storyId },
 		done);
 }
 
@@ -240,8 +253,7 @@ QString ItemDateText(not_null<const HistoryItem*> item, bool isUntilOnline) {
 
 bool IsItemScheduledUntilOnline(not_null<const HistoryItem*> item) {
 	return item->isScheduled()
-		&& (item->date() ==
-			Data::ScheduledMessages::kScheduledUntilOnlineTimestamp);
+		&& (item->date() == Api::kScheduledUntilOnlineTimestamp);
 }
 
 ClickHandlerPtr JumpToMessageClickHandler(
@@ -274,6 +286,27 @@ ClickHandlerPtr JumpToMessageClickHandler(
 			} else {
 				controller->showPeerHistory(peer, params, msgId);
 			}
+		}
+	});
+}
+
+ClickHandlerPtr JumpToStoryClickHandler(not_null<Data::Story*> story) {
+	return JumpToStoryClickHandler(story->peer(), story->id());
+}
+
+ClickHandlerPtr JumpToStoryClickHandler(
+		not_null<PeerData*> peer,
+		StoryId storyId) {
+	return std::make_shared<LambdaClickHandler>([=] {
+		const auto separate = Core::App().separateWindowForPeer(peer);
+		const auto controller = separate
+			? separate->sessionController()
+			: peer->session().tryResolveWindow();
+		if (controller) {
+			controller->openPeerStory(
+				peer,
+				storyId,
+				{ Data::StoriesContextSingle() });
 		}
 	});
 }
@@ -321,8 +354,13 @@ MessageFlags FlagsFromMTP(
 }
 
 MTPMessageReplyHeader NewMessageReplyHeader(const Api::SendAction &action) {
-	if (const auto id = action.replyTo) {
-		const auto to = LookupReplyTo(action.history, id);
+	if (const auto replyTo = action.replyTo) {
+		if (replyTo.storyId) {
+			return MTP_messageReplyStoryHeader(
+				MTP_long(peerToUser(replyTo.storyId.peer).bare),
+				MTP_int(replyTo.storyId.story));
+		}
+		const auto to = LookupReplyTo(action.history, replyTo.msgId);
 		if (const auto replyToTop = LookupReplyToTop(to)) {
 			using Flag = MTPDmessageReplyHeader::Flag;
 			return MTP_messageReplyHeader(
@@ -330,13 +368,13 @@ MTPMessageReplyHeader NewMessageReplyHeader(const Api::SendAction &action) {
 					| (LookupReplyIsTopicPost(to)
 						? Flag::f_forum_topic
 						: Flag(0))),
-				MTP_int(id),
+				MTP_int(replyTo.msgId),
 				MTPPeer(),
 				MTP_int(replyToTop));
 		}
 		return MTP_messageReplyHeader(
 			MTP_flags(0),
-			MTP_int(id),
+			MTP_int(replyTo.msgId),
 			MTPPeer(),
 			MTPint());
 	}
@@ -411,6 +449,10 @@ MediaCheckResult CheckMessageMedia(const MTPMessageMedia &media) {
 		return Result::Good;
 	}, [](const MTPDmessageMediaDice &) {
 		return Result::Good;
+	}, [](const MTPDmessageMediaStory &data) {
+		return data.is_via_mention()
+			? Result::HasStoryMention
+			: Result::Good;
 	}, [](const MTPDmessageMediaUnsupported &) {
 		return Result::Unsupported;
 	});

@@ -21,10 +21,12 @@ struct HistoryMessageReply;
 struct HistoryMessageViews;
 struct HistoryMessageMarkupData;
 struct HistoryMessageReplyMarkup;
+struct HistoryMessageTranslation;
 struct HistoryServiceDependentData;
 enum class HistorySelfDestructType;
 struct PreparedServiceText;
 class ReplyKeyboard;
+struct LanguageId;
 
 namespace base {
 template <typename Enum>
@@ -55,6 +57,7 @@ class MessageReactions;
 class ForumTopic;
 class Thread;
 struct SponsoredFrom;
+class Story;
 } // namespace Data
 
 namespace Main {
@@ -115,7 +118,7 @@ public:
 		not_null<History*> history,
 		MsgId id,
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		TimeId date,
 		PeerId from,
@@ -145,7 +148,7 @@ public:
 		not_null<History*> history,
 		MsgId id,
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		TimeId date,
 		PeerId from,
@@ -157,7 +160,7 @@ public:
 		not_null<History*> history,
 		MsgId id,
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		TimeId date,
 		PeerId from,
@@ -169,13 +172,14 @@ public:
 		not_null<History*> history,
 		MsgId id,
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
 		not_null<GameData*> game,
 		HistoryMessageMarkupData &&markup);
+	HistoryItem(not_null<History*> history, not_null<Data::Story*> story);
 	~HistoryItem();
 
 	struct Destroyer {
@@ -183,13 +187,16 @@ public:
 	};
 
 	void dependencyItemRemoved(not_null<HistoryItem*> dependency);
+	void dependencyStoryRemoved(not_null<Data::Story*> dependency);
 	void updateDependencyItem();
 	[[nodiscard]] MsgId dependencyMsgId() const;
 	[[nodiscard]] bool notificationReady() const;
 	[[nodiscard]] PeerData *specialNotificationPeer() const;
+	void checkStoryForwardInfo();
 	void checkBuyButton();
 
 	void updateServiceText(PreparedServiceText &&text);
+	void updateStoryMentionText();
 
 	[[nodiscard]] UserData *viaBot() const;
 	[[nodiscard]] UserData *getMessageBot() const;
@@ -259,6 +266,8 @@ public:
 	[[nodiscard]] bool definesReplyKeyboard() const;
 	[[nodiscard]] ReplyMarkupFlags replyKeyboardFlags() const;
 
+	void cacheOnlyEmojiAndSpaces(bool only);
+	[[nodiscard]] bool isOnlyEmojiAndSpaces() const;
 	[[nodiscard]] bool hasSwitchInlineButton() const {
 		return _flags & MessageFlag::HasSwitchInlineButton;
 	}
@@ -302,6 +311,9 @@ public:
 	[[nodiscard]] bool isLocal() const {
 		return _flags & MessageFlag::Local;
 	}
+	[[nodiscard]] bool isFakeBotAbout() const {
+		return _flags & MessageFlag::FakeBotAbout;
+	}
 	[[nodiscard]] bool isRegular() const;
 	[[nodiscard]] bool isUploading() const;
 	void sendFailed();
@@ -323,6 +335,7 @@ public:
 
 	[[nodiscard]] bool isService() const;
 	void applyEdition(HistoryMessageEdition &&edition);
+	void applyChanges(not_null<Data::Story*> story);
 
 	void applyEdition(const MTPDmessageService &message);
 	void applyEdition(const MTPMessageExtendedMedia &media);
@@ -346,10 +359,18 @@ public:
 	[[nodiscard]] Storage::SharedMediaTypesMask sharedMediaTypes() const;
 
 	void indexAsNewItem();
+	void addToSharedMediaIndex();
 	void removeFromSharedMediaIndex();
 
+	struct NotificationTextOptions {
+		bool spoilerLoginCode = false;
+	};
 	[[nodiscard]] QString notificationHeader() const;
-	[[nodiscard]] TextWithEntities notificationText() const;
+	[[nodiscard]] TextWithEntities notificationText(
+		NotificationTextOptions options) const;
+	[[nodiscard]] TextWithEntities notificationText() const {
+		return notificationText({});
+	}
 
 	using ToPreviewOptions = HistoryView::ToPreviewOptions;
 	using ItemPreview = HistoryView::ItemPreview;
@@ -358,8 +379,9 @@ public:
 	// Example: "[link1-start]You:[link1-end] [link1-start]Photo,[link1-end] caption text"
 	[[nodiscard]] ItemPreview toPreview(ToPreviewOptions options) const;
 	[[nodiscard]] TextWithEntities inReplyText() const;
-	[[nodiscard]] TextWithEntities originalText() const;
-	[[nodiscard]] TextWithEntities originalTextWithLocalEntities() const;
+	[[nodiscard]] const TextWithEntities &originalText() const;
+	[[nodiscard]] const TextWithEntities &translatedText() const;
+	[[nodiscard]] TextWithEntities translatedTextWithLocalEntities() const;
 	[[nodiscard]] const std::vector<ClickHandlerPtr> &customTextLinks() const;
 	[[nodiscard]] TextForMimeData clipboardText() const;
 
@@ -393,6 +415,14 @@ public:
 	[[nodiscard]] bool suggestReport() const;
 	[[nodiscard]] bool suggestBanReport() const;
 	[[nodiscard]] bool suggestDeleteAllReport() const;
+	[[nodiscard]] ChatRestriction requiredSendRight() const;
+	[[nodiscard]] bool requiresSendInlineRight() const;
+	[[nodiscard]] std::optional<QString> errorTextForForward(
+		not_null<Data::Thread*> to) const;
+	[[nodiscard]] const HistoryMessageTranslation *translation() const;
+	[[nodiscard]] bool translationShowRequiresCheck(LanguageId to) const;
+	bool translationShowRequiresRequest(LanguageId to);
+	void translationDone(LanguageId to, TextWithEntities result);
 
 	[[nodiscard]] bool canReact() const;
 	enum class ReactionSource {
@@ -417,6 +447,7 @@ public:
 	[[nodiscard]] crl::time lastReactionsRefreshTime() const;
 
 	[[nodiscard]] bool hasDirectLink() const;
+	[[nodiscard]] bool changesWallPaper() const;
 
 	[[nodiscard]] FullMsgId fullId() const;
 	[[nodiscard]] GlobalMsgId globalId() const;
@@ -434,6 +465,8 @@ public:
 	[[nodiscard]] MsgId replyToId() const;
 	[[nodiscard]] MsgId replyToTop() const;
 	[[nodiscard]] MsgId topicRootId() const;
+	[[nodiscard]] FullStoryId replyToStory() const;
+	[[nodiscard]] FullReplyTo replyTo() const;
 	[[nodiscard]] bool inThread(MsgId rootId) const;
 
 	[[nodiscard]] not_null<PeerData*> author() const;
@@ -494,7 +527,7 @@ private:
 
 	void createComponentsHelper(
 		MessageFlags flags,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		UserId viaBotId,
 		const QString &postAuthor,
 		HistoryMessageMarkupData &&markup);
@@ -531,6 +564,7 @@ private:
 	bool updateServiceDependent(bool force = false);
 	void setServiceText(PreparedServiceText &&prepared);
 
+	void setStoryFields(not_null<Data::Story*> story);
 	void finishEdition(int oldKeyboardTop);
 	void finishEditionToEmpty();
 
@@ -538,6 +572,9 @@ private:
 	void setupChatThemeChange();
 	void setupTTLChange();
 
+	void translationToggle(
+		not_null<HistoryMessageTranslation*> translation,
+		bool used);
 	void setSelfDestruct(HistorySelfDestructType type, int ttlSeconds);
 
 	TextWithEntities fromLinkText() const;
@@ -573,6 +610,7 @@ private:
 	[[nodiscard]] PreparedServiceText preparePinnedText();
 	[[nodiscard]] PreparedServiceText prepareGameScoreText();
 	[[nodiscard]] PreparedServiceText preparePaymentSentText();
+	[[nodiscard]] PreparedServiceText prepareStoryMentionText();
 	[[nodiscard]] PreparedServiceText prepareInvitedToCallText(
 		const std::vector<not_null<UserData*>> &users,
 		CallId linkCallId);

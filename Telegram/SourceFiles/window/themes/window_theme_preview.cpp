@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/themes/window_theme_preview.h"
 
+#include "dialogs/dialogs_three_state_icon.h"
 #include "lang/lang_keys.h"
 #include "platform/platform_window_title.h"
 #include "ui/text/text_options.h"
@@ -23,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_window.h"
 #include "styles/style_media_view.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_info.h"
 
@@ -561,16 +563,17 @@ void Generator::paintComposeArea() {
 	auto right = st::historySendRight + st::historySendSize.width();
 	st::historyRecordVoice[_palette].paintInCenter(*_p, QRect(_composeArea.x() + _composeArea.width() - right, controlsTop, st::historySendSize.width(), st::historySendSize.height()));
 
-	const auto emojiIconLeft = (st::historyAttachEmoji.iconPosition.x() < 0)
-		? ((st::historyAttachEmoji.width - st::historyAttachEmoji.icon.width()) / 2)
-		: st::historyAttachEmoji.iconPosition.x();
-	const auto emojiIconTop = (st::historyAttachEmoji.iconPosition.y() < 0)
-		? ((st::historyAttachEmoji.height - st::historyAttachEmoji.icon.height()) / 2)
-		: st::historyAttachEmoji.iconPosition.y();
-	const auto &emojiIcon = st::historyAttachEmoji.icon[_palette];
-	right += st::historyAttachEmoji.width;
+	const auto &emojiButton = st::historyAttachEmoji.inner;
+	const auto emojiIconLeft = (emojiButton.iconPosition.x() < 0)
+		? ((emojiButton.width - emojiButton.icon.width()) / 2)
+		: emojiButton.iconPosition.x();
+	const auto emojiIconTop = (emojiButton.iconPosition.y() < 0)
+		? ((emojiButton.height - emojiButton.icon.height()) / 2)
+		: emojiButton.iconPosition.y();
+	const auto &emojiIcon = emojiButton.icon[_palette];
+	right += emojiButton.width;
 	auto attachEmojiLeft = _composeArea.x() + _composeArea.width() - right;
-	_p->fillRect(attachEmojiLeft, controlsTop, st::historyAttachEmoji.width, st::historyAttachEmoji.height, st::historyComposeAreaBg[_palette]);
+	_p->fillRect(attachEmojiLeft, controlsTop, emojiButton.width, emojiButton.height, st::historyComposeAreaBg[_palette]);
 	emojiIcon.paint(*_p, attachEmojiLeft + emojiIconLeft, controlsTop + emojiIconTop, _rect.width());
 
 	auto pen = st::historyEmojiCircleFg[_palette]->p;
@@ -591,7 +594,7 @@ void Generator::paintComposeArea() {
 
 	auto fieldLeft = _composeArea.x() + st::historyAttach.width;
 	auto fieldTop = _composeArea.y() + _composeArea.height() - st::historyAttach.height + st::historySendPadding;
-	auto fieldWidth = _composeArea.width() - st::historyAttach.width - st::historySendSize.width() - st::historySendRight - st::historyAttachEmoji.width;
+	auto fieldWidth = _composeArea.width() - st::historyAttach.width - st::historySendSize.width() - st::historySendRight - emojiButton.width;
 	auto fieldHeight = st::historySendSize.height() - 2 * st::historySendPadding;
 	auto field = QRect(fieldLeft, fieldTop, fieldWidth, fieldHeight);
 	_p->fillRect(field, st::historyComposeField.textBg[_palette]);
@@ -693,9 +696,15 @@ void Generator::paintRow(const Row &row) {
 
 	auto chatTypeIcon = ([&row]() -> const style::icon * {
 		if (row.type == Row::Type::Group) {
-			return &(row.active ? st::dialogsChatIconActive : (row.selected ? st::dialogsChatIconOver : st::dialogsChatIcon));
+			return &Dialogs::ThreeStateIcon(
+				st::dialogsChatIcon,
+				row.active,
+				row.selected);
 		} else if (row.type == Row::Type::Channel) {
-			return &(row.active ? st::dialogsChannelIconActive : (row.selected ? st::dialogsChannelIconOver : st::dialogsChannelIcon));
+			return &Dialogs::ThreeStateIcon(
+				st::dialogsChannelIcon,
+				row.active,
+				row.selected);
 		}
 		return nullptr;
 	})();
@@ -748,7 +757,10 @@ void Generator::paintRow(const Row &row) {
 		_p->setPen(row.active ? st::dialogsUnreadFgActive[_palette] : (row.selected ? st::dialogsUnreadFgOver[_palette] : st::dialogsUnreadFg[_palette]));
 		_p->drawText(unreadRectLeft + (unreadRectWidth - unreadWidth) / 2, unreadRectTop + textTop + st::dialogsUnreadFont->ascent, counter);
 	} else if (row.pinned) {
-		auto icon = (row.active ? st::dialogsPinnedIconActive[_palette] : (row.selected ? st::dialogsPinnedIconOver[_palette] : st::dialogsPinnedIcon[_palette]));
+		auto icon = Dialogs::ThreeStateIcon(
+			st::dialogsPinnedIcon,
+			row.active,
+			row.selected)[_palette];
 		icon.paint(*_p, x + fullWidth - st.padding.right() - icon.width(), texttop, fullWidth);
 		availableWidth -= icon.width() + st::dialogsUnreadPadding;
 	}
@@ -761,9 +773,15 @@ void Generator::paintRow(const Row &row) {
 
 	auto sendStateIcon = ([&row]() -> const style::icon* {
 		if (row.status == Status::Sent) {
-			return &(row.active ? st::dialogsSentIconActive : (row.selected ? st::dialogsSentIconOver : st::dialogsSentIcon));
+			return &Dialogs::ThreeStateIcon(
+				st::dialogsSentIcon,
+				row.active,
+				row.selected);
 		} else if (row.status == Status::Received) {
-			return &(row.active ? st::dialogsReceivedIconActive : (row.selected ? st::dialogsReceivedIconOver : st::dialogsReceivedIcon));
+			return &Dialogs::ThreeStateIcon(
+				st::dialogsReceivedIcon,
+				row.active,
+				row.selected);
 		}
 		return nullptr;
 	})();

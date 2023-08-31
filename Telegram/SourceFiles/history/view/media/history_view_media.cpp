@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_style.h"
 #include "ui/chat/message_bubble.h"
 #include "ui/image/image_prepare.h"
+#include "ui/power_saving.h"
 #include "core/ui_integration.h"
 #include "styles/style_chat.h"
 
@@ -55,7 +56,7 @@ TimeId DurationForTimestampLinks(not_null<DocumentData*> document) {
 		&& !document->isVoiceMessage()) {
 		return TimeId(0);
 	}
-	return std::max(document->getDuration(), TimeId(0));
+	return std::max(document->duration(), crl::time(0)) / 1000;
 }
 
 QString TimestampLinkBase(
@@ -121,7 +122,9 @@ TextWithEntities AddTimestampLinks(
 		return text;
 	}
 	static const auto expression = QRegularExpression(
-		"(?<![^\\s\\(\\)\"\\,\\.\\-])(?:(?:(\\d{1,2}):)?(\\d))?(\\d):(\\d\\d)(?![^\\s\\(\\)\",\\.\\-])");
+		"(?<![^\\s\\(\\)\"\\,\\.\\-])"
+		"(?:(?:(\\d{1,2}):)?(\\d))?(\\d):(\\d\\d)"
+		"(?![^\\s\\(\\)\",\\.\\-\\+])");
 	const auto &string = text.text;
 	auto offset = 0;
 	while (true) {
@@ -259,12 +262,14 @@ void Media::fillImageSpoiler(
 		history()->owner().registerHeavyViewPart(_parent);
 	}
 	_parent->clearCustomEmojiRepaint();
+	const auto pausedSpoiler = context.paused
+		|| On(PowerSaving::kChatSpoiler);
 	Ui::FillSpoilerRect(
 		p,
 		rect,
 		MediaRoundingMask(spoiler->backgroundRounding),
 		Ui::DefaultImageSpoiler().frame(
-			spoiler->animation->index(context.now, context.paused)),
+			spoiler->animation->index(context.now, pausedSpoiler)),
 		spoiler->cornerCache);
 }
 
@@ -305,7 +310,7 @@ Ui::Text::String Media::createCaption(not_null<HistoryItem*> item) const {
 	};
 	result.setMarkedText(
 		st::messageTextStyle,
-		item->originalTextWithLocalEntities(),
+		item->translatedTextWithLocalEntities(),
 		Ui::ItemTextOptions(item),
 		context);
 	FillTextWithAnimatedSpoilers(_parent, result);

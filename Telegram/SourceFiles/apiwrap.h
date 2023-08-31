@@ -35,6 +35,7 @@ enum class StickersType : uchar;
 class Forum;
 class ForumTopic;
 class Thread;
+class Story;
 } // namespace Data
 
 namespace InlineBots {
@@ -79,6 +80,7 @@ class Ringtones;
 class Transcribes;
 class Premium;
 class Usernames;
+class Websites;
 
 namespace details {
 
@@ -160,6 +162,7 @@ public:
 	QString exportDirectMessageLink(
 		not_null<HistoryItem*> item,
 		bool inRepliesContext);
+	QString exportDirectStoryLink(not_null<Data::Story*> item);
 
 	void requestContacts();
 	void requestDialogs(Data::Folder *folder = nullptr);
@@ -202,6 +205,10 @@ public:
 		const QString &hash,
 		FnMut<void(const MTPChatInvite &)> done,
 		Fn<void(const MTP::Error &)> fail);
+	void checkFilterInvite(
+		const QString &slug,
+		FnMut<void(const MTPchatlists_ChatlistInvite &)> done,
+		Fn<void(const MTP::Error &)> fail);
 
 	void processFullPeer(
 		not_null<PeerData*> peer,
@@ -238,8 +245,8 @@ public:
 	void setGroupStickerSet(
 		not_null<ChannelData*> megagroup,
 		const StickerSetIdentifier &set);
-	std::vector<not_null<DocumentData*>> *stickersByEmoji(
-		not_null<EmojiPtr> emoji);
+	[[nodiscard]] std::vector<not_null<DocumentData*>> *stickersByEmoji(
+		const QString &key);
 
 	void joinChannel(not_null<ChannelData*> channel);
 	void leaveChannel(not_null<ChannelData*> channel);
@@ -296,7 +303,7 @@ public:
 	void sendVoiceMessage(
 		QByteArray result,
 		VoiceWaveform waveform,
-		int duration,
+		crl::time duration,
 		const SendAction &action);
 	void sendFiles(
 		Ui::PreparedList &&list,
@@ -352,6 +359,10 @@ public:
 	std::optional<bool> contactSignupSilentCurrent() const;
 	void saveContactSignupSilent(bool silent);
 
+	[[nodiscard]] auto botCommonGroups(not_null<UserData*> bot) const
+		-> std::optional<std::vector<not_null<PeerData*>>>;
+	void requestBotCommonGroups(not_null<UserData*> bot, Fn<void()> done);
+
 	void saveSelfBio(const QString &text);
 
 	[[nodiscard]] Api::Authorizations &authorizations();
@@ -373,6 +384,7 @@ public:
 	[[nodiscard]] Api::Transcribes &transcribes();
 	[[nodiscard]] Api::Premium &premium();
 	[[nodiscard]] Api::Usernames &usernames();
+	[[nodiscard]] Api::Websites &websites();
 
 	void updatePrivacyLastSeens();
 
@@ -596,7 +608,7 @@ private:
 	base::Timer _featuredSetsReadTimer;
 	base::flat_set<uint64> _featuredSetsRead;
 
-	base::flat_map<not_null<EmojiPtr>, StickersByEmoji> _stickersByEmoji;
+	base::flat_map<QString, StickersByEmoji> _stickersByEmoji;
 
 	mtpRequestId _contactsRequestId = 0;
 	mtpRequestId _contactsStatusesRequestId = 0;
@@ -649,6 +661,7 @@ private:
 	mtpRequestId _termsUpdateRequestId = 0;
 
 	mtpRequestId _checkInviteRequestId = 0;
+	mtpRequestId _checkFilterInviteRequestId = 0;
 
 	struct MigrateCallbacks {
 		FnMut<void(not_null<ChannelData*>)> done;
@@ -682,6 +695,7 @@ private:
 	const std::unique_ptr<Api::Transcribes> _transcribes;
 	const std::unique_ptr<Api::Premium> _premium;
 	const std::unique_ptr<Api::Usernames> _usernames;
+	const std::unique_ptr<Api::Websites> _websites;
 
 	mtpRequestId _wallPaperRequestId = 0;
 	QString _wallPaperSlug;
@@ -692,6 +706,12 @@ private:
 	std::optional<bool> _contactSignupSilent;
 	rpl::event_stream<bool> _contactSignupSilentChanges;
 
+	base::flat_map<
+		not_null<UserData*>,
+		std::vector<not_null<PeerData*>>> _botCommonGroups;
+	base::flat_map<not_null<UserData*>, Fn<void()>> _botCommonGroupsRequests;
+
 	base::flat_map<FullMsgId, QString> _unlikelyMessageLinks;
+	base::flat_map<FullStoryId, QString> _unlikelyStoryLinks;
 
 };

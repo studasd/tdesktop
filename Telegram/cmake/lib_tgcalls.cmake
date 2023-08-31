@@ -28,6 +28,7 @@ PRIVATE
     CodecSelectHelper.h
     CryptoHelper.cpp
     CryptoHelper.h
+    DirectConnectionChannel.h
     EncryptedConnection.cpp
     EncryptedConnection.h
     FakeAudioDeviceModule.cpp
@@ -64,8 +65,11 @@ PRIVATE
 
     v2/ContentNegotiation.cpp
     v2/ContentNegotiation.h
+    v2/DirectNetworkingImpl.cpp
+    v2/DirectNetworkingImpl.h
     v2/ExternalSignalingConnection.cpp
     v2/ExternalSignalingConnection.h
+    v2/InstanceNetworking.h
     v2/InstanceV2ReferenceImpl.cpp
     v2/InstanceV2ReferenceImpl.h
     v2/InstanceV2Impl.cpp
@@ -241,13 +245,12 @@ elseif (APPLE)
     )
 endif()
 
-if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_compile_options(lib_tgcalls
-    PRIVATE
-        -Wno-deprecated-volatile
-        -Wno-ambiguous-reversed-operator
-    )
-endif()
+target_compile_options_if_exists(lib_tgcalls
+PRIVATE
+    -Wno-deprecated-volatile
+    -Wno-ambiguous-reversed-operator
+    -Wno-deprecated-declarations
+)
 
 remove_target_sources(lib_tgcalls ${tgcalls_loc}
     platform/android/AndroidContext.cpp

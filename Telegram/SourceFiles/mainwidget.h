@@ -186,9 +186,6 @@ public:
 	bool filesOrForwardDrop(
 		not_null<Data::Thread*> thread,
 		not_null<const QMimeData*> data);
-	bool inlineSwitchChosen(
-		not_null<Data::Thread*> thread,
-		const QString &botAndQuery) const;
 
 	void sendBotCommand(Bot::SendCommandRequest request);
 	void hideSingleUseKeyboard(PeerData *peer, MsgId replyTo);
@@ -218,9 +215,11 @@ public:
 		Fn<void(MessageIdsList)> done);
 	void clearChooseReportMessages();
 
-	void toggleChooseChatTheme(not_null<PeerData*> peer);
+	void toggleChooseChatTheme(
+		not_null<PeerData*> peer,
+		std::optional<bool> show);
 
-	void showPeerHistory(
+	void showHistory(
 		PeerId peer,
 		const SectionShow &params,
 		MsgId msgId);
@@ -233,7 +232,6 @@ public:
 
 	using FloatDelegate::floatPlayerAreaUpdated;
 
-	void closeBothPlayers();
 	void stopAndClosePlayer();
 
 	bool preventsCloseSection(Fn<void()> callback) const;
@@ -302,9 +300,12 @@ private:
 	void hiderLayer(base::unique_qptr<Window::HistoryHider> h);
 	void clearHider(not_null<Window::HistoryHider*> instance);
 
+	void closeBothPlayers();
+
 	[[nodiscard]] auto floatPlayerDelegate()
 		-> not_null<Media::Player::FloatDelegate*>;
 	not_null<Ui::RpWidget*> floatPlayerWidget() override;
+	void floatPlayerToggleGifsPaused(bool paused) override;
 	not_null<Media::Player::FloatSectionDelegate*> floatPlayerGetSection(
 		Window::Column column) override;
 	void floatPlayerEnumerateSections(Fn<void(

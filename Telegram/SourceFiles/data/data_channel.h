@@ -116,6 +116,7 @@ public:
 	QString creatorRank;
 	int botStatus = 0; // -1 - no bots, 0 - unknown, 1 - one bot, that sees all history, 2 - other
 	bool joinedMessageFound = false;
+	bool adminsLoaded = false;
 	StickerSetIdentifier stickerSet;
 
 	enum LastParticipantsStatus {
@@ -318,7 +319,6 @@ public:
 	void setDefaultRestrictions(ChatRestrictions rights);
 
 	// Like in ChatData.
-	[[nodiscard]] bool canWrite(bool checkForForum = true) const;
 	[[nodiscard]] bool allowsForwarding() const;
 	[[nodiscard]] bool canEditInformation() const;
 	[[nodiscard]] bool canEditPermissions() const;
@@ -327,7 +327,6 @@ public:
 	[[nodiscard]] bool canAddMembers() const;
 	[[nodiscard]] bool canAddAdmins() const;
 	[[nodiscard]] bool canBanMembers() const;
-	[[nodiscard]] bool canSendPolls() const;
 	[[nodiscard]] bool anyoneCanAddMembers() const;
 
 	[[nodiscard]] bool canEditMessages() const;

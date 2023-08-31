@@ -860,7 +860,6 @@ void Account::writeSessionSettings(Main::SessionSettings *stored) {
 	}
 
 	EncryptedDescriptor data(size);
-	data.stream << quint32(dbiUseExternalVideoPlayer) << qint32(cUseExternalVideoPlayer());
 	data.stream << quint32(dbiCacheSettings) << qint64(_cacheTotalSizeLimit) << qint32(_cacheTotalTimeLimit) << qint64(_cacheBigFileTotalSizeLimit) << qint32(_cacheBigFileTotalTimeLimit);
 	if (!userData.isEmpty()) {
 		data.stream << quint32(dbiSessionSettings) << userData;
@@ -1088,7 +1087,7 @@ void Account::unregisterDraftSource(
 void Account::writeDrafts(not_null<History*> history) {
 	const auto peerId = history->peer->id;
 	const auto &map = history->draftsMap();
-	const auto supportMode = _owner->session().supportMode();
+	const auto supportMode = history->session().supportMode();
 	const auto sourcesIt = _draftSources.find(history);
 	const auto &sources = (sourcesIt != _draftSources.end())
 		? sourcesIt->second
@@ -1169,7 +1168,7 @@ void Account::writeDrafts(not_null<History*> history) {
 void Account::writeDraftCursors(not_null<History*> history) {
 	const auto peerId = history->peer->id;
 	const auto &map = history->draftsMap();
-	const auto supportMode = _owner->session().supportMode();
+	const auto supportMode = history->session().supportMode();
 	const auto sourcesIt = _draftSources.find(history);
 	const auto &sources = (sourcesIt != _draftSources.end())
 		? sourcesIt->second
@@ -1656,8 +1655,8 @@ void Account::writeStickerSet(
 	}
 	stream << qint32(set.emoji.size());
 	for (auto j = set.emoji.cbegin(), e = set.emoji.cend(); j != e; ++j) {
-		stream << j.key()->id() << qint32(j->size());
-		for (const auto sticker : *j) {
+		stream << j->first->id() << qint32(j->second.size());
+		for (const auto sticker : j->second) {
 			stream << quint64(sticker->id);
 		}
 	}
@@ -1724,7 +1723,7 @@ void Account::writeStickerSets(
 
 		size += sizeof(qint32); // emojiCount
 		for (auto j = raw->emoji.cbegin(), e = raw->emoji.cend(); j != e; ++j) {
-			size += Serialize::stringSize(j.key()->id()) + sizeof(qint32) + (j->size() * sizeof(quint64));
+			size += Serialize::stringSize(j->first->id()) + sizeof(qint32) + (j->second.size() * sizeof(quint64));
 		}
 
 		++setsCount;
@@ -1960,7 +1959,7 @@ void Account::readStickerSets(
 			if (fillStickers) {
 				if (auto emoji = Ui::Emoji::Find(emojiString)) {
 					emoji = emoji->original();
-					set->emoji.insert(emoji, pack);
+					set->emoji[emoji] = std::move(pack);
 				}
 			}
 		}

@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_forum_topic.h"
 #include "data/data_session.h"
 #include "dialogs/dialogs_list.h"
+#include "dialogs/dialogs_three_state_icon.h"
 #include "dialogs/ui/dialogs_video_userpic.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_window.h"
@@ -21,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/unread_badge.h"
 #include "ui/unread_badge_paint.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "core/ui_integration.h"
 #include "lang/lang_keys.h"
 #include "support/support_helper.h"
@@ -146,11 +148,10 @@ int PaintBadges(
 		const auto badge = PaintUnreadBadge(p, counter, right, top, st);
 		right -= badge.width() + st.padding;
 	} else if (displayPinnedIcon) {
-		const auto &icon = context.active
-			? st::dialogsPinnedIconActive
-			: context.selected
-			? st::dialogsPinnedIconOver
-			: st::dialogsPinnedIcon;
+		const auto &icon = ThreeStateIcon(
+			st::dialogsPinnedIcon,
+			context.active,
+			context.selected);
 		icon.paint(p, right - icon.width(), pinnedIconTop, context.width);
 		right -= icon.width() + st::dialogsUnreadPadding;
 	}
@@ -168,17 +169,12 @@ int PaintBadges(
 		st.textTop = 0;
 		const auto counter = QString();
 		const auto badge = PaintUnreadBadge(p, counter, right, top, st);
-		(badgesState.mention
-			? (st.active
-				? st::dialogsUnreadMentionActive
-				: st.selected
-				? st::dialogsUnreadMentionOver
-				: st::dialogsUnreadMention)
-			: (st.active
-				? st::dialogsUnreadReactionActive
-				: st.selected
-				? st::dialogsUnreadReactionOver
-				: st::dialogsUnreadReaction)).paintInCenter(p, badge);
+		ThreeStateIcon(
+			badgesState.mention
+				? st::dialogsUnreadMention
+				: st::dialogsUnreadReaction,
+			st.active,
+			st.selected).paintInCenter(p, badge);
 		right -= badge.width() + st.padding + st::dialogsUnreadPadding;
 	}
 	return (initial - right);
@@ -262,7 +258,8 @@ void PaintFolderEntryText(
 			: st::dialogsTextPaletteArchive),
 		.spoiler = Text::DefaultSpoilerCache(),
 		.now = context.now,
-		.paused = context.paused,
+		.pausedEmoji = context.paused || On(PowerSaving::kEmojiChat),
+		.pausedSpoiler = context.paused || On(PowerSaving::kChatSpoiler),
 		.elisionLines = rect.height() / st::dialogsTextFont->height,
 	});
 }
@@ -329,22 +326,23 @@ void PaintRow(
 			context.st->padding.top(),
 			context.width,
 			context.st->photoSize);
-	} else if (from) {
-		row->paintUserpic(
-			p,
-			from,
-			videoUserpic,
-			(flags & Flag::AllowUserOnline) ? history : nullptr,
-			context);
-	} else if (hiddenSenderInfo) {
+	} else if (!from && hiddenSenderInfo) {
 		hiddenSenderInfo->emptyUserpic.paintCircle(
 			p,
 			context.st->padding.left(),
 			context.st->padding.top(),
 			context.width,
 			context.st->photoSize);
+	} else if (!(flags & Flag::AllowUserOnline)) {
+		PaintUserpic(
+			p,
+			entry,
+			from,
+			videoUserpic,
+			row->userpicView(),
+			context);
 	} else {
-		entry->paintUserpic(p, row->userpicView(), context);
+		row->paintUserpic(p, entry, from, videoUserpic, context);
 	}
 
 	auto nameleft = context.st->nameLeft;
@@ -420,7 +418,8 @@ void PaintRow(
 			.availableWidth = availableWidth,
 			.spoiler = Text::DefaultSpoilerCache(),
 			.now = context.now,
-			.paused = context.paused,
+			.pausedEmoji = context.paused || On(PowerSaving::kEmojiChat),
+			.pausedSpoiler = context.paused || On(PowerSaving::kChatSpoiler),
 			.elisionLines = 1,
 		});
 	} else if (draft
@@ -433,11 +432,10 @@ void PaintRow(
 		auto availableWidth = namewidth;
 		if (entry->isPinnedDialog(context.filter)
 			&& (context.filter || !entry->fixedOnTopIndex())) {
-			auto &icon = context.active
-				? st::dialogsPinnedIconActive
-				: context.selected
-				? st::dialogsPinnedIconOver
-				: st::dialogsPinnedIcon;
+			auto &icon = ThreeStateIcon(
+				st::dialogsPinnedIcon,
+				context.active,
+				context.selected);
 			icon.paint(
 				p,
 				context.width - context.st->padding.right() - icon.width(),
@@ -514,7 +512,8 @@ void PaintRow(
 						: st::dialogsTextPaletteDraft)),
 				.spoiler = Text::DefaultSpoilerCache(),
 				.now = context.now,
-				.paused = context.paused,
+				.pausedEmoji = context.paused || On(PowerSaving::kEmojiChat),
+				.pausedSpoiler = context.paused || On(PowerSaving::kChatSpoiler),
 				.elisionLines = 1,
 			});
 		}
@@ -522,11 +521,10 @@ void PaintRow(
 		auto availableWidth = namewidth;
 		if (entry->isPinnedDialog(context.filter)
 			&& (context.filter || !entry->fixedOnTopIndex())) {
-			auto &icon = context.active
-				? st::dialogsPinnedIconActive
-				: context.selected
-				? st::dialogsPinnedIconOver
-				: st::dialogsPinnedIcon;
+			auto &icon = ThreeStateIcon(
+				st::dialogsPinnedIcon,
+				context.active,
+				context.selected);
 			icon.paint(p, context.width - context.st->padding.right() - icon.width(), texttop, context.width);
 			availableWidth -= icon.width() + st::dialogsUnreadPadding;
 		}
@@ -556,51 +554,49 @@ void PaintRow(
 		paintItemCallback(nameleft, namewidth);
 	} else if (entry->isPinnedDialog(context.filter)
 		&& (context.filter || !entry->fixedOnTopIndex())) {
-		auto &icon = context.active
-			? st::dialogsPinnedIconActive
-			: context.selected
-			? st::dialogsPinnedIconOver
-			: st::dialogsPinnedIcon;
-		icon.paint(p, context.width - context.st->padding.right() - icon.width(), texttop, context.width);
+		auto &icon = ThreeStateIcon(
+			st::dialogsPinnedIcon,
+			context.active,
+			context.selected);
+		icon.paint(
+			p,
+			context.width - context.st->padding.right() - icon.width(),
+			texttop,
+			context.width);
 	}
 	const auto sendStateIcon = [&]() -> const style::icon* {
 		if (!thread) {
 			return nullptr;
 		} else if (const auto topic = thread->asTopic()
 			; !context.search && topic && topic->closed()) {
-			return &(context.active
-				? st::dialogsLockIconActive
-				: context.selected
-				? st::dialogsLockIconOver
-				: st::dialogsLockIcon);
+			return &ThreeStateIcon(
+				st::dialogsLockIcon,
+				context.active,
+				context.selected);
 		} else if (draft) {
 			if (draft->saveRequestId) {
-				return &(context.active
-					? st::dialogsSendingIconActive
-					: context.selected
-					? st::dialogsSendingIconOver
-					: st::dialogsSendingIcon);
+				return &ThreeStateIcon(
+					st::dialogsSendingIcon,
+					context.active,
+					context.selected);
 			}
 		} else if (item && !item->isEmpty() && item->needCheck()) {
 			if (!item->isSending() && !item->hasFailed()) {
 				if (item->unread(thread)) {
-					return &(context.active
-						? st::dialogsSentIconActive
-						: context.selected
-						? st::dialogsSentIconOver
-						: st::dialogsSentIcon);
+					return &ThreeStateIcon(
+						st::dialogsSentIcon,
+						context.active,
+						context.selected);
 				}
-				return &(context.active
-					? st::dialogsReceivedIconActive
-					: context.selected
-					? st::dialogsReceivedIconOver
-					: st::dialogsReceivedIcon);
+				return &ThreeStateIcon(
+					st::dialogsReceivedIcon,
+					context.active,
+					context.selected);
 			}
-			return &(context.active
-				? st::dialogsSendingIconActive
-				: context.selected
-				? st::dialogsSendingIconOver
-				: st::dialogsSendingIcon);
+			return &ThreeStateIcon(
+				st::dialogsSendingIcon,
+				context.active,
+				context.selected);
 		}
 		return nullptr;
 	}();
@@ -638,11 +634,10 @@ void PaintRow(
 						: context.selected
 						? &st::dialogsVerifiedIconOver
 						: &st::dialogsVerifiedIcon),
-					.premium = (context.active
-						? &st::dialogsPremiumIconActive
-						: context.selected
-						? &st::dialogsPremiumIconOver
-						: &st::dialogsPremiumIcon),
+					.premium = &ThreeStateIcon(
+						st::dialogsPremiumIcon,
+						context.active,
+						context.selected),
 					.scam = (context.active
 						? &st::dialogsScamFgActive
 						: context.selected
@@ -705,30 +700,26 @@ const style::icon *ChatTypeIcon(
 		const PaintContext &context) {
 	if (const auto user = peer->asUser()) {
 		if (ShowUserBotIcon(user)) {
-			return &(context.active
-				? st::dialogsBotIconActive
-				: context.selected
-				? st::dialogsBotIconOver
-				: st::dialogsBotIcon);
+			return &ThreeStateIcon(
+				st::dialogsBotIcon,
+				context.active,
+				context.selected);
 		}
 	} else if (peer->isBroadcast()) {
-		return &(context.active
-			? st::dialogsChannelIconActive
-			: context.selected
-			? st::dialogsChannelIconOver
-			: st::dialogsChannelIcon);
+		return &ThreeStateIcon(
+			st::dialogsChannelIcon,
+			context.active,
+			context.selected);
 	} else if (peer->isForum()) {
-		return &(context.active
-			? st::dialogsForumIconActive
-			: context.selected
-			? st::dialogsForumIconOver
-			: st::dialogsForumIcon);
+		return &ThreeStateIcon(
+			st::dialogsForumIcon,
+			context.active,
+			context.selected);
 	} else {
-		return &(context.active
-			? st::dialogsChatIconActive
-			: context.selected
-			? st::dialogsChatIconOver
-			: st::dialogsChatIcon);
+		return &ThreeStateIcon(
+			st::dialogsChatIcon,
+			context.active,
+			context.selected);
 	}
 	return nullptr;
 }
@@ -743,6 +734,7 @@ void RowPainter::Paint(
 	const auto thread = row->thread();
 	const auto peer = history ? history->peer.get() : nullptr;
 	const auto badgesState = entry->chatListBadgesState();
+	entry->chatListPreloadData(); // Allow chat list message resolve.
 	const auto item = entry->chatListMessage();
 	const auto cloudDraft = [&]() -> const Data::Draft*{
 		if (!thread) {
@@ -780,7 +772,7 @@ void RowPainter::Paint(
 			? history->peer->migrateTo()
 			: history->peer.get())
 		: nullptr;
-	const auto allowUserOnline = !context.narrow || badgesState.empty();
+	const auto allowUserOnline = true;// !context.narrow || badgesState.empty();
 	const auto flags = (allowUserOnline ? Flag::AllowUserOnline : Flag(0))
 		| (peer && peer->isSelf() ? Flag::SavedMessages : Flag(0))
 		| (peer && peer->isRepliesChat() ? Flag::RepliesMessages : Flag(0))

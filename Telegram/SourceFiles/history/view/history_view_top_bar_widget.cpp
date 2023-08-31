@@ -31,7 +31,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/effects/radial_animation.h"
-#include "ui/toasts/common_toasts.h"
 #include "ui/boxes/report_box.h" // Ui::ReportReason
 #include "ui/text/text.h"
 #include "ui/text/text_options.h"
@@ -124,7 +123,10 @@ TopBarWidget::TopBarWidget(
 	_groupCall->setClickedCallback([=] { groupCall(); });
 	_menuToggle->setClickedCallback([=] { showPeerMenu(); });
 	_infoToggle->setClickedCallback([=] { toggleInfoSection(); });
-	_back->addClickHandler([=] { backClicked(); });
+	_back->setAcceptBoth();
+	_back->addClickHandler([=](Qt::MouseButton) {
+		InvokeQueued(_back.data(), [=] { backClicked(); });
+	});
 	_cancelChoose->setClickedCallback(
 		[=] { _cancelChooseForReport.fire({}); });
 
@@ -559,7 +561,7 @@ void TopBarWidget::paintTopBar(Painter &p) {
 			{
 				.peer = peer,
 				.verified = &st::dialogsVerifiedIcon,
-				.premium = &st::dialogsPremiumIcon,
+				.premium = &st::dialogsPremiumIcon.icon,
 				.scam = &st::attentionButtonFg,
 				.premiumFg = &st::dialogsVerifiedIconBg,
 				.customEmojiRepaint = [=] { update(); },
@@ -1033,8 +1035,8 @@ void TopBarWidget::updateControlsVisibility() {
 	const auto section = _activeChat.section;
 	const auto historyMode = (section == Section::History);
 	const auto hasPollsMenu = (_activeChat.key.peer()
-		&& _activeChat.key.peer()->canSendPolls())
-		|| (topic && topic->canSendPolls());
+		&& _activeChat.key.peer()->canCreatePolls())
+		|| (topic && Data::CanSend(topic, ChatRestriction::SendPolls));
 	const auto hasTopicMenu = [&] {
 		if (!topic || section != Section::Replies) {
 			return false;
@@ -1316,6 +1318,10 @@ bool TopBarWidget::searchSetFocus() {
 	}
 	_searchField->setFocus();
 	return true;
+}
+
+bool TopBarWidget::searchMode() const {
+	return _searchMode;
 }
 
 bool TopBarWidget::searchHasFocus() const {

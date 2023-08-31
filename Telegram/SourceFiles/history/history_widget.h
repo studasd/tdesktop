@@ -31,6 +31,7 @@ class Error;
 
 namespace Data {
 enum class PreviewState : char;
+class PhotoMedia;
 } // namespace Data
 
 namespace SendMenu {
@@ -91,6 +92,7 @@ class TopBarWidget;
 class ContactStatus;
 class Element;
 class PinnedTracker;
+class TranslateBar;
 class ComposeSearch;
 namespace Controls {
 class RecordLock;
@@ -144,6 +146,7 @@ public:
 	void firstLoadMessages();
 	void delayedShowAt(MsgId showAtMsgId);
 
+	bool updateReplaceMediaButton();
 	void updateFieldPlaceholder();
 	bool updateStickersByEmoji();
 
@@ -212,7 +215,7 @@ public:
 	void botCallbackSent(not_null<HistoryItem*> item);
 
 	void fastShowAtEnd(not_null<History*> history);
-	void applyDraft(
+	bool applyDraft(
 		FieldHistoryAction fieldHistoryAction = FieldHistoryAction::Clear);
 	void showHistory(const PeerId &peer, MsgId showAtMsgId, bool reload = false);
 	void setChooseReportMessagesDetails(
@@ -223,7 +226,9 @@ public:
 	void clearDelayedShowAtRequest();
 	void clearDelayedShowAt();
 
-	void toggleChooseChatTheme(not_null<PeerData*> peer);
+	void toggleChooseChatTheme(
+		not_null<PeerData*> peer,
+		std::optional<bool> show = std::nullopt);
 	[[nodiscard]] Ui::ChatTheme *customChatTheme() const;
 
 	void applyCloudDraft(History *history);
@@ -235,6 +240,7 @@ public:
 	[[nodiscard]] rpl::producer<> cancelRequests() const {
 		return _cancelRequests.events();
 	}
+	void searchInChatEmbedded(std::optional<QString> query = {});
 
 	void updateNotifyControls();
 
@@ -273,6 +279,8 @@ public:
 	QRect floatPlayerAvailableRect() override;
 
 	bool notify_switchInlineBotButtonReceived(const QString &query, UserData *samePeerBot, MsgId samePeerReplyTo);
+
+	void tryProcessKeyInput(not_null<QKeyEvent*> e);
 
 	~HistoryWidget();
 
@@ -373,6 +381,7 @@ private:
 	void sendWithModifiers(Qt::KeyboardModifiers modifiers);
 	void sendSilent();
 	void sendScheduled();
+	void sendWhenOnline();
 	[[nodiscard]] SendMenu::Type sendButtonMenuType() const;
 	void handlePendingHistoryUpdate();
 	void fullInfoUpdated();
@@ -429,6 +438,12 @@ private:
 		Ui::PreparedList &&list,
 		const QString &insertTextOnCancel = QString());
 	bool showSendingFilesError(const Ui::PreparedList &list) const;
+	bool showSendingFilesError(
+		const Ui::PreparedList &list,
+		std::optional<bool> compress) const;
+	bool showSendMessageError(
+		const TextWithTags &textWithTags,
+		bool ignoreSlowmodeCountdown) const;
 
 	void sendingFilesConfirmed(
 		Ui::PreparedList &&list,
@@ -487,6 +502,7 @@ private:
 	void updateReplyEditText(not_null<HistoryItem*> item);
 
 	void updatePinnedViewer();
+	void setupTranslateBar();
 	void setupPinnedTracker();
 	void checkPinnedBarState();
 	void clearHidingPinnedBar();
@@ -560,6 +576,8 @@ private:
 	void clearFieldText(
 		TextUpdateEvents events = 0,
 		FieldHistoryAction fieldHistoryAction = FieldHistoryAction::Clear);
+	[[nodiscard]] int fieldHeight() const;
+	[[nodiscard]] bool fieldOrDisabledShown() const;
 
 	void unregisterDraftSources();
 	void registerDraftSource();
@@ -572,6 +590,7 @@ private:
 
 	// when scroll position or scroll area size changed this method
 	// updates the boundings of the visible area in HistoryInner
+	[[nodiscard]] bool hasSavedScroll() const;
 	void visibleAreaUpdated();
 	int countInitialScrollTop();
 	int countAutomaticScrollTop();
@@ -579,8 +598,8 @@ private:
 	void checkReplyReturns();
 	void scrollToAnimationCallback(FullMsgId attachToId, int relativeTo);
 
-	bool readyToForward() const;
-	bool hasSilentToggle() const;
+	[[nodiscard]] bool readyToForward() const;
+	[[nodiscard]] bool hasSilentToggle() const;
 
 	void checkSupportPreload(bool force = false);
 	void handleSupportSwitch(not_null<History*> updated);
@@ -622,6 +641,8 @@ private:
 	HistoryItem *_processingReplyItem = nullptr;
 
 	MsgId _editMsgId = 0;
+	std::shared_ptr<Data::PhotoMedia> _photoEditMedia;
+	bool _canReplaceMedia = false;
 
 	HistoryItem *_replyEditMsg = nullptr;
 	Ui::Text::String _replyEditMsgText;
@@ -629,6 +650,9 @@ private:
 	mutable base::Timer _updateEditTimeLeftDisplay;
 
 	object_ptr<Ui::IconButton> _fieldBarCancel;
+
+	std::unique_ptr<HistoryView::TranslateBar> _translateBar;
+	int _translateBarHeight = 0;
 
 	std::unique_ptr<HistoryView::PinnedTracker> _pinnedTracker;
 	std::unique_ptr<Ui::PinnedBar> _pinnedBar;
@@ -663,6 +687,7 @@ private:
 	PeerData *_peer = nullptr;
 
 	bool _canSendMessages = false;
+	bool _canSendTexts = false;
 	MsgId _showAtMsgId = ShowAtUnreadMsgId;
 
 	int _firstLoadRequest = 0; // Not real mtpRequestId.
@@ -716,6 +741,7 @@ private:
 	object_ptr<Ui::RoundButton> _botMenuButton = { nullptr };
 	QString _botMenuButtonText;
 	object_ptr<Ui::IconButton> _attachToggle;
+	object_ptr<Ui::IconButton> _replaceMedia = { nullptr };
 	object_ptr<Ui::SendAsButton> _sendAs = { nullptr };
 	object_ptr<Ui::EmojiButton> _tabbedSelectorToggle;
 	object_ptr<Ui::IconButton> _botKeyboardShow;
@@ -729,7 +755,10 @@ private:
 	std::unique_ptr<HistoryView::ComposeSearch> _composeSearch;
 	bool _cmdStartShown = false;
 	object_ptr<Ui::InputField> _field;
+	base::unique_qptr<Ui::RpWidget> _fieldDisabled;
+	Ui::Animations::Simple _inPhotoEditOver;
 	bool _inReplyEditForward = false;
+	bool _inPhotoEdit = false;
 	bool _inClickable = false;
 
 	bool _kbShown = false;
@@ -775,6 +804,8 @@ private:
 		not_null<HistoryItem*>,
 		ItemRevealAnimation> _itemRevealAnimations;
 	int _itemsRevealHeight = 0;
+
+	bool _sponsoredMessagesStateKnown = false;
 
 	object_ptr<Ui::PlainShadow> _topShadow;
 	bool _inGrab = false;

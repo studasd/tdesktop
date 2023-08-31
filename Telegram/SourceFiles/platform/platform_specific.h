@@ -7,19 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-namespace base::options {
-
-template <typename Type>
-class option;
-
-using toggle = option<bool>;
-
-} // namespace base::options
+namespace Core {
+enum class QuitReason;
+} // namespace Core
 
 namespace Platform {
-
-extern const char kOptionGApplication[];
-extern base::options::toggle OptionGApplication;
 
 void start();
 void finish();
@@ -54,12 +46,13 @@ bool TrayIconSupported();
 bool SkipTaskbarSupported();
 void WriteCrashDumpDetails();
 void NewVersionLaunched(int oldVersion);
-void InstallLauncher(bool force = false);
+[[nodiscard]] QImage DefaultApplicationIcon();
+[[nodiscard]] bool PreventsQuit(Core::QuitReason reason);
+[[nodiscard]] QString ExecutablePathForShortcuts();
 
+#if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
 [[nodiscard]] std::optional<bool> IsDarkMode();
-[[nodiscard]] inline bool IsDarkModeSupported() {
-	return IsDarkMode().has_value();
-}
+#endif // Qt < 6.5.0
 
 namespace ThirdParty {
 

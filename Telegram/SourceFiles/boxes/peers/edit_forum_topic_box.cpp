@@ -267,7 +267,6 @@ struct IconSelector {
 
 	const auto icons = &controller->session().data().forumIcons();
 	const auto body = box->verticalLayout();
-	Settings::AddSkip(body);
 	const auto recent = [=] {
 		auto list = icons->list();
 		list.insert(begin(list), kDefaultIconId);
@@ -275,12 +274,9 @@ struct IconSelector {
 	};
 	const auto selector = body->add(
 		object_ptr<EmojiListWidget>(body, EmojiListDescriptor{
-			.session = &controller->session(),
+			.show = controller->uiShow(),
 			.mode = EmojiListWidget::Mode::TopicIcon,
-			.controller = controller,
-			.paused = Window::PausedIn(
-				controller,
-				Window::GifPauseReason::Layer),
+			.paused = Window::PausedIn(controller, PauseReason::Layer),
 			.customRecentList = recent(),
 			.customRecentFactory = std::move(factory),
 			.st = &st::reactPanelEmojiPan,
@@ -358,6 +354,7 @@ struct IconSelector {
 				&owner->reactions(),
 				std::move(args),
 				[=] { state->animation->repaint(); },
+				[] { return st::windowFg->c; },
 				Data::CustomEmojiSizeTag::Large);
 		}
 		state->iconId = id;

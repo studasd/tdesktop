@@ -31,6 +31,8 @@ enum class CursorState : char;
 enum class PointState : char;
 class EmptyPainter;
 class Element;
+class TranslateTracker;
+struct PinnedId;
 } // namespace HistoryView
 
 namespace HistoryView::Reactions {
@@ -115,6 +117,7 @@ public:
 	void checkActivation();
 	void recountHistoryGeometry();
 	void updateSize();
+	void setShownPinned(HistoryItem *item);
 
 	void repaintItem(const HistoryItem *item);
 	void repaintItem(const Element *view);
@@ -182,8 +185,9 @@ public:
 	void setCanHaveFromUserpicsSponsored(bool value);
 
 	// -1 if should not be visible, -2 if bad history()
-	int itemTop(const HistoryItem *item) const;
-	int itemTop(const Element *view) const;
+	[[nodiscard]] int itemTop(const HistoryItem *item) const;
+	[[nodiscard]] int itemTop(const Element *view) const;
+	[[nodiscard]] Element *viewByItem(const HistoryItem *item) const;
 
 	// Returns (view, offset-from-top).
 	[[nodiscard]] std::pair<Element*, int> findViewForPinnedTracking(
@@ -445,6 +449,7 @@ private:
 
 	std::unique_ptr<BotAbout> _botAbout;
 	std::unique_ptr<HistoryView::EmptyPainter> _emptyPainter;
+	std::unique_ptr<HistoryView::TranslateTracker> _translateTracker;
 
 	mutable History *_curHistory = nullptr;
 	mutable int _curBlock = 0;
@@ -467,6 +472,7 @@ private:
 
 	std::unique_ptr<HistoryView::Reactions::Manager> _reactionsManager;
 	rpl::variable<HistoryItem*> _reactionsItem;
+	HistoryItem *_pinnedItem = nullptr;
 
 	MouseAction _mouseAction = MouseAction::None;
 	TextSelectType _mouseSelectType = TextSelectType::Letters;

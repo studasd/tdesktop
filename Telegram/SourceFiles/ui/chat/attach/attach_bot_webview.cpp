@@ -318,6 +318,7 @@ Panel::Panel(
 	Fn<bool(QString)> handleLocalUri,
 	Fn<void(QString)> handleInvoice,
 	Fn<void(QByteArray)> sendData,
+	Fn<void(std::vector<QString>, QString)> switchInlineQuery,
 	Fn<void()> close,
 	QString phone,
 	MenuButtons menuButtons,
@@ -328,6 +329,7 @@ Panel::Panel(
 , _handleLocalUri(std::move(handleLocalUri))
 , _handleInvoice(std::move(handleInvoice))
 , _sendData(std::move(sendData))
+, _switchInlineQuery(std::move(switchInlineQuery))
 , _close(std::move(close))
 , _phone(phone)
 , _menuButtons(menuButtons)
@@ -356,7 +358,7 @@ Panel::Panel(
 		postEvent("back_button_pressed");
 	}, _widget->lifetime());
 
-	rpl::combine(
+	rpl::merge(
 		style::PaletteChanged(),
 		_themeUpdateForced.events()
 	) | rpl::filter([=] {
@@ -508,7 +510,7 @@ bool Panel::showWebview(
 	}
 	const auto allowBack = false;
 	showWebviewProgress();
-	_widget->destroyLayer();
+	_widget->hideLayer(anim::type::instant);
 	updateThemeParams(params);
 	_webview->window.navigate(url);
 	_widget->setBackAllowed(allowBack);
@@ -625,12 +627,16 @@ bool Panel::createWebview() {
 			_close();
 		} else if (command == "web_app_data_send") {
 			sendDataMessage(arguments);
+		} else if (command == "web_app_switch_inline_query") {
+			switchInlineQueryMessage(arguments);
 		} else if (command == "web_app_setup_main_button") {
 			processMainButtonMessage(arguments);
 		} else if (command == "web_app_setup_back_button") {
 			processBackButtonMessage(arguments);
 		} else if (command == "web_app_request_theme") {
 			_themeUpdateForced.fire({});
+		} else if (command == "web_app_request_viewport") {
+			sendViewport();
 		} else if (command == "web_app_open_tg_link") {
 			openTgLink(arguments);
 		} else if (command == "web_app_open_link") {
@@ -675,6 +681,13 @@ postEvent: function(eventType, eventData) {
 	return true;
 }
 
+void Panel::sendViewport() {
+	postEvent("viewport_changed", "{ "
+		"height: window.innerHeight, "
+		"is_state_stable: true, "
+		"is_expanded: true }");
+}
+
 void Panel::setTitle(rpl::producer<QString> title) {
 	_widget->setTitle(std::move(title));
 }
@@ -691,6 +704,38 @@ void Panel::sendDataMessage(const QJsonObject &args) {
 		return;
 	}
 	_sendData(data.toUtf8());
+}
+
+void Panel::switchInlineQueryMessage(const QJsonObject &args) {
+	if (args.isEmpty()) {
+		_close();
+		return;
+	}
+	const auto query = args["query"].toString();
+	if (query.isEmpty()) {
+		LOG(("BotWebView Error: Bad 'query' in switchInlineQueryMessage."));
+		_close();
+		return;
+	}
+	const auto valid = base::flat_set<QString>{
+		u"users"_q,
+		u"bots"_q,
+		u"groups"_q,
+		u"channels"_q,
+	};
+	auto types = std::vector<QString>();
+	for (const auto &value : args["chat_types"].toArray()) {
+		const auto type = value.toString();
+		if (valid.contains(type)) {
+			types.push_back(type);
+		} else {
+			LOG(("BotWebView Error: "
+				"Bad chat type in switchInlineQueryMessage: %1.").arg(type));
+			types.clear();
+			break;
+		}
+	}
+	_switchInlineQuery(types, query);
 }
 
 void Panel::openTgLink(const QJsonObject &args) {
@@ -1000,8 +1045,8 @@ void Panel::showBox(object_ptr<BoxContent> box) {
 		anim::type::normal);
 }
 
-void Panel::showToast(const TextWithEntities &text) {
-	_widget->showToast(text);
+void Panel::showToast(TextWithEntities &&text) {
+	_widget->showToast(std::move(text));
 }
 
 void Panel::showCriticalError(const TextWithEntities &text) {
@@ -1098,7 +1143,7 @@ void Panel::showWebviewError(
 				"https://go.microsoft.com/fwlink/p/?LinkId=2124703"))
 			.append(parts.value(1));
 	} break;
-	case Error::NoGtkOrWebkit2Gtk:
+	case Error::NoWebKitGTK:
 		rich.append(tr::lng_payments_webview_install_webkit(tr::now));
 		break;
 	default:
@@ -1120,6 +1165,7 @@ std::unique_ptr<Panel> Show(Args &&args) {
 		std::move(args.handleLocalUri),
 		std::move(args.handleInvoice),
 		std::move(args.sendData),
+		std::move(args.switchInlineQuery),
 		std::move(args.close),
 		args.phone,
 		args.menuButtons,

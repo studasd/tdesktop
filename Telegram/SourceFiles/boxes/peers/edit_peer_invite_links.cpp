@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_chat.h"
 #include "data/data_channel.h"
 #include "data/data_session.h"
+#include "main/session/session_show.h"
 #include "main/main_session.h"
 #include "api/api_invite_links.h"
 #include "ui/wrap/slide_wrap.h"
@@ -34,8 +35,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <xxhash.h>
 
 namespace {
-
-constexpr auto kFullArcLength = 360 * 16;
 
 enum class Color {
 	Permanent,
@@ -545,8 +544,7 @@ void LinksController::appendSlice(const InviteLinksSlice &slice) {
 
 void LinksController::rowClicked(not_null<PeerListRow*> row) {
 	delegate()->peerListShowBox(
-		ShowInviteLinkBox(_peer, static_cast<Row*>(row.get())->data()),
-		Ui::LayerOption::KeepOther);
+		ShowInviteLinkBox(_peer, static_cast<Row*>(row.get())->data()));
 }
 
 void LinksController::rowRightActionClicked(not_null<PeerListRow*> row) {
@@ -581,33 +579,25 @@ base::unique_qptr<Ui::PopupMenu> LinksController::createRowContextMenu(
 		st::popupMenuWithIcons);
 	if (data.revoked) {
 		result->addAction(tr::lng_group_invite_context_delete(tr::now), [=] {
-			delegate()->peerListShowBox(
-				DeleteLinkBox(_peer, _admin, link),
-				Ui::LayerOption::KeepOther);
+			delegate()->peerListShowBox(DeleteLinkBox(_peer, _admin, link));
 		}, &st::menuIconDelete);
 	} else {
 		result->addAction(tr::lng_group_invite_context_copy(tr::now), [=] {
-			CopyInviteLink(delegate()->peerListToastParent(), link);
+			CopyInviteLink(delegate()->peerListUiShow(), link);
 		}, &st::menuIconCopy);
 		result->addAction(tr::lng_group_invite_context_share(tr::now), [=] {
 			delegate()->peerListShowBox(
-				ShareInviteLinkBox(_peer, link),
-				Ui::LayerOption::KeepOther);
+				ShareInviteLinkBox(_peer, link));
 		}, &st::menuIconShare);
 		result->addAction(tr::lng_group_invite_context_qr(tr::now), [=] {
 			delegate()->peerListShowBox(
-				InviteLinkQrBox(link),
-				Ui::LayerOption::KeepOther);
+				InviteLinkQrBox(link, tr::lng_group_invite_qr_about()));
 		}, &st::menuIconQrCode);
 		result->addAction(tr::lng_group_invite_context_edit(tr::now), [=] {
-			delegate()->peerListShowBox(
-				EditLinkBox(_peer, data),
-				Ui::LayerOption::KeepOther);
+			delegate()->peerListShowBox(EditLinkBox(_peer, data));
 		}, &st::menuIconEdit);
 		result->addAction(tr::lng_group_invite_context_revoke(tr::now), [=] {
-			delegate()->peerListShowBox(
-				RevokeLinkBox(_peer, _admin, link),
-				Ui::LayerOption::KeepOther);
+			delegate()->peerListShowBox(RevokeLinkBox(_peer, _admin, link));
 		}, &st::menuIconRemove);
 	}
 	return result;
@@ -740,7 +730,7 @@ void LinksController::rowPaintIcon(
 			margins,
 			margins,
 			margins,
-		}), (kFullArcLength / 4), kFullArcLength * (1. - progress));
+		}), arc::kQuarterLength, arc::kFullLength * (1. - progress));
 	}
 }
 
@@ -815,8 +805,7 @@ void AdminsController::loadMoreRows() {
 
 void AdminsController::rowClicked(not_null<PeerListRow*> row) {
 	delegate()->peerListShowBox(
-		Box(ManageInviteLinksBox, _peer, row->peer()->asUser(), 0, 0),
-		Ui::LayerOption::KeepOther);
+		Box(ManageInviteLinksBox, _peer, row->peer()->asUser(), 0, 0));
 }
 
 Main::Session &AdminsController::session() const {
@@ -838,7 +827,7 @@ struct LinksList {
 };
 
 LinksList AddLinksList(
-		std::shared_ptr<Ui::BoxShow> show,
+		std::shared_ptr<Main::SessionShow> show,
 		not_null<Ui::VerticalLayout*> container,
 		not_null<PeerData*> peer,
 		not_null<UserData*> admin,
@@ -863,7 +852,7 @@ LinksList AddLinksList(
 }
 
 not_null<Ui::RpWidget*> AddAdminsList(
-		std::shared_ptr<Ui::BoxShow> show,
+		std::shared_ptr<Main::SessionShow> show,
 		not_null<Ui::VerticalLayout*> container,
 		not_null<PeerData*> peer,
 		not_null<UserData*> admin) {
@@ -891,7 +880,9 @@ void ManageInviteLinksBox(
 		int revokedCount) {
 	using namespace Settings;
 
-	const auto show = std::make_shared<Ui::BoxShow>(box);
+	const auto show = Main::MakeSessionShow(
+		box->uiShow(),
+		&peer->session());
 
 	box->setTitle(tr::lng_group_invite_title());
 	box->setWidth(st::boxWideWidth);
@@ -927,8 +918,7 @@ void ManageInviteLinksBox(
 		const auto add = AddCreateLinkButton(container);
 		add->setClickedCallback([=] {
 			show->showBox(
-				EditLinkBox(peer, InviteLinkData{ .admin = admin }),
-				Ui::LayerOption::KeepOther);
+				EditLinkBox(peer, InviteLinkData{ .admin = admin }));
 		});
 	} else {
 		otherHeader = container->add(object_ptr<Ui::SlideWrap<>>(
@@ -1008,8 +998,8 @@ void ManageInviteLinksBox(
 			top + st::inviteLinkRevokedTitlePadding.top(),
 			outerWidth);
 	}, deleteAll->lifetime());
-	deleteAll->setClickedCallback([=, show = Ui::BoxShow(box)] {
-		show.showBox(DeleteAllRevokedBox(peer, admin));
+	deleteAll->setClickedCallback([=, show = box->uiShow()] {
+		show->showBox(DeleteAllRevokedBox(peer, admin));
 	});
 
 	rpl::combine(

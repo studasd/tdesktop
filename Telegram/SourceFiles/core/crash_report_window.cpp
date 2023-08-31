@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "core/crash_reports.h"
 #include "core/application.h"
-#include "core/launcher.h"
 #include "core/sandbox.h"
 #include "core/update_checker.h"
 #include "core/ui_integration.h"
@@ -18,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/zlib_help.h"
 
 #include <QtWidgets/QFileDialog>
+#include <QtGui/QFontInfo>
 #include <QtGui/QScreen>
 #include <QtGui/QDesktopServices>
 #include <QtCore/QStandardPaths>
@@ -43,7 +43,7 @@ PreLaunchWindow::PreLaunchWindow(QString title) {
 	p.setColor(QPalette::Window, QColor(255, 255, 255));
 	setPalette(p);
 
-	_size = QFontMetrics(font()).height();
+	_size = QFontInfo(font()).pixelSize();
 
 	int paddingVertical = (_size / 2);
 	int paddingHorizontal = _size;
@@ -249,7 +249,6 @@ LastCrashedWindow::UpdaterData::UpdaterData(QWidget *buttonParent)
 }
 
 LastCrashedWindow::LastCrashedWindow(
-	not_null<Core::Launcher*> launcher,
 	const QByteArray &crashdump,
 	Fn<void()> launch)
 : _dumpraw(crashdump)
@@ -425,7 +424,7 @@ LastCrashedWindow::LastCrashedWindow(
 	}
 
 	_pleaseSendReport.setText(u"Please send us a crash report."_q);
-	_yourReportName.setText(u"Your Report Tag: %1\nYour User Tag: %2"_q.arg(QString(_minidumpName).replace(".dmp", "")).arg(launcher->installationTag(), 0, 16));
+	_yourReportName.setText(u"Crash ID: %1"_q.arg(QString(_minidumpName).replace(".dmp", "")));
 	_yourReportName.setCursor(style::cur_text);
 	_yourReportName.setTextInteractionFlags(Qt::TextSelectableByMouse);
 

@@ -9,12 +9,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "history/view/history_view_element.h"
 #include "history/view/history_view_item_preview.h"
+#include "history/view/history_view_translate_tracker.h"
+#include "dialogs/dialogs_indexed_list.h"
+#include "history/history_inner_widget.h"
 #include "history/history_item.h"
 #include "history/history_item_components.h"
 #include "history/history_item_helpers.h"
-#include "history/history_inner_widget.h"
+#include "history/history_translation.h"
 #include "history/history_unread_things.h"
-#include "dialogs/dialogs_indexed_list.h"
 #include "dialogs/ui/dialogs_layout.h"
 #include "data/notify/data_notify_settings.h"
 #include "data/stickers/data_stickers.h"
@@ -44,6 +46,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "window/notifications_manager.h"
 #include "calls/calls_instance.h"
+#include "spellcheck/spellcheck_types.h"
 #include "storage/localstorage.h"
 #include "storage/storage_facade.h"
 #include "storage/storage_shared_media.h"
@@ -51,8 +54,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "support/support_helper.h"
 #include "ui/image/image.h"
 #include "ui/text/text_options.h"
-#include "ui/toasts/common_toasts.h"
 #include "ui/text/text_utilities.h"
+#include "ui/toast/toast.h"
 #include "payments/payments_checkout_process.h"
 #include "core/crash_reports.h"
 #include "core/application.h"
@@ -492,8 +495,10 @@ void History::destroyMessage(not_null<HistoryItem*> item) {
 		session().api().cancelLocalItem(item);
 	}
 
-	const auto document = [&] {
-		const auto media = item->media();
+	const auto documentToCancel = [&] {
+		const auto media = item->isAdminLogEntry()
+			? nullptr
+			: item->media();
 		return media ? media->document() : nullptr;
 	}();
 
@@ -507,8 +512,8 @@ void History::destroyMessage(not_null<HistoryItem*> item) {
 	Assert(i != end(_messages));
 	_messages.erase(i);
 
-	if (document) {
-		session().data().documentMessageRemoved(document);
+	if (documentToCancel) {
+		session().data().documentMessageRemoved(documentToCancel);
 	}
 }
 
@@ -604,16 +609,6 @@ not_null<HistoryItem*> History::addNewItem(
 	} else {
 		addNewToBack(item, unread);
 		checkForLoadedAtTop(item);
-		if (!unread) {
-			// When we add just one last item, like we do while loading dialogs,
-			// we want to remove a single added grouped media, otherwise it will
-			// jump once we open the message history (first we show only that
-			// media, then we load the rest of the group and show the group).
-			//
-			// That way when we open the message history we show nothing until a
-			// whole history part is loaded, it certainly will contain the group.
-			removeOrphanMediaGroupPart();
-		}
 	}
 	return item;
 }
@@ -638,7 +633,7 @@ not_null<HistoryItem*> History::addNewLocalMessage(
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -686,7 +681,7 @@ not_null<HistoryItem*> History::addNewLocalMessage(
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -712,7 +707,7 @@ not_null<HistoryItem*> History::addNewLocalMessage(
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -738,7 +733,7 @@ not_null<HistoryItem*> History::addNewLocalMessage(
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -947,13 +942,13 @@ not_null<HistoryItem*> History::addNewToBack(
 					if (peer->isChat()) {
 						botNotInChat = item->from()->isUser()
 							&& (!peer->asChat()->participants.empty()
-								|| !peer->canWrite())
+								|| !Data::CanSendAnything(peer))
 							&& !peer->asChat()->participants.contains(
 								item->from()->asUser());
 					} else if (peer->isMegagroup()) {
 						botNotInChat = item->from()->isUser()
 							&& (peer->asChannel()->mgInfo->botStatus != 0
-								|| !peer->canWrite())
+								|| !Data::CanSendAnything(peer))
 							&& !peer->asChannel()->mgInfo->bots.contains(
 								item->from()->asUser());
 					}
@@ -1151,6 +1146,8 @@ void History::applyServiceChanges(
 						topic->setHasPinnedMessages(true);
 					}
 				}
+			}, [&](const MTPDmessageReplyStoryHeader &data) {
+				LOG(("API Error: story reply in messageActionPinMessage."));
 			});
 		}
 	}, [&](const MTPDmessageActionGroupCall &data) {
@@ -1183,7 +1180,7 @@ void History::applyServiceChanges(
 			}
 			if (paid) {
 				// Toast on a current active window.
-				Ui::ShowMultilineToast({
+				Ui::Toast::Show({
 					.text = tr::lng_payments_success(
 						tr::now,
 						lt_amount,
@@ -1267,9 +1264,20 @@ void History::newItemAdded(not_null<HistoryItem*> item) {
 		Core::App().notifications().schedule(notification);
 	}
 	if (item->out()) {
-		destroyUnreadBar();
+		if (item->isFromScheduled() && unreadCountRefreshNeeded(item->id)) {
+			if (unreadCountKnown()) {
+				setUnreadCount(unreadCount() + 1);
+			} else if (!isForum()) {
+				owner().histories().requestDialogEntry(this);
+			}
+		} else {
+			destroyUnreadBar();
+		}
 		if (!item->unread(this)) {
 			outboxRead(item);
+		}
+		if (item->changesWallPaper()) {
+			peer->updateFullForced();
 		}
 	} else {
 		if (item->unread(this)) {
@@ -1501,9 +1509,15 @@ void History::addItemsToLists(
 							if (!lastKeyboardInited) {
 								bool botNotInChat = false;
 								if (peer->isChat()) {
-									botNotInChat = (!peer->canWrite() || !peer->asChat()->participants.empty()) && item->author()->isUser() && !peer->asChat()->participants.contains(item->author()->asUser());
+									botNotInChat = (!Data::CanSendAnything(peer)
+										|| !peer->asChat()->participants.empty())
+										&& item->author()->isUser()
+										&& !peer->asChat()->participants.contains(item->author()->asUser());
 								} else if (peer->isMegagroup()) {
-									botNotInChat = (!peer->canWrite() || peer->asChannel()->mgInfo->botStatus != 0) && item->author()->isUser() && !peer->asChannel()->mgInfo->bots.contains(item->author()->asUser());
+									botNotInChat = (!Data::CanSendAnything(peer)
+										|| peer->asChannel()->mgInfo->botStatus != 0)
+										&& item->author()->isUser()
+										&& !peer->asChannel()->mgInfo->bots.contains(item->author()->asUser());
 								}
 								if (wasKeyboardHide || botNotInChat) {
 									clearLastKeyboard();
@@ -2232,6 +2246,44 @@ Dialogs::UnreadState History::computeUnreadState() const {
 	return result;
 }
 
+void History::allowChatListMessageResolve() {
+	if (_flags & Flag::ResolveChatListMessage) {
+		return;
+	}
+	_flags |= Flag::ResolveChatListMessage;
+	if (!chatListMessageKnown()) {
+		requestChatListMessage();
+	} else {
+		resolveChatListMessageGroup();
+	}
+}
+
+void History::resolveChatListMessageGroup() {
+	const auto item = _chatListMessage.value_or(nullptr);
+	if (!(_flags & Flag::ResolveChatListMessage)
+		|| !item
+		|| !hasOrphanMediaGroupPart()) {
+		return;
+	}
+	// If we set a single album part, request the full album.
+	const auto withImages = !item->toPreview({
+		.hideSender = true,
+		.hideCaption = true }).images.empty();
+	if (withImages) {
+		owner().histories().requestGroupAround(item);
+	}
+	if (unreadCountKnown() && !unreadCount()) {
+		// When we add just one last item, like we do while loading dialogs,
+		// we want to remove a single added grouped media, otherwise it will
+		// jump once we open the message history (first we show only that
+		// media, then we load the rest of the group and show the group).
+		//
+		// That way when we open the message history we show nothing until a
+		// whole history part is loaded, it certainly will contain the group.
+		clear(ClearType::Unload);
+	}
+}
+
 HistoryItem *History::chatListMessage() const {
 	return _chatListMessage.value_or(nullptr);
 }
@@ -2260,8 +2312,9 @@ const base::flat_set<QChar> &History::chatListFirstLetters() const {
 	return peer->nameFirstLetters();
 }
 
-void History::loadUserpic() {
+void History::chatListPreloadData() {
 	peer->loadUserpic();
+	allowChatListMessageResolve();
 }
 
 void History::paintUserpic(
@@ -2443,14 +2496,7 @@ void History::setChatListMessage(HistoryItem *item) {
 		}
 		_chatListMessage = item;
 		setChatListTimeId(item->date());
-
-		// If we have a single message from a group, request the full album.
-		if (hasOrphanMediaGroupPart()
-			&& !item->toPreview({
-				.hideSender = true,
-				.hideCaption = true }).images.empty()) {
-			owner().histories().requestGroupAround(item);
-		}
+		resolveChatListMessageGroup();
 	} else if (!_chatListMessage || *_chatListMessage) {
 		_chatListMessage = nullptr;
 		updateChatListEntry();
@@ -2551,13 +2597,21 @@ void History::requestChatListMessage() {
 }
 
 void History::setFakeChatListMessage() {
-	if (const auto chat = peer->asChat()) {
+	if (!(_flags & Flag::ResolveChatListMessage)) {
+		if (!chatListTimeId()) {
+			if (const auto last = lastMessage()) {
+				setChatListTimeId(last->date());
+			}
+		}
+		return;
+	} else if (const auto chat = peer->asChat()) {
 		// In chats we try to take the item before the 'last', which
 		// is the empty-displayed migration message.
 		owner().histories().requestFakeChatListMessage(this);
 	} else if (const auto from = migrateFrom()) {
 		// In megagroups we just try to use
 		// the message from the original group.
+		from->allowChatListMessageResolve();
 		from->requestChatListMessage();
 	}
 }
@@ -3300,14 +3354,6 @@ bool History::hasOrphanMediaGroupPart() const {
 	return last->groupId() != MessageGroupId();
 }
 
-bool History::removeOrphanMediaGroupPart() {
-	if (hasOrphanMediaGroupPart()) {
-		clear(ClearType::Unload);
-		return true;
-	}
-	return false;
-}
-
 std::vector<MsgId> History::collectMessagesFromParticipantToDelete(
 		not_null<PeerData*> participant) const {
 	auto result = std::vector<MsgId>();
@@ -3448,6 +3494,46 @@ void History::cacheTopPromoted(bool promoted) {
 
 bool History::isTopPromoted() const {
 	return (_flags & Flag::IsTopPromoted);
+}
+
+void History::translateOfferFrom(LanguageId id) {
+	if (!id) {
+		if (translatedTo()) {
+			_translation->offerFrom(id);
+		} else if (_translation) {
+			_translation = nullptr;
+			session().changes().historyUpdated(
+				this,
+				UpdateFlag::TranslateFrom);
+		}
+	} else if (!_translation) {
+		_translation = std::make_unique<HistoryTranslation>(this, id);
+	} else {
+		_translation->offerFrom(id);
+	}
+}
+
+LanguageId History::translateOfferedFrom() const {
+	return _translation ? _translation->offeredFrom() : LanguageId();
+}
+
+void History::translateTo(LanguageId id) {
+	if (!_translation) {
+		return;
+	} else if (!id && !translateOfferedFrom()) {
+		_translation = nullptr;
+		session().changes().historyUpdated(this, UpdateFlag::TranslatedTo);
+	} else {
+		_translation->translateTo(id);
+	}
+}
+
+LanguageId History::translatedTo() const {
+	return _translation ? _translation->translatedTo() : LanguageId();
+}
+
+HistoryTranslation *History::translation() const {
+	return _translation.get();
 }
 
 HistoryBlock::HistoryBlock(not_null<History*> history)

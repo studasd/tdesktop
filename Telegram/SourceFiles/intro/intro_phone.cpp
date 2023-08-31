@@ -23,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/boxes/confirm_box.h"
 #include "boxes/phone_banned_box.h"
 #include "core/application.h"
+#include "window/window_controller.h"
 #include "window/window_session_controller.h"
 #include "countries/countries_instance.h" // Countries::Groups
 
@@ -46,7 +47,7 @@ PhoneWidget::PhoneWidget(
 : Step(parent, account, data)
 , _country(
 	this,
-	std::make_shared<Window::Show>(getData()->controller),
+	getData()->controller->uiShow(),
 	st::introCountry)
 , _code(this, st::introCountryCode)
 , _phone(
@@ -146,6 +147,16 @@ void PhoneWidget::submit() {
 		return;
 	}
 
+	{
+		const auto hasCodeButWaitingPhone = _code->hasFocus()
+			&& (_code->getLastText().size() > 1)
+			&& _phone->getLastText().isEmpty();
+		if (hasCodeButWaitingPhone) {
+			_phone->hideError();
+			_phone->setFocus();
+			return;
+		}
+	}
 	const auto phone = fullNumber();
 	if (!AllowPhoneAttempt(phone)) {
 		showPhoneError(tr::lng_bad_phone());
@@ -183,7 +194,11 @@ void PhoneWidget::submit() {
 		MTP_string(_sentPhone),
 		MTP_int(ApiId),
 		MTP_string(ApiHash),
-		MTP_codeSettings(MTP_flags(0), MTP_vector<MTPbytes>())
+		MTP_codeSettings(
+			MTP_flags(0),
+			MTPVector<MTPbytes>(),
+			MTPstring(),
+			MTPBool())
 	)).done([=](const MTPauth_SentCode &result) {
 		phoneSubmitDone(result);
 	}).fail([=](const MTP::Error &error) {
@@ -212,24 +227,22 @@ void PhoneWidget::phoneSubmitDone(const MTPauth_SentCode &result) {
 	stopCheck();
 	_sentRequest = 0;
 
-	if (result.type() != mtpc_auth_sentCode) {
-		showPhoneError(rpl::single(Lang::Hard::ServerError()));
-		return;
-	}
-
-	const auto &d = result.c_auth_sentCode();
-	fillSentCodeData(d);
-	getData()->phone = _sentPhone;
-	getData()->phoneHash = qba(d.vphone_code_hash());
-	const auto next = d.vnext_type();
-	if (next && next->type() == mtpc_auth_codeTypeCall) {
-		getData()->callStatus = CallStatus::Waiting;
-		getData()->callTimeout = d.vtimeout().value_or(60);
-	} else {
-		getData()->callStatus = CallStatus::Disabled;
-		getData()->callTimeout = 0;
-	}
-	goNext<CodeWidget>();
+	result.match([&](const MTPDauth_sentCode &data) {
+		fillSentCodeData(data);
+		getData()->phone = _sentPhone;
+		getData()->phoneHash = qba(data.vphone_code_hash());
+		const auto next = data.vnext_type();
+		if (next && next->type() == mtpc_auth_codeTypeCall) {
+			getData()->callStatus = CallStatus::Waiting;
+			getData()->callTimeout = data.vtimeout().value_or(60);
+		} else {
+			getData()->callStatus = CallStatus::Disabled;
+			getData()->callTimeout = 0;
+		}
+		goNext<CodeWidget>();
+	}, [&](const MTPDauth_sentCodeSuccess &data) {
+		finish(data.vauthorization());
+	});
 }
 
 void PhoneWidget::phoneSubmitFail(const MTP::Error &error) {

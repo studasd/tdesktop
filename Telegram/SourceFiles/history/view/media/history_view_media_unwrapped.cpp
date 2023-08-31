@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/media/history_view_media_unwrapped.h"
 
+#include "data/data_session.h"
+#include "history/history.h"
 #include "history/view/media/history_view_media_common.h"
 #include "history/view/media/history_view_sticker.h"
 #include "history/view/history_view_element.h"
@@ -99,7 +101,10 @@ QSize UnwrappedMedia::countCurrentSize(int newWidth) {
 		const auto optimalw = maxWidth() - additional;
 		const auto additionalMinWidth = std::min(additional, st::msgReplyPadding.left() + st::msgMinWidth / 2);
 		_additionalOnTop = (optimalw + additionalMinWidth) > newWidth;
-		const auto surrounding = surroundingInfo(topic, via, reply, forwarded, additional);
+		const auto surroundingWidth = _additionalOnTop
+			? std::min(newWidth - st::msgReplyPadding.left(), additional)
+			: (newWidth - _contentSize.width() - st::msgReplyPadding.left());
+		const auto surrounding = surroundingInfo(topic, via, reply, forwarded, surroundingWidth);
 		if (_additionalOnTop) {
 			_topAdded = surrounding.height + st::msgMargin.bottom();
 			newHeight += _topAdded;
@@ -457,8 +462,18 @@ TextState UnwrappedMedia::textState(QPoint point, StateRequest request) const {
 					recth -= skip;
 				}
 				if (reply) {
-					if (QRect(rectx, recty, rectw, recth).contains(point)) {
+					const auto replyRect = QRect(rectx, recty, rectw, recth);
+					if (replyRect.contains(point)) {
 						result.link = reply->replyToLink();
+						reply->ripple.lastPoint = point - replyRect.topLeft();
+						if (!reply->ripple.animation) {
+							reply->ripple.animation = std::make_unique<Ui::RippleAnimation>(
+								st::defaultRippleAnimation,
+								Ui::RippleAnimation::RoundRectMask(
+									replyRect.size(),
+									st::roundRadiusSmall),
+								[=] { item->history()->owner().requestItemRepaint(item); });
+						}
 						return result;
 					}
 				}
@@ -502,6 +517,12 @@ TextState UnwrappedMedia::textState(QPoint point, StateRequest request) const {
 
 bool UnwrappedMedia::hasTextForCopy() const {
 	return _content->hasTextForCopy();
+}
+
+bool UnwrappedMedia::dragItemByHandler(
+		const ClickHandlerPtr &p) const {
+	const auto reply = _parent->displayedReply();
+	return !(reply && (reply->replyToLink() == p));
 }
 
 QRect UnwrappedMedia::contentRectForReactions() const {

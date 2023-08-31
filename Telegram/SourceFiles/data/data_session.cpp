@@ -41,6 +41,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h" // tr::lng_deleted(tr::now) in user name
 #include "data/stickers/data_stickers.h"
 #include "data/notify/data_notify_settings.h"
+#include "data/data_bot_app.h"
 #include "data/data_changes.h"
 #include "data/data_group_call.h"
 #include "data/data_media_types.h"
@@ -65,6 +66,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_emoji_statuses.h"
 #include "data/data_forum_icons.h"
 #include "data/data_cloud_themes.h"
+#include "data/data_stories.h"
+#include "data/data_story.h"
 #include "data/data_streaming.h"
 #include "data/data_media_rotation.h"
 #include "data/data_histories.h"
@@ -116,7 +119,7 @@ void CheckForSwitchInlineButton(not_null<HistoryItem*> item) {
 						if (!windows.empty()) {
 							Api::SwitchInlineBotButtonReceived(
 								windows.front(),
-								QString::fromUtf8(button.data));
+								button.data);
 						}
 						return;
 					}
@@ -201,6 +204,10 @@ std::vector<UnavailableReason> ExtractUnavailableReasons(
 	const auto area = [](const MTPVideoSize &size) {
 		return size.match([](const MTPDvideoSize &data) {
 			return (data.vw().v * data.vh().v);
+		}, [](const MTPDvideoSizeEmojiMarkup &) {
+			return 0;
+		}, [](const MTPDvideoSizeStickerMarkup &) {
+			return 0;
 		});
 	};
 	const auto thumbs = data.vvideo_thumbs();
@@ -261,7 +268,8 @@ Session::Session(not_null<Main::Session*> session)
 , _emojiStatuses(std::make_unique<EmojiStatuses>(this))
 , _forumIcons(std::make_unique<ForumIcons>(this))
 , _notifySettings(std::make_unique<NotifySettings>(this))
-, _customEmojiManager(std::make_unique<CustomEmojiManager>(this)) {
+, _customEmojiManager(std::make_unique<CustomEmojiManager>(this))
+, _stories(std::make_unique<Stories>(this)) {
 	_cache->open(_session->local().cacheKey());
 	_bigFileCache->open(_session->local().cacheBigFileKey());
 
@@ -306,6 +314,8 @@ Session::Session(not_null<Main::Session*> session)
 				}
 			}
 		}, _lifetime);
+
+		_stories->loadMore(Data::StorySourcesList::NotHidden);
 	});
 }
 
@@ -377,6 +387,13 @@ void Session::clear() {
 	cSetRecentInlineBots(RecentInlineBots());
 	cSetRecentStickers(RecentStickerPack());
 	HistoryView::Element::ClearGlobal();
+	_contactsNoChatsList.clear();
+	_contactsList.clear();
+	_chatsList.clear();
+	for (const auto &[id, folder] : _folders) {
+		folder->clearChatsList();
+	}
+	_chatsFilters->clear();
 	_histories->clearAll();
 	_webpages.clear();
 	_locations.clear();
@@ -506,7 +523,15 @@ not_null<UserData*> Session::processUser(const MTPUser &data) {
 				? Flag::Contact
 				| Flag::MutualContact
 				| Flag::DiscardMinPhoto
+				| Flag::StoriesHidden
 				: Flag());
+		const auto storiesState = minimal
+			? std::optional<Data::Stories::PeerSourceState>()
+			: data.is_stories_unavailable()
+			? Data::Stories::PeerSourceState()
+			: !data.vstories_max_id()
+			? std::optional<Data::Stories::PeerSourceState>()
+			: stories().peerSourceState(result, data.vstories_max_id()->v);
 		const auto flagsSet = (data.is_deleted() ? Flag::Deleted : Flag())
 			| (data.is_verified() ? Flag::Verified : Flag())
 			| (data.is_scam() ? Flag::Scam : Flag())
@@ -518,6 +543,7 @@ not_null<UserData*> Session::processUser(const MTPUser &data) {
 				? (data.is_contact() ? Flag::Contact : Flag())
 				| (data.is_mutual_contact() ? Flag::MutualContact : Flag())
 				| (data.is_apply_min_photo() ? Flag() : Flag::DiscardMinPhoto)
+				| (data.is_stories_hidden() ? Flag::StoriesHidden : Flag())
 				: Flag());
 		result->setFlags((result->flags() & ~flagsMask) | flagsSet);
 		if (minimal) {
@@ -532,6 +558,13 @@ not_null<UserData*> Session::processUser(const MTPUser &data) {
 					MTP_long(data.vaccess_hash().value_or_empty()));
 			}
 		} else {
+			if (storiesState) {
+				result->setStoriesState(!storiesState->maxId
+					? UserData::StoriesState::None
+					: (storiesState->maxId > storiesState->readTill)
+					? UserData::StoriesState::HasUnread
+					: UserData::StoriesState::HasRead);
+			}
 			if (data.is_self()) {
 				result->input = MTP_inputPeerSelf();
 				result->inputUser = MTP_inputUserSelf();
@@ -655,6 +688,7 @@ not_null<UserData*> Session::processUser(const MTPUser &data) {
 					result->botInfo->inlinePlaceholder = QString();
 				}
 				result->botInfo->supportsAttachMenu = data.is_bot_attach_menu();
+				result->botInfo->canEditInformation = data.is_bot_can_edit();
 			} else {
 				result->setBotInfoVersion(-1);
 			}
@@ -805,6 +839,8 @@ not_null<PeerData*> Session::processChat(const MTPChat &data) {
 		const auto canViewMembers = channel->canViewMembers();
 		const auto canAddMembers = channel->canAddMembers();
 
+		const auto wasCallNotEmpty = Data::ChannelHasActiveCall(channel);
+
 		if (const auto count = data.vparticipants_count()) {
 			channel->setMembersCount(count->v);
 		}
@@ -911,6 +947,9 @@ not_null<PeerData*> Session::processChat(const MTPChat &data) {
 			|| canViewMembers != channel->canViewMembers()
 			|| canAddMembers != channel->canAddMembers()) {
 			flags |= UpdateFlag::Rights;
+		}
+		if (wasCallNotEmpty != Data::ChannelHasActiveCall(channel)) {
+			flags |= UpdateFlag::GroupCall;
 		}
 	}, [&](const MTPDchannelForbidden &data) {
 		const auto channel = result->asChannel();
@@ -1119,7 +1158,8 @@ UserData *Session::userByPhone(const QString &phone) const {
 PeerData *Session::peerByUsername(const QString &username) const {
 	const auto uname = username.trimmed();
 	for (const auto &[peerId, peer] : _peers) {
-		if (!peer->userName().compare(uname, Qt::CaseInsensitive)) {
+		if (peer->isLoaded()
+			&& !peer->userName().compare(uname, Qt::CaseInsensitive)) {
 			return peer.get();
 		}
 	}
@@ -1337,6 +1377,9 @@ void Session::setupChannelLeavingViewer() {
 				history->removeJoinedMessage();
 				history->updateChatListExistence();
 				history->updateChatListSortPosition();
+				if (!history->inChatList()) {
+					history->clearFolder();
+				}
 			}
 		}
 	}, _lifetime);
@@ -1695,27 +1738,10 @@ void Session::requestItemTextRefresh(not_null<HistoryItem*> item) {
 	}
 }
 
-void Session::requestAnimationPlayInline(not_null<HistoryItem*> item) {
-	_animationPlayInlineRequest.fire_copy(item);
-
-	if (const auto media = item->media()) {
-		if (const auto data = media->document()) {
-			if (data && data->isVideoMessage()) {
-				const auto msgId = item->fullId();
-				::Media::Player::instance()->playPause({ data, msgId });
-			}
-		}
-	}
-}
-
 void Session::requestUnreadReactionsAnimation(not_null<HistoryItem*> item) {
 	enumerateItemViews(item, [&](not_null<ViewElement*> view) {
 		view->animateUnreadReactions();
 	});
-}
-
-rpl::producer<not_null<HistoryItem*>> Session::animationPlayInlineRequest() const {
-	return _animationPlayInlineRequest.events();
 }
 
 rpl::producer<not_null<const HistoryItem*>> Session::itemRemoved() const {
@@ -2826,6 +2852,10 @@ void Session::photoApplyFields(
 		const auto area = [](const MTPVideoSize &size) {
 			return size.match([](const MTPDvideoSize &data) {
 				return data.vsize().v ? (data.vw().v * data.vh().v) : 0;
+			}, [](const MTPDvideoSizeEmojiMarkup &) {
+				return 0;
+			}, [](const MTPDvideoSizeStickerMarkup &) {
+				return 0;
 			});
 		};
 		const auto type = [](const MTPVideoSize &size) {
@@ -2833,6 +2863,8 @@ void Session::photoApplyFields(
 				return data.vtype().v.isEmpty()
 					? char(0)
 					: data.vtype().v.front();
+			}, [](const auto &) {
+				return char(0);
 			});
 		};
 		const auto result = (size == PhotoSize::Small)
@@ -2872,8 +2904,10 @@ void Session::photoApplyFields(
 				? Images::FromVideoSize(_session, data, *videoLarge)
 				: ImageWithLocation()),
 			(videoLarge
-				? VideoStartTime(*videoLarge->match(
-					[](const auto &data) { return &data; }))
+				? videoLarge->match([](const MTPDvideoSize &data) {
+					return VideoStartTime(data);
+				}, [](const MTPDvideoSizeEmojiMarkup &) { return 0;
+				}, [](const MTPDvideoSizeStickerMarkup &) { return 0; })
 				: 0));
 	}
 }
@@ -3197,6 +3231,7 @@ not_null<WebPageData*> Session::processWebpage(const MTPDwebPagePending &data) {
 		QString(),
 		QString(),
 		TextWithEntities(),
+		FullStoryId(),
 		nullptr,
 		nullptr,
 		WebPageCollage(),
@@ -3251,6 +3286,7 @@ not_null<WebPageData*> Session::webpage(
 		siteName,
 		title,
 		description,
+		FullStoryId(),
 		photo,
 		document,
 		std::move(collage),
@@ -3293,6 +3329,8 @@ void Session::webpageApplyFields(
 				const auto result = attribute.match([&](
 						const MTPDwebPageAttributeTheme &data) {
 					return lookupInAttribute(data);
+				}, [&](const MTPDwebPageAttributeStory &data) {
+					return (DocumentData*)nullptr;
 				});
 				if (result) {
 					return result;
@@ -3301,16 +3339,55 @@ void Session::webpageApplyFields(
 		}
 		return nullptr;
 	};
+	auto story = (Data::Story*)nullptr;
+	auto storyId = FullStoryId();
+	if (const auto attributes = data.vattributes()) {
+		for (const auto &attribute : attributes->v) {
+			attribute.match([&](const MTPDwebPageAttributeStory &data) {
+				storyId = FullStoryId{
+					peerFromUser(data.vuser_id()),
+					data.vid().v,
+				};
+				if (const auto embed = data.vstory()) {
+					story = stories().applyFromWebpage(
+						peerFromUser(data.vuser_id()),
+						*embed);
+				} else if (const auto maybe = stories().lookup(storyId)) {
+					story = *maybe;
+				} else if (maybe.error() == Data::NoStory::Unknown) {
+					stories().resolve(storyId, [=] {
+						if (const auto maybe = stories().lookup(storyId)) {
+							const auto story = *maybe;
+							page->document = story->document();
+							page->photo = story->photo();
+							page->description = story->caption();
+							page->type = WebPageType::Story;
+							notifyWebPageUpdateDelayed(page);
+						}
+					});
+				}
+			}, [](const auto &) {});
+		}
+	}
 	webpageApplyFields(
 		page,
-		ParseWebPageType(data),
+		(story ? WebPageType::Story : ParseWebPageType(data)),
 		qs(data.vurl()),
 		qs(data.vdisplay_url()),
 		siteName,
 		qs(data.vtitle().value_or_empty()),
-		description,
-		photo ? processPhoto(*photo).get() : nullptr,
-		document ? processDocument(*document).get() : lookupThemeDocument(),
+		(story ? story->caption() : description),
+		storyId,
+		(story
+			? story->photo()
+			: photo
+			? processPhoto(*photo).get()
+			: nullptr),
+		(story
+			? story->document()
+			: document
+			? processDocument(*document).get()
+			: lookupThemeDocument()),
 		WebPageCollage(this, data),
 		data.vduration().value_or_empty(),
 		qs(data.vauthor().value_or_empty()),
@@ -3325,6 +3402,7 @@ void Session::webpageApplyFields(
 		const QString &siteName,
 		const QString &title,
 		const TextWithEntities &description,
+		FullStoryId storyId,
 		PhotoData *photo,
 		DocumentData *document,
 		WebPageCollage &&collage,
@@ -3339,6 +3417,7 @@ void Session::webpageApplyFields(
 		siteName,
 		title,
 		description,
+		storyId,
 		photo,
 		document,
 		std::move(collage),
@@ -3445,6 +3524,45 @@ void Session::gameApplyFields(
 	game->photo = photo;
 	game->document = document;
 	notifyGameUpdateDelayed(game);
+}
+
+not_null<BotAppData*> Session::botApp(BotAppId id) {
+	const auto i = _botApps.find(id);
+	return (i != end(_botApps))
+		? i->second.get()
+		: _botApps.emplace(
+			id,
+			std::make_unique<BotAppData>(this, id)).first->second.get();
+}
+
+BotAppData *Session::findBotApp(PeerId botId, const QString &appName) const {
+	for (const auto &[id, app] : _botApps) {
+		if (app->botId == botId && app->shortName == appName) {
+			return app.get();
+		}
+	}
+	return nullptr;
+}
+
+BotAppData *Session::processBotApp(
+		PeerId botId,
+		const MTPBotApp &data) {
+	return data.match([&](const MTPDbotApp &data) {
+		const auto result = botApp(data.vid().v);
+		result->botId = botId;
+		result->shortName = qs(data.vshort_name());
+		result->title = qs(data.vtitle());
+		result->description = qs(data.vdescription());
+		result->photo = processPhoto(data.vphoto());
+		result->document = data.vdocument()
+			? processDocument(*data.vdocument()).get()
+			: nullptr;
+		result->accessHash = data.vaccess_hash().v;
+		result->hash = data.vhash().v;
+		return result.get();
+	}, [](const MTPDbotAppNotModified &) {
+		return (BotAppData*)nullptr;
+	});
 }
 
 not_null<PollData*> Session::poll(PollId id) {
@@ -3775,6 +3893,38 @@ void Session::unregisterCallItem(not_null<HistoryItem*> item) {
 void Session::destroyAllCallItems() {
 	while (!_callItems.empty()) {
 		(*_callItems.begin())->destroy();
+	}
+}
+
+void Session::registerStoryItem(
+		FullStoryId id,
+		not_null<HistoryItem*> item) {
+	_storyItems[id].emplace(item);
+}
+
+void Session::unregisterStoryItem(
+		FullStoryId id,
+		not_null<HistoryItem*> item) {
+	const auto i = _storyItems.find(id);
+	if (i != _storyItems.end()) {
+		auto &items = i->second;
+		if (items.remove(item) && items.empty()) {
+			_storyItems.erase(i);
+		}
+	}
+}
+
+void Session::refreshStoryItemViews(FullStoryId id) {
+	const auto i = _storyItems.find(id);
+	if (i != _storyItems.end()) {
+		for (const auto item : i->second) {
+			if (const auto media = item->media()) {
+				if (media->storyMention()) {
+					item->updateStoryMentionText();
+				}
+			}
+			requestItemViewRefresh(item);
+		}
 	}
 }
 
@@ -4128,7 +4278,8 @@ void Session::serviceNotification(
 			MTPstring(), // bot_inline_placeholder
 			MTPstring(), // lang_code
 			MTPEmojiStatus(),
-			MTPVector<MTPUsername>()));
+			MTPVector<MTPUsername>(),
+			MTPint())); // stories_max_id
 	}
 	const auto history = this->history(PeerData::kServiceNotificationsId);
 	if (!history->folderKnown()) {

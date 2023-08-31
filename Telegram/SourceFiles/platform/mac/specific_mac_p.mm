@@ -29,6 +29,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #if __has_include(<QtCore/QOperatingSystemVersion>)
 #include <QtCore/QOperatingSystemVersion>
 #endif // __has_include(<QtCore/QOperatingSystemVersion>)
+#include <qpa/qwindowsysteminterface.h>
 #include <Cocoa/Cocoa.h>
 #include <CoreFoundation/CFURL.h>
 #include <IOKit/IOKitLib.h>
@@ -195,7 +196,11 @@ ApplicationDelegate *_sharedDelegate = nil;
 			"-receiveWakeNote: received, scheduling detach from audio device"));
 		Media::Audio::ScheduleDetachFromDeviceSafe();
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+		QWindowSystemInterface::handleThemeChange();
+#else // Qt >= 6.5.0
 		Core::App().settings().setSystemDarkMode(Platform::IsDarkMode());
+#endif // Qt < 6.5.0
 	});
 }
 
@@ -266,7 +271,10 @@ void SetApplicationIcon(const QIcon &icon) {
 void objc_debugShowAlert(const QString &str) {
 	@autoreleasepool {
 
-	[[NSAlert alertWithMessageText:@"Debug Message" defaultButton:@"OK" alternateButton:nil otherButton:nil informativeTextWithFormat:@"%@", Q2NSString(str)] runModal];
+	NSAlert *alert = [[NSAlert alloc] init];
+	alert.messageText = @"Debug Message";
+	alert.informativeText = Q2NSString(str);
+	[alert runModal];
 
 	}
 }

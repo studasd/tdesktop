@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_document_resolver.h"
 
+#include "base/options.h"
 #include "base/platform/base_platform_info.h"
 #include "ui/boxes/confirm_box.h"
 #include "core/application.h"
@@ -35,6 +36,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Data {
 namespace {
+
+base::options::toggle OptionExternalVideoPlayer({
+	.id = kOptionExternalVideoPlayer,
+	.name = "External video player",
+});
 
 void ConfirmDontWarnBox(
 		not_null<Ui::GenericBox*> box,
@@ -117,6 +123,8 @@ void LaunchWithWarning(
 
 } // namespace
 
+const char kOptionExternalVideoPlayer[] = "external-video-player";
+
 QString FileExtension(const QString &filepath) {
 	const auto reversed = ranges::views::reverse(filepath);
 	const auto last = ranges::find_first_of(reversed, ".\\/");
@@ -183,7 +191,7 @@ vtx website ws wsc wsf wsh xbap xll xnk xs"_q;
 
 bool IsIpRevealingName(const QString &filepath) {
 	static const auto kExtensions = [] {
-		const auto joined = u"htm html svg"_q;
+		const auto joined = u"htm html svg m4v m3u8"_q;
 		const auto list = joined.split(' ');
 		return base::flat_set<QString>(list.begin(), list.end());
 	}();
@@ -241,12 +249,15 @@ void ResolveDocument(
 	const auto msgId = item ? item->fullId() : FullMsgId();
 
 	const auto showDocument = [&] {
-		if (cUseExternalVideoPlayer()
+		if (OptionExternalVideoPlayer.value()
 			&& document->isVideoFile()
 			&& !document->filepath().isEmpty()) {
 			File::Launch(document->location(false).fname);
 		} else if (controller) {
-			controller->openDocument(document, msgId, topicRootId, true);
+			controller->openDocument(
+				document,
+				true,
+				{ msgId, topicRootId });
 		}
 	};
 
@@ -286,10 +297,6 @@ void ResolveDocument(
 			|| document->isVoiceMessage()
 			|| document->isVideoMessage()) {
 			::Media::Player::instance()->playPause({ document, msgId });
-		} else if (item
-			&& document->isAnimation()
-			&& HistoryView::Gif::CanPlayInline(document)) {
-			document->owner().requestAnimationPlayInline(item);
 		} else {
 			showDocument();
 		}

@@ -27,6 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qthelp_regex.h"
 #include "ui/ui_utility.h"
 #include "ui/effects/animations.h"
+#include "ui/platform/ui_platform_utility.h"
 
 #include <QtCore/QLockFile>
 #include <QtGui/QSessionManager>
@@ -78,13 +79,9 @@ QString _escapeFrom7bit(const QString &str) {
 
 bool Sandbox::QuitOnStartRequested = false;
 
-Sandbox::Sandbox(
-	not_null<Core::Launcher*> launcher,
-	int &argc,
-	char **argv)
+Sandbox::Sandbox(int &argc, char **argv)
 : QApplication(argc, argv)
-, _mainThreadId(QThread::currentThreadId())
-, _launcher(launcher) {
+, _mainThreadId(QThread::currentThreadId()) {
 	setQuitOnLastWindowClosed(false);
 }
 
@@ -107,7 +104,8 @@ int Sandbox::start() {
 		hashMd5Hex(d.constData(), d.size(), h.data());
 		_lockFile = std::make_unique<QLockFile>(QDir::tempPath() + '/' + h + '-' + cGUIDStr());
 		_lockFile->setStaleLockTime(0);
-		if (!_lockFile->tryLock() && _launcher->customWorkingDir()) {
+		if (!_lockFile->tryLock()
+			&& Launcher::Instance().customWorkingDir()) {
 			// On Windows, QLockFile has problems detecting a stale lock
 			// if the machine's hostname contains characters outside the US-ASCII character set.
 			if constexpr (Platform::IsWindows()) {
@@ -121,6 +119,11 @@ int Sandbox::start() {
 			}
 		}
 	}
+
+#if defined Q_OS_LINUX && QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
+	_localServer.setSocketOptions(QLocalServer::AbstractNamespaceOption);
+	_localSocket.setSocketOptions(QLocalSocket::AbstractNamespaceOption);
+#endif // Q_OS_LINUX && Qt >= 6.2.0
 
 	connect(
 		&_localSocket,
@@ -195,7 +198,7 @@ void Sandbox::launchApplication() {
 		}
 		setupScreenScale();
 
-		_application = std::make_unique<Application>(_launcher);
+		_application = std::make_unique<Application>();
 
 		// Ideally this should go to constructor.
 		// But we want to catch all native events and Application installs
@@ -226,7 +229,12 @@ void Sandbox::setupScreenScale() {
 	logEnv("QT_USE_PHYSICAL_DPI");
 	logEnv("QT_FONT_DPI");
 
-	const auto useRatio = std::clamp(qCeil(ratio), 1, 3);
+	// Like Qt::HighDpiScaleFactorRoundingPolicy::RoundPreferFloor.
+	// Round up for .75 and higher. This favors "small UI" over "large UI".
+	const auto roundedRatio = ((ratio - qFloor(ratio)) < 0.75)
+		? qFloor(ratio)
+		: qCeil(ratio);
+	const auto useRatio = std::clamp(roundedRatio, 1, 3);
 	style::SetDevicePixelRatio(useRatio);
 
 	const auto screen = Sandbox::primaryScreen();
@@ -234,18 +242,17 @@ void Sandbox::setupScreenScale() {
 	const auto basePair = screen->handle()->logicalBaseDpi();
 	const auto base = (basePair.first + basePair.second) * 0.5;
 	const auto screenScaleExact = dpi / base;
-	const auto screenScale = int(base::SafeRound(screenScaleExact * 4)) * 25;
+	const auto screenScale = int(base::SafeRound(screenScaleExact * 20)) * 5;
 	LOG(("Primary screen DPI: %1, Base: %2.").arg(dpi).arg(base));
 	LOG(("Computed screen scale: %1").arg(screenScale));
 	if (Platform::IsMac()) {
 		// 110% for Retina screens by default.
-		cSetScreenScale((useRatio == 2) ? 110 : 100);
+		cSetScreenScale((useRatio == 2) ? 110 : style::kScaleDefault);
 	} else {
-		const auto clamped = std::clamp(
-			screenScale * useRatio,
-			50 * useRatio,
-			300);
-		cSetScreenScale(int(base::SafeRound(clamped * 1. / useRatio)));
+		cSetScreenScale(std::clamp(
+			screenScale,
+			style::kScaleMin,
+			style::MaxScaleForRatio(useRatio)));
 	}
 	LOG(("DevicePixelRatio: %1").arg(useRatio));
 	LOG(("ScreenScale: %1").arg(cScreenScale()));
@@ -392,7 +399,6 @@ void Sandbox::singleInstanceChecked() {
 		}
 		_lastCrashDump = crashdump;
 		auto window = new LastCrashedWindow(
-			_launcher,
 			_lastCrashDump,
 			[=] { launchApplication(); });
 		window->proxyChanges(
@@ -520,14 +526,6 @@ void Sandbox::refreshGlobalProxy() {
 	}
 }
 
-bool Sandbox::customWorkingDir() const {
-	return _launcher->customWorkingDir();
-}
-
-uint64 Sandbox::installationTag() const {
-	return _launcher->installationTag();
-}
-
 void Sandbox::checkForEmptyLoopNestingLevel() {
 	// _loopNestingLevel == _eventNestingLevel means that we had a
 	// native event in a nesting loop that didn't get a notify() call
@@ -583,9 +581,18 @@ void Sandbox::registerEnterFromEventLoop() {
 }
 
 bool Sandbox::notifyOrInvoke(QObject *receiver, QEvent *e) {
-	if (e->type() == base::InvokeQueuedEvent::kType) {
+	const auto type = e->type();
+	if (type == base::InvokeQueuedEvent::Type()) {
 		static_cast<base::InvokeQueuedEvent*>(e)->invoke();
 		return true;
+	} else if (receiver == this) {
+		if (type == QEvent::ApplicationDeactivate) {
+			if (Ui::Platform::SkipApplicationDeactivateEvent()) {
+				return true;
+			}
+		} else if (type == QEvent::ApplicationActivate) {
+			Ui::Platform::GotApplicationActivateEvent();
+		}
 	}
 	return QApplication::notify(receiver, e);
 }
@@ -656,8 +663,8 @@ void Sandbox::closeApplication() {
 uint64 Sandbox::execExternal(const QString &cmd) {
 	DEBUG_LOG(("Sandbox Info: executing external command '%1'").arg(cmd));
 	if (cmd == "show") {
-		if (Core::IsAppLaunched() && Core::App().primaryWindow()) {
-			const auto window = Core::App().primaryWindow();
+		if (Core::IsAppLaunched() && Core::App().activePrimaryWindow()) {
+			const auto window = Core::App().activePrimaryWindow();
 			window->activate();
 			return Platform::ActivationWindowId(window->widget());
 		} else if (const auto window = PreLaunchWindow::instance()) {

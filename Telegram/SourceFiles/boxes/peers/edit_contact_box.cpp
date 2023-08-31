@@ -69,8 +69,7 @@ void SendRequest(
 		}
 		if (box) {
 			if (!wasContact) {
-				Ui::Toast::Show(
-					Ui::BoxShow(box.data()).toastParent(),
+				box->showToast(
 					tr::lng_new_contact_add_done(tr::now, lt_user, first));
 			}
 			box->closeBox();
@@ -215,7 +214,7 @@ void Controller::initNameFields(
 				} else {
 					user->session().api().peerPhoto().upload(
 						user,
-						base::duplicate(*personal));
+						{ base::duplicate(*personal) });
 				}
 			}
 		};

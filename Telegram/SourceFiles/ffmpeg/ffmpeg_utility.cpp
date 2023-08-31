@@ -10,6 +10,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/algorithm.h"
 #include "logs.h"
 
+#if !defined DESKTOP_APP_USE_PACKAGED && !defined Q_OS_WIN && !defined Q_OS_MAC
+#include "base/platform/linux/base_linux_library.h"
+#include <deque>
+#endif // !DESKTOP_APP_USE_PACKAGED && !Q_OS_WIN && !Q_OS_MAC
+
 #include <QImage>
 
 #ifdef LIB_FFMPEG_USE_QT_PRIVATE_API
@@ -85,6 +90,34 @@ void PremultiplyLine(uchar *dst, const uchar *src, int intsCount) {
 #endif // LIB_FFMPEG_USE_QT_PRIVATE_API
 }
 
+#if !defined DESKTOP_APP_USE_PACKAGED && !defined Q_OS_WIN && !defined Q_OS_MAC
+[[nodiscard]] auto CheckHwLibs() {
+	auto list = std::deque{
+		AV_PIX_FMT_CUDA,
+	};
+	if (base::Platform::LoadLibrary("libvdpau.so.1")) {
+		list.push_front(AV_PIX_FMT_VDPAU);
+	}
+	if ([&] {
+		const auto list = std::array{
+			"libva-drm.so.1",
+			"libva-x11.so.1",
+			"libva.so.1",
+			"libdrm.so.2",
+		};
+		for (const auto lib : list) {
+			if (!base::Platform::LoadLibrary(lib)) {
+				return false;
+			}
+		}
+		return true;
+	}()) {
+		list.push_front(AV_PIX_FMT_VAAPI);
+	}
+	return list;
+}
+#endif // !DESKTOP_APP_USE_PACKAGED && !Q_OS_WIN && !Q_OS_MAC
+
 [[nodiscard]] bool InitHw(AVCodecContext *context, AVHWDeviceType type) {
 	AVCodecContext *parent = static_cast<AVCodecContext*>(context->opaque);
 
@@ -125,6 +158,9 @@ void PremultiplyLine(uchar *dst, const uchar *src, int intsCount) {
 		}
 		return false;
 	};
+#if !defined DESKTOP_APP_USE_PACKAGED && !defined Q_OS_WIN && !defined Q_OS_MAC
+	static const auto list = CheckHwLibs();
+#else // !DESKTOP_APP_USE_PACKAGED && !Q_OS_WIN && !Q_OS_MAC
 	const auto list = std::array{
 #ifdef Q_OS_WIN
 		AV_PIX_FMT_D3D11,
@@ -138,6 +174,7 @@ void PremultiplyLine(uchar *dst, const uchar *src, int intsCount) {
 		AV_PIX_FMT_CUDA,
 #endif // Q_OS_WIN || Q_OS_MAC
 	};
+#endif // DESKTOP_APP_USE_PACKAGED || Q_OS_WIN || Q_OS_MAC
 	for (const auto format : list) {
 		if (!has(format)) {
 			continue;
@@ -230,6 +267,7 @@ FormatPointer MakeFormatPointer(
 	if (!io) {
 		return {};
 	}
+	io->seekable = (seek != nullptr);
 	auto result = avformat_alloc_context();
 	if (!result) {
 		LogError(u"avformat_alloc_context"_q);
@@ -250,7 +288,9 @@ FormatPointer MakeFormatPointer(
 		LogError(u"avformat_open_input"_q, error);
 		return {};
 	}
-	result->flags |= AVFMT_FLAG_FAST_SEEK;
+	if (seek) {
+		result->flags |= AVFMT_FLAG_FAST_SEEK;
+	}
 
 	// Now FormatPointer will own and free the IO context.
 	io.release();
@@ -319,6 +359,12 @@ void CodecDeleter::operator()(AVCodecContext *value) {
 
 FramePointer MakeFramePointer() {
 	return FramePointer(av_frame_alloc());
+}
+
+FramePointer DuplicateFramePointer(AVFrame *frame) {
+	return frame
+		? FramePointer(av_frame_clone(frame))
+		: FramePointer();
 }
 
 bool FrameHasData(AVFrame *frame) {

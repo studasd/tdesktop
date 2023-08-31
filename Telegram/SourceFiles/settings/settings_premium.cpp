@@ -49,6 +49,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/painter.h"
+#include "ui/power_saving.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
 #include "base/unixtime.h"
@@ -202,13 +203,15 @@ struct Entry {
 	const style::icon *icon;
 	rpl::producer<QString> title;
 	rpl::producer<QString> description;
-	std::optional<PremiumPreview> section;
+	PremiumPreview section = PremiumPreview::DoubleLimits;
+	bool newBadge = false;
 };
 
 using Order = std::vector<QString>;
 
 [[nodiscard]] Order FallbackOrder() {
 	return Order{
+		u"stories"_q,
 		u"double_limits"_q,
 		u"more_upload"_q,
 		u"faster_download"_q,
@@ -221,17 +224,29 @@ using Order = std::vector<QString>;
 		u"advanced_chat_management"_q,
 		u"profile_badge"_q,
 		u"animated_userpics"_q,
+		u"translations"_q,
 	};
 }
 
 [[nodiscard]] base::flat_map<QString, Entry> EntryMap() {
 	return base::flat_map<QString, Entry>{
 		{
+			u"stories"_q,
+			Entry{
+				&st::settingsPremiumIconStories,
+				tr::lng_premium_summary_subtitle_stories(),
+				tr::lng_premium_summary_about_stories(),
+				PremiumPreview::Stories,
+				true,
+			},
+		},
+		{
 			u"double_limits"_q,
 			Entry{
 				&st::settingsPremiumIconDouble,
 				tr::lng_premium_summary_subtitle_double_limits(),
 				tr::lng_premium_summary_about_double_limits(),
+				PremiumPreview::DoubleLimits,
 			},
 		},
 		{
@@ -331,6 +346,15 @@ using Order = std::vector<QString>;
 				tr::lng_premium_summary_subtitle_animated_userpics(),
 				tr::lng_premium_summary_about_animated_userpics(),
 				PremiumPreview::AnimatedUserpics,
+			},
+		},
+		{
+			u"translations"_q,
+			Entry{
+				&st::settingsPremiumIconTranslations,
+				tr::lng_premium_summary_subtitle_translation(),
+				tr::lng_premium_summary_about_translation(),
+				PremiumPreview::RealTimeTranslation,
 			},
 		},
 	};
@@ -479,16 +503,10 @@ public:
 	void paint(QPainter &p);
 
 private:
-	[[nodiscard]] QPixmap paintedPixmap(const QSize &size) const;
-
-	void resolveIsColored();
-
 	QRectF _rect;
 	std::shared_ptr<Data::DocumentMedia> _media;
 	std::unique_ptr<HistoryView::StickerPlayer> _player;
 	bool _paused = false;
-	bool _isColored = false;
-	bool _isColoredResolved = false;
 	rpl::lifetime _lifetime;
 
 };
@@ -523,6 +541,11 @@ EmojiStatusTopBar::EmojiStatusTopBar(
 				_media->owner()->location(),
 				_media->bytes(),
 				size.toSize());
+		} else if (sticker) {
+			_player = std::make_unique<HistoryView::StaticStickerPlayer>(
+				_media->owner()->location(),
+				_media->bytes(),
+				size.toSize());
 		}
 		if (_player) {
 			_player->setRepaintCallback([=] { callback(_rect.toRect()); });
@@ -542,53 +565,21 @@ void EmojiStatusTopBar::setPaused(bool paused) {
 	_paused = paused;
 }
 
-QPixmap EmojiStatusTopBar::paintedPixmap(const QSize &size) const {
-	const auto good = _media->goodThumbnail();
-	if (const auto image = _media->getStickerLarge()) {
-		return image->pix(size);
-	} else if (good) {
-		return good->pix(size);
-	} else if (const auto thumbnail = _media->thumbnail()) {
-		return thumbnail->pix(size, { .options = Images::Option::Blur });
-	}
-	return QPixmap();
-}
-
-void EmojiStatusTopBar::resolveIsColored() {
-	if (_isColoredResolved) {
-		return;
-	}
-	const auto document = _media->owner();
-	const auto manager = &document->owner().customEmojiManager();
-	const auto coloredSetId = manager->coloredSetId();
-	if (!coloredSetId) {
-		return;
-	}
-	_isColoredResolved = true;
-	const auto sticker = document->sticker();
-	_isColored = sticker && (sticker->set.id == coloredSetId);
-}
-
 void EmojiStatusTopBar::paint(QPainter &p) {
-	if (_player) {
-		if (_player->ready()) {
-			resolveIsColored();
-			const auto frame = _player->frame(
-				_rect.size().toSize(),
-				(_isColored
-					? st::profileVerifiedCheckBg->c
-					: QColor(0, 0, 0, 0)),
-				false,
-				crl::now(),
-				_paused);
+	if (_player && _player->ready()) {
+		const auto frame = _player->frame(
+			_rect.size().toSize(),
+			(_media->owner()->emojiUsesTextColor()
+				? st::profileVerifiedCheckBg->c
+				: QColor(0, 0, 0, 0)),
+			false,
+			crl::now(),
+			_paused || On(PowerSaving::kEmojiStatus));
 
-			p.drawImage(_rect.toRect(), frame.image);
-			if (!_paused) {
-				_player->markFrameShown();
-			}
+		p.drawImage(_rect.toRect(), frame.image);
+		if (!_paused) {
+			_player->markFrameShown();
 		}
-	} else if (_media) {
-		p.drawPixmap(_rect.topLeft(), paintedPixmap(_rect.size().toSize()));
 	}
 }
 
@@ -882,12 +873,10 @@ void TopBarUser::updateTitle(
 	auto link = std::make_shared<LambdaClickHandler>([=,
 			stickerSetIdentifier = stickerInfo->set] {
 		setPaused(true);
-		const auto box = controller->show(
-			Box<StickerSetBox>(
-				controller,
-				stickerSetIdentifier,
-				Data::StickersType::Emoji),
-			Ui::LayerOption::KeepOther);
+		const auto box = controller->show(Box<StickerSetBox>(
+			controller->uiShow(),
+			stickerSetIdentifier,
+			Data::StickersType::Emoji));
 
 		box->boxClosing(
 		) | rpl::start_with_next(crl::guard(this, [=] {
@@ -1284,6 +1273,32 @@ void Premium::setupContent() {
 			descriptionPadding);
 		description->setAttribute(Qt::WA_TransparentForMouseEvents);
 
+		const auto badge = entry.newBadge
+			? Ui::CreateChild<Ui::PaddingWrap<Ui::FlatLabel>>(
+				content,
+				object_ptr<Ui::FlatLabel>(
+					content,
+					tr::lng_premium_summary_new_badge(),
+					st::settingsPremiumNewBadge),
+				st::settingsPremiumNewBadgePadding)
+			: nullptr;
+		if (badge) {
+			badge->setAttribute(Qt::WA_TransparentForMouseEvents);
+			badge->paintRequest() | rpl::start_with_next([=] {
+				auto p = QPainter(badge);
+				auto hq = PainterHighQualityEnabler(p);
+				p.setPen(Qt::NoPen);
+				p.setBrush(st::windowBgActive);
+				const auto r = st::settingsPremiumNewBadgePadding.left();
+				p.drawRoundedRect(badge->rect(), r, r);
+			}, badge->lifetime());
+
+			label->geometryValue(
+			) | rpl::start_with_next([=](QRect geometry) {
+				badge->move(st::settingsPremiumNewBadgePosition
+					+ QPoint(label->x() + label->width(), label->y()));
+			}, badge->lifetime());
+		}
 		const auto dummy = Ui::CreateChild<Ui::AbstractButton>(content);
 		dummy->setAttribute(Qt::WA_TransparentForMouseEvents);
 
@@ -1342,55 +1357,7 @@ void Premium::setupContent() {
 				_setPaused(false);
 			});
 
-			if (section) {
-				ShowPremiumPreviewToBuy(controller, *section, hidden);
-				return;
-			}
-			controller->show(Box([=](not_null<Ui::GenericBox*> box) {
-				DoubledLimitsPreviewBox(box, &controller->session());
-
-				box->addTopButton(st::boxTitleClose, [=] {
-					box->closeBox();
-				});
-
-				Data::AmPremiumValue(
-					&controller->session()
-				) | rpl::skip(1) | rpl::start_with_next([=] {
-					box->closeBox();
-				}, box->lifetime());
-
-				box->boxClosing(
-				) | rpl::start_with_next(hidden, box->lifetime());
-
-				if (controller->session().premium()) {
-					box->addButton(tr::lng_close(), [=] {
-						box->closeBox();
-					});
-				} else {
-					const auto button = CreateSubscribeButton({
-						controller,
-						box,
-						[] { return u"double_limits"_q; }
-					});
-
-					box->setShowFinishedCallback([=] {
-						button->startGlareAnimation();
-					});
-
-					box->setStyle(st::premiumPreviewDoubledLimitsBox);
-					box->widthValue(
-					) | rpl::start_with_next([=](int width) {
-						const auto &padding =
-							st::premiumPreviewDoubledLimitsBox.buttonPadding;
-						button->resizeToWidth(width
-							- padding.left()
-							- padding.right());
-						button->moveToLeft(padding.left(), padding.top());
-					}, button->lifetime());
-					box->addButton(
-						object_ptr<Ui::AbstractButton>::fromRaw(button));
-				}
-			}));
+			ShowPremiumPreviewToBuy(controller, section, hidden);
 		});
 
 		iconContainers.push_back(dummy);
@@ -1677,7 +1644,7 @@ QPointer<Ui::RpWidget> Premium::createPinnedToBottom(
 	} else {
 #endif
 	{
-		_radioGroup->setChangedCallback([=](int value) {
+		const auto callback = [=](int value) {
 			const auto options =
 				_controller->session().api().premium().subscriptionOptions();
 			if (options.empty()) {
@@ -1689,8 +1656,9 @@ QPointer<Ui::RpWidget> Premium::createPinnedToBottom(
 				lt_cost,
 				options[value].costPerMonth);
 			_buttonText = std::move(text);
-		});
-		_radioGroup->setValue(0);
+		};
+		_radioGroup->setChangedCallback(callback);
+		callback(0);
 	}
 
 	_showFinished.events(
@@ -1806,6 +1774,11 @@ QString LookupPremiumRef(PremiumPreview section) {
 
 not_null<Ui::GradientButton*> CreateSubscribeButton(
 		SubscribeButtonArgs &&args) {
+	Expects(args.show || args.controller);
+
+	if (!args.show && args.controller) {
+		args.show = args.controller->uiShow();
+	}
 	const auto result = Ui::CreateChild<Ui::GradientButton>(
 		args.parent.get(),
 		args.gradientStops
@@ -1813,9 +1786,14 @@ not_null<Ui::GradientButton*> CreateSubscribeButton(
 			: Ui::Premium::ButtonGradientStops());
 
 	result->setClickedCallback([
-			controller = args.controller,
+			show = args.show,
 			computeRef = args.computeRef,
 			computeBotUrl = args.computeBotUrl] {
+		const auto window = show->resolveWindow(
+			ChatHelpers::WindowUsage::PremiumPromo);
+		if (!window) {
+			return;
+		}
 		const auto url = computeBotUrl ? computeBotUrl() : QString();
 		if (!url.isEmpty()) {
 			const auto local = Core::TryConvertUrlToLocal(url);
@@ -1825,19 +1803,19 @@ not_null<Ui::GradientButton*> CreateSubscribeButton(
 			UrlClickHandler::Open(
 				local,
 				QVariant::fromValue(ClickHandlerContext{
-					.sessionWindow = base::make_weak(controller),
+					.sessionWindow = base::make_weak(window),
 					.botStartAutoSubmit = true,
 				}));
 		} else {
-			SendScreenAccept(controller);
-			StartPremiumPayment(controller, computeRef());
+			SendScreenAccept(window);
+			StartPremiumPayment(window, computeRef());
 		}
 	});
 
 	const auto &st = st::premiumPreviewBox.button;
 	result->resize(args.parent->width(), st.height);
 
-	const auto premium = &args.controller->session().api().premium();
+	const auto premium = &args.show->session().api().premium();
 	premium->reload();
 	const auto computeCost = [=] {
 		const auto amount = premium->monthlyAmount();
@@ -1900,6 +1878,8 @@ not_null<Ui::GradientButton*> CreateSubscribeButton(
 			return PremiumPreview::ProfileBadge;
 		} else if (s == u"animated_userpics"_q) {
 			return PremiumPreview::AnimatedUserpics;
+		} else if (s == u"translations"_q) {
+			return PremiumPreview::RealTimeTranslation;
 		}
 		return PremiumPreview::kCount;
 	}) | ranges::views::filter([](PremiumPreview type) {

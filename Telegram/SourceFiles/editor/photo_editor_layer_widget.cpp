@@ -19,15 +19,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtGui/QGuiApplication>
 
 namespace Editor {
-namespace {
-
-constexpr auto kProfilePhotoSize = 640;
-
-} // namespace
 
 void OpenWithPreparedFile(
 		not_null<QWidget*> parent,
-		not_null<Window::SessionController*> controller,
+		std::shared_ptr<ChatHelpers::Show> show,
 		not_null<Ui::PreparedFile*> file,
 		int previewWidth,
 		Fn<void()> &&doneCallback) {
@@ -61,13 +56,14 @@ void OpenWithPreparedFile(
 	const auto fileImage = std::make_shared<Image>(std::move(copy));
 	auto editor = base::make_unique_q<PhotoEditor>(
 		parent,
-		&controller->window(),
+		show,
+		show,
 		fileImage,
 		image->modifications);
 	const auto raw = editor.get();
 	auto layer = std::make_unique<LayerWidget>(parent, std::move(editor));
 	InitEditorLayer(layer.get(), raw, std::move(callback));
-	controller->showLayer(std::move(layer), Ui::LayerOption::KeepOther);
+	show->showLayer(std::move(layer), Ui::LayerOption::KeepOther);
 }
 
 void PrepareProfilePhoto(

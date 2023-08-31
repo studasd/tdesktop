@@ -18,9 +18,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 class History;
 class HistoryBlock;
+class HistoryTranslation;
 class HistoryItem;
 struct HistoryMessageMarkupData;
 class HistoryMainElementDelegateMixin;
+struct LanguageId;
 
 namespace Main {
 class Session;
@@ -109,7 +111,6 @@ public:
 	Element *findLastNonEmpty() const;
 	Element *findLastDisplayed() const;
 	bool hasOrphanMediaGroupPart() const;
-	bool removeOrphanMediaGroupPart();
 	[[nodiscard]] std::vector<MsgId> collectMessagesFromParticipantToDelete(
 		not_null<PeerData*> participant) const;
 
@@ -147,7 +148,7 @@ public:
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -167,7 +168,7 @@ public:
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -178,7 +179,7 @@ public:
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -189,7 +190,7 @@ public:
 		MsgId id,
 		MessageFlags flags,
 		UserId viaBotId,
-		MsgId replyTo,
+		FullReplyTo replyTo,
 		TimeId date,
 		PeerId from,
 		const QString &postAuthor,
@@ -385,7 +386,7 @@ public:
 	const QString &chatListNameSortKey() const override;
 	const base::flat_set<QString> &chatListNameWords() const override;
 	const base::flat_set<QChar> &chatListFirstLetters() const override;
-	void loadUserpic() override;
+	void chatListPreloadData() override;
 	void paintUserpic(
 		Painter &p,
 		Ui::PeerUserpicView &view,
@@ -425,6 +426,13 @@ public:
 
 	[[nodiscard]] bool isTopPromoted() const;
 
+	void translateOfferFrom(LanguageId id);
+	[[nodiscard]] LanguageId translateOfferedFrom() const;
+	void translateTo(LanguageId id);
+	[[nodiscard]] LanguageId translatedTo() const;
+
+	[[nodiscard]] HistoryTranslation *translation() const;
+
 	const not_null<PeerData*> peer;
 
 	// Still public data.
@@ -458,6 +466,7 @@ private:
 		IsForum = (1 << 3),
 		FakeUnreadWhileOpened = (1 << 4),
 		HasPinnedMessages = (1 << 5),
+		ResolveChatListMessage = (1 << 6),
 	};
 	using Flags = base::flags<Flag>;
 	friend inline constexpr auto is_flag_type(Flag) {
@@ -544,6 +553,8 @@ private:
 	void setChatListMessageFromLast();
 	void setChatListMessageUnknown();
 	void setFakeChatListMessage();
+	void allowChatListMessageResolve();
+	void resolveChatListMessageGroup();
 
 	// Add all items to the unread mentions if we were not loaded at bottom and now are.
 	void checkAddAllToUnreadMentions();
@@ -617,6 +628,7 @@ private:
 		HistoryBlock *block = nullptr;
 	};
 	std::unique_ptr<BuildingBlock> _buildingFrontBlock;
+	std::unique_ptr<HistoryTranslation> _translation;
 
 	Data::HistoryDrafts _drafts;
 	base::flat_map<MsgId, TimeId> _acceptCloudDraftsAfter;
@@ -627,6 +639,7 @@ private:
 	QString _topPromotedType;
 
 	HistoryView::SendActionPainter _sendActionPainter;
+
 
 };
 

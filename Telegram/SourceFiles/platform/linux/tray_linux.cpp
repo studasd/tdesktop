@@ -23,15 +23,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Platform {
 
-namespace {
-
-[[nodiscard]] QWidget *Parent() {
-	Expects(Core::App().primaryWindow() != nullptr);
-	return Core::App().primaryWindow()->widget();
-}
-
-} // namespace
-
 class IconGraphic final {
 public:
 	explicit IconGraphic();
@@ -100,7 +91,7 @@ QIcon IconGraphic::systemIcon(
 		int counter,
 		bool muted) const {
 	if (iconThemeName == _themeName
-		&& counterSlice(counter) == _count
+		&& (counter > 0) == (_count > 0)
 		&& muted == _muted) {
 		return _systemIcon;
 	}
@@ -241,6 +232,7 @@ QIcon IconGraphic::trayIcon(
 					: 16;
 				const auto layer = Window::GenerateCounterLayer({
 					.size = layerSize,
+					.devicePixelRatio = iconImage.devicePixelRatio(),
 					.count = counter,
 					.bg = bg,
 					.fg = fg,
@@ -334,7 +326,7 @@ void Tray::createIcon() {
 		const auto counter = Core::App().unreadBadge();
 		const auto muted = Core::App().unreadBadgeMuted();
 
-		_icon = base::make_unique_q<QSystemTrayIcon>(Parent());
+		_icon = base::make_unique_q<QSystemTrayIcon>(nullptr);
 		_icon->setIcon(_iconGraphic->trayIcon(
 			_iconGraphic->systemIcon(
 				iconThemeName,
@@ -404,7 +396,7 @@ void Tray::updateIcon() {
 
 void Tray::createMenu() {
 	if (!_menu) {
-		_menu = base::make_unique_q<QMenu>(Parent());
+		_menu = base::make_unique_q<QMenu>(nullptr);
 	}
 	if (!_menuXEmbed) {
 		_menuXEmbed = base::make_unique_q<Ui::PopupMenu>(nullptr);

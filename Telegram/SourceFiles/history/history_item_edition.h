@@ -24,9 +24,12 @@ struct HistoryMessageEdition {
 	int views = -1;
 	int forwards = -1;
 	int ttl = 0;
+	bool useSameViews = false;
+	bool useSameForwards = false;
 	bool useSameReplies = false;
 	bool useSameMarkup = false;
 	bool useSameReactions = false;
+	bool savePreviousMedia = false;
 	TextWithEntities textWithEntities;
 	HistoryMessageMarkupData replyMarkup;
 	HistoryMessageRepliesData replies;

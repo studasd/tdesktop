@@ -18,6 +18,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/file_download.h"
 #include "ui/image/image.h"
 
+#include <QtGui/QGuiApplication>
+#include <QtGui/QClipboard>
+
 namespace Data {
 
 PhotoMedia::PhotoMedia(not_null<PhotoData*> owner)
@@ -163,14 +166,22 @@ bool PhotoMedia::autoLoadThumbnailAllowed(not_null<PeerData*> peer) const {
 }
 
 void PhotoMedia::automaticLoad(
-		Data::FileOrigin origin,
+		FileOrigin origin,
 		const HistoryItem *item) {
-	if (!item || loaded() || _owner->cancelled()) {
+	if (item) {
+		automaticLoad(origin, item->history()->peer);
+	}
+}
+
+void PhotoMedia::automaticLoad(
+		FileOrigin origin,
+		not_null<PeerData*> peer) {
+	if (loaded() || _owner->cancelled()) {
 		return;
 	}
 	const auto loadFromCloud = Data::AutoDownload::Should(
 		_owner->session().settings().autoDownload(),
-		item->history()->peer,
+		peer,
 		_owner);
 	_owner->load(
 		origin,
@@ -198,8 +209,7 @@ bool PhotoMedia::saveToFile(const QString &path) {
 		QFile f(path);
 		return f.open(QIODevice::WriteOnly)
 			&& (f.write(video) == video.size());
-	} else if (const auto photo = imageBytes(large)
-		; !photo.isEmpty()) {
+	} else if (const auto photo = imageBytes(large); !photo.isEmpty()) {
 		QFile f(path);
 		return f.open(QIODevice::WriteOnly)
 			&& (f.write(photo) == photo.size());
@@ -208,6 +218,26 @@ bool PhotoMedia::saveToFile(const QString &path) {
 		return fallback.save(path, "JPG");
 	}
 	return false;
+}
+
+bool PhotoMedia::setToClipboard() {
+	constexpr auto large = PhotoSize::Large;
+	if (const auto video = videoContent(large); !video.isEmpty()) {
+		return false;
+	}
+	auto fallback = image(large)->original();
+	if (fallback.isNull()) {
+		return false;
+	}
+	const auto bytes = imageBytes(large);
+	auto mime = std::make_unique<QMimeData>();
+	mime->setImageData(std::move(fallback));
+	if (auto bytes = imageBytes(large); !bytes.isEmpty()) {
+		mime->setData(u"image/jpeg"_q, std::move(bytes));
+	}
+	mime->setData(u"application/x-td-use-jpeg"_q, "1");
+	QGuiApplication::clipboard()->setMimeData(mime.release());
+	return true;
 }
 
 } // namespace Data

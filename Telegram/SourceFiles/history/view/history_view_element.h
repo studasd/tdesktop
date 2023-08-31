@@ -58,6 +58,12 @@ enum class Context : char {
 	ContactPreview
 };
 
+enum class OnlyEmojiAndSpaces : char {
+	Unknown,
+	Yes,
+	No,
+};
+
 class Element;
 class ElementDelegate {
 public:
@@ -224,6 +230,14 @@ struct DateBadge : public RuntimeComponent<DateBadge, Element> {
 
 };
 
+struct FakeBotAboutTop : public RuntimeComponent<FakeBotAboutTop, Element> {
+	void init();
+
+	Ui::Text::String text;
+	int maxWidth = 0;
+	int height = 0;
+};
+
 struct TopicButton {
 	std::unique_ptr<Ui::RippleAnimation> ripple;
 	ClickHandlerPtr link;
@@ -308,6 +322,8 @@ public:
 
 	[[nodiscard]] Ui::Text::IsolatedEmoji isolatedEmoji() const;
 	[[nodiscard]] Ui::Text::OnlyCustomEmoji onlyCustomEmoji() const;
+
+	[[nodiscard]] OnlyEmojiAndSpaces isOnlyEmojiAndSpaces() const;
 
 	// For blocks context this should be called only from recountAttachToPreviousInBlocks().
 	void setAttachToPrevious(bool attachToNext, Element *previous = nullptr);
@@ -520,6 +536,9 @@ private:
 	virtual QSize performCountCurrentSize(int newWidth) = 0;
 
 	void refreshMedia(Element *replacing);
+	void setTextWithLinks(
+		const TextWithEntities &text,
+		const std::vector<ClickHandlerPtr> &links = {});
 
 	struct TextWithLinks {
 		TextWithEntities text;

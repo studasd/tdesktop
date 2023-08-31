@@ -7,7 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/weak_ptr.h"
 #include "data/data_location.h"
+#include "data/data_wall_paper.h"
 
 class Image;
 class History;
@@ -35,6 +37,8 @@ struct ToPreviewOptions;
 namespace Data {
 
 class CloudImage;
+class WallPaper;
+class Session;
 
 enum class CallFinishReason : char {
 	Missed,
@@ -56,6 +60,7 @@ struct Call {
 	int duration = 0;
 	FinishReason finishReason = FinishReason::Missed;
 	bool video = false;
+
 };
 
 struct ExtendedPreview {
@@ -105,8 +110,12 @@ public:
 	virtual const Call *call() const;
 	virtual GameData *game() const;
 	virtual const Invoice *invoice() const;
-	virtual Data::CloudImage *location() const;
+	virtual CloudImage *location() const;
 	virtual PollData *poll() const;
+	virtual const WallPaper *paper() const;
+	virtual FullStoryId storyId() const;
+	virtual bool storyExpired(bool revalidate = false);
+	virtual bool storyMention() const;
 
 	virtual bool uploading() const;
 	virtual Storage::SharedMediaTypesMask sharedMediaTypes() const;
@@ -128,7 +137,6 @@ public:
 	virtual bool forwardedBecomesUnread() const;
 	virtual bool dropForwardedInfo() const;
 	virtual bool forceForwardedInfo() const;
-	virtual QString errorTextForForward(not_null<PeerData*> peer) const;
 	[[nodiscard]] virtual bool hasSpoiler() const;
 
 	[[nodiscard]] virtual bool consumeMessageText(
@@ -190,7 +198,6 @@ public:
 	TextForMimeData clipboardText() const override;
 	bool allowsEditCaption() const override;
 	bool allowsEditMedia() const override;
-	QString errorTextForForward(not_null<PeerData*> peer) const override;
 	bool hasSpoiler() const override;
 
 	bool updateInlineResultMedia(const MTPMessageMedia &media) override;
@@ -234,7 +241,6 @@ public:
 	bool allowsEditMedia() const override;
 	bool forwardedBecomesUnread() const override;
 	bool dropForwardedInfo() const override;
-	QString errorTextForForward(not_null<PeerData*> peer) const override;
 	bool hasSpoiler() const override;
 
 	bool updateInlineResultMedia(const MTPMessageMedia &media) override;
@@ -294,7 +300,7 @@ public:
 
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
 
-	Data::CloudImage *location() const override;
+	CloudImage *location() const override;
 	ItemPreview toPreview(ToPreviewOptions options) const override;
 	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
@@ -309,7 +315,7 @@ public:
 
 private:
 	LocationPoint _point;
-	not_null<Data::CloudImage*> _location;
+	not_null<CloudImage*> _location;
 	QString _title;
 	QString _description;
 
@@ -395,7 +401,6 @@ public:
 	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
-	QString errorTextForForward(not_null<PeerData*> peer) const override;
 	bool dropForwardedInfo() const override;
 
 	bool consumeMessageText(const TextWithEntities &text) override;
@@ -460,7 +465,6 @@ public:
 	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
-	QString errorTextForForward(not_null<PeerData*> peer) const override;
 
 	bool updateInlineResultMedia(const MTPMessageMedia &media) override;
 	bool updateSentMedia(const MTPMessageMedia &media) override;
@@ -522,11 +526,9 @@ public:
 	[[nodiscard]] bool activated() const;
 	void setActivated(bool activated);
 
-	bool allowsRevoke(TimeId now) const override;
 	TextWithEntities notificationText() const override;
 	QString pinnedTextSubstring() const override;
 	TextForMimeData clipboardText() const override;
-	bool forceForwardedInfo() const override;
 
 	bool updateInlineResultMedia(const MTPMessageMedia &media) override;
 	bool updateSentMedia(const MTPMessageMedia &media) override;
@@ -539,6 +541,67 @@ private:
 	not_null<PeerData*> _from;
 	int _months = 0;
 	bool _activated = false;
+
+};
+
+class MediaWallPaper final : public Media {
+public:
+	MediaWallPaper(not_null<HistoryItem*> parent, const WallPaper &paper);
+	~MediaWallPaper();
+
+	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
+
+	const WallPaper *paper() const override;
+
+	TextWithEntities notificationText() const override;
+	QString pinnedTextSubstring() const override;
+	TextForMimeData clipboardText() const override;
+
+	bool updateInlineResultMedia(const MTPMessageMedia &media) override;
+	bool updateSentMedia(const MTPMessageMedia &media) override;
+	std::unique_ptr<HistoryView::Media> createView(
+		not_null<HistoryView::Element*> message,
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
+
+private:
+	const WallPaper _paper;
+
+};
+
+class MediaStory final : public Media, public base::has_weak_ptr {
+public:
+	MediaStory(
+		not_null<HistoryItem*> parent,
+		FullStoryId storyId,
+		bool mention);
+	~MediaStory();
+
+	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
+
+	FullStoryId storyId() const override;
+	bool storyExpired(bool revalidate = false) override;
+	bool storyMention() const override;
+
+	TextWithEntities notificationText() const override;
+	QString pinnedTextSubstring() const override;
+	TextForMimeData clipboardText() const override;
+	bool dropForwardedInfo() const override;
+
+	bool updateInlineResultMedia(const MTPMessageMedia &media) override;
+	bool updateSentMedia(const MTPMessageMedia &media) override;
+	std::unique_ptr<HistoryView::Media> createView(
+		not_null<HistoryView::Element*> message,
+		not_null<HistoryItem*> realParent,
+		HistoryView::Element *replacing = nullptr) override;
+
+	[[nodiscard]] static not_null<PhotoData*> LoadingStoryPhoto(
+		not_null<Session*> owner);
+
+private:
+	const FullStoryId _storyId;
+	const bool _mention = false;
+	bool _expired = false;
 
 };
 

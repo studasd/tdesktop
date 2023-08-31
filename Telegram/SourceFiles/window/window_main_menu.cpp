@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_theme.h"
 #include "ui/controls/userpic_button.h"
 #include "ui/effects/snowflakes.h"
+#include "ui/effects/toggle_arrow.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "ui/widgets/popup_menu.h"
@@ -33,11 +34,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/localstorage.h"
 #include "storage/storage_account.h"
 #include "support/support_templates.h"
+#include "settings/settings_advanced.h"
 #include "settings/settings_common.h"
 #include "settings/settings_calls.h"
 #include "settings/settings_information.h"
 #include "info/profile/info_profile_badge.h"
 #include "info/profile/info_profile_emoji_status_panel.h"
+#include "info/stories/info_stories_widget.h"
+#include "info/info_memento.h"
 #include "base/qt_signal_producer.h"
 #include "boxes/about_box.h"
 #include "ui/boxes/confirm_box.h"
@@ -58,7 +62,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "data/data_user.h"
 #include "data/data_changes.h"
+#include "data/data_stories.h"
 #include "mainwidget.h"
+#include "styles/style_chat.h" // popupMenuExpandedSeparator
 #include "styles/style_window.h"
 #include "styles/style_widgets.h"
 #include "styles/style_dialogs.h"
@@ -94,19 +100,60 @@ constexpr auto kPlayStatusLimit = 2;
 }
 
 void ShowCallsBox(not_null<Window::SessionController*> window) {
-	auto controller = std::make_unique<Calls::BoxController>(window);
-	const auto initBox = [
-		window,
-		controller = controller.get()
-	](not_null<PeerListBox*> box) {
+	struct State {
+		State(not_null<Window::SessionController*> window)
+		: callsController(window)
+		, groupCallsController(window) {
+		}
+		Calls::BoxController callsController;
+		PeerListContentDelegateSimple callsDelegate;
+
+		Calls::GroupCalls::ListController groupCallsController;
+		PeerListContentDelegateSimple groupCallsDelegate;
+
+		base::unique_qptr<Ui::PopupMenu> menu;
+	};
+
+	window->show(Box([=](not_null<Ui::GenericBox*> box) {
+		const auto state = box->lifetime().make_state<State>(window);
+
+		const auto groupCalls = box->addRow(
+			object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+				box,
+				object_ptr<Ui::VerticalLayout>(box)),
+			{});
+		groupCalls->hide(anim::type::instant);
+		groupCalls->toggleOn(state->groupCallsController.shownValue());
+
+		Settings::AddSubsectionTitle(
+			groupCalls->entity(),
+			tr::lng_call_box_groupcalls_subtitle());
+		state->groupCallsDelegate.setContent(groupCalls->entity()->add(
+			object_ptr<PeerListContent>(box, &state->groupCallsController),
+			{}));
+		state->groupCallsController.setDelegate(&state->groupCallsDelegate);
+		Settings::AddSkip(groupCalls->entity());
+		Settings::AddDivider(groupCalls->entity());
+		Settings::AddSkip(groupCalls->entity());
+
+		const auto content = box->addRow(
+			object_ptr<PeerListContent>(box, &state->callsController),
+			{});
+		state->callsDelegate.setContent(content);
+		state->callsController.setDelegate(&state->callsDelegate);
+
+		box->setWidth(state->callsController.contentWidth());
+		state->callsController.boxHeightValue(
+		) | rpl::start_with_next([=](int height) {
+			box->setMinHeight(height);
+		}, box->lifetime());
+		box->setTitle(tr::lng_call_box_title());
 		box->addButton(tr::lng_close(), [=] {
 			box->closeBox();
 		});
-		using MenuPointer = base::unique_qptr<Ui::PopupMenu>;
-		const auto menu = std::make_shared<MenuPointer>();
 		const auto menuButton = box->addTopButton(st::infoTopBarMenu);
 		menuButton->setClickedCallback([=] {
-			*menu = base::make_unique_q<Ui::PopupMenu>(
+			state->menu = base::make_unique_q<Ui::PopupMenu>(
 				menuButton,
 				st::popupMenuWithIcons);
 			const auto showSettings = [=] {
@@ -115,23 +162,22 @@ void ShowCallsBox(not_null<Window::SessionController*> window) {
 					Window::SectionShow(anim::type::instant));
 			};
 			const auto clearAll = crl::guard(box, [=] {
-				box->getDelegate()->show(Box(Calls::ClearCallsBox, window));
+				box->uiShow()->showBox(Box(Calls::ClearCallsBox, window));
 			});
-			(*menu)->addAction(
+			state->menu->addAction(
 				tr::lng_settings_section_call_settings(tr::now),
 				showSettings,
 				&st::menuIconSettings);
-			if (controller->delegate()->peerListFullRowsCount() > 0) {
-				(*menu)->addAction(
+			if (state->callsDelegate.peerListFullRowsCount() > 0) {
+				state->menu->addAction(
 					tr::lng_call_box_clear_all(tr::now),
 					clearAll,
 					&st::menuIconDelete);
 			}
-			(*menu)->popup(QCursor::pos());
+			state->menu->popup(QCursor::pos());
 			return true;
 		});
-	};
-	window->show(Box<PeerListBox>(std::move(controller), initBox));
+	}));
 }
 
 [[nodiscard]] rpl::producer<TextWithEntities> SetStatusLabel(
@@ -227,40 +273,12 @@ MainMenu::ToggleAccountsButton::ToggleAccountsButton(QWidget *parent)
 void MainMenu::ToggleAccountsButton::paintEvent(QPaintEvent *e) {
 	auto p = Painter(this);
 
-	const auto toggled = _toggledAnimation.value(_toggled ? 1. : 0.);
-	const auto x = 0. + width() - st::mainMenuTogglePosition.x();
-	const auto y = 0. + height() - st::mainMenuTogglePosition.y();
-	const auto size = st::mainMenuToggleSize;
-	const auto size2 = size / 2.;
-	const auto sqrt2 = sqrt(2.);
-	const auto stroke = (st::mainMenuToggleFourStrokes / 4.) / sqrt2;
-	const auto left = x - size;
-	const auto right = x + size;
-	const auto bottom = y + size2;
-	constexpr auto kPointCount = 6;
-	std::array<QPointF, kPointCount> points = { {
-		{ left - stroke, bottom - stroke },
-		{ x, bottom - stroke - size - stroke },
-		{ right + stroke, bottom - stroke },
-		{ right - stroke, bottom + stroke },
-		{ x, bottom + stroke - size + stroke },
-		{ left + stroke, bottom + stroke }
-	} };
-	const auto alpha = (toggled - 1.) * M_PI;
-	const auto cosalpha = cos(alpha);
-	const auto sinalpha = sin(alpha);
-	for (auto &point : points) {
-		auto px = point.x() - x;
-		auto py = point.y() - y;
-		point.setX(x + px * cosalpha - py * sinalpha);
-		point.setY(y + py * cosalpha + px * sinalpha);
-	}
-	QPainterPath path;
-	path.moveTo(points[0]);
-	for (int i = 1; i != kPointCount; ++i) {
-		path.lineTo(points[i]);
-	}
-	path.lineTo(points[0]);
+	const auto path = Ui::ToggleUpDownArrowPath(
+		0. + width() - st::mainMenuTogglePosition.x(),
+		0. + height() - st::mainMenuTogglePosition.y(),
+		st::mainMenuToggleSize,
+		st::mainMenuToggleFourStrokes,
+		_toggledAnimation.value(_toggled ? 1. : 0.));
 
 	auto hq = PainterHighQualityEnabler(p);
 	p.fillPath(path, st::windowSubTextFg);
@@ -556,7 +574,7 @@ void MainMenu::setupArchive() {
 	const auto checkArchive = [=] {
 		const auto f = folder();
 		return f
-			&& !f->chatsList()->empty()
+			&& (!f->chatsList()->empty() || f->storiesCount() > 0)
 			&& controller->session().settings().archiveInMainMenu();
 	};
 
@@ -571,7 +589,7 @@ void MainMenu::setupArchive() {
 		inner,
 		tr::lng_archived_name(),
 		st::mainMenuButton,
-		{ &st::settingsIconArchive, kIconGray });
+		{ &st::menuIconArchiveOpen });
 	inner->add(
 		object_ptr<Ui::PlainShadow>(inner),
 		{ 0, st::mainMenuSkip, 0, st::mainMenuSkip });
@@ -586,7 +604,7 @@ void MainMenu::setupArchive() {
 		}
 		_contextMenu = base::make_unique_q<Ui::PopupMenu>(
 			this,
-			st::popupMenuWithIcons);
+			st::popupMenuExpandedSeparator);
 		const auto addAction = PeerMenuCallback([&](
 				PeerMenuCallback::Args a) {
 			return _contextMenu->addAction(
@@ -609,6 +627,12 @@ void MainMenu::setupArchive() {
 			controller,
 			[f = folder()] { return f->chatsList(); },
 			addAction);
+
+		_contextMenu->addSeparator();
+		Settings::PreloadArchiveSettings(&controller->session());
+		addAction(tr::lng_context_archive_settings(tr::now), [=] {
+			controller->show(Box(Settings::ArchiveSettingsBox, controller));
+		}, &st::menuIconManage);
 
 		_contextMenu->popup(QCursor::pos());
 	}, button->lifetime());
@@ -634,10 +658,15 @@ void MainMenu::setupArchive() {
 		return Badge::UnreadBadge{ state.unreadCounter, true };
 	}));
 
-	controller->session().data().chatsListChanges(
-	) | rpl::filter([](Data::Folder *folder) {
-		return folder && (folder->id() == Data::Folder::kId);
-	}) | rpl::start_with_next([=] {
+	rpl::merge(
+		controller->session().data().chatsListChanges(
+		) | rpl::filter([](Data::Folder *folder) {
+			return folder && (folder->id() == Data::Folder::kId);
+		}) | rpl::to_empty,
+		controller->session().data().stories().sourcesChanged(
+			Data::StorySourcesList::Hidden
+		)
+	) | rpl::start_with_next([=] {
 		const auto isArchiveVisible = checkArchive();
 		wrap->toggle(isArchiveVisible, anim::type::normal);
 		if (!isArchiveVisible) {
@@ -667,7 +696,7 @@ void MainMenu::setupAccounts() {
 	inner->add(object_ptr<Ui::FixedHeightWidget>(inner, st::mainMenuSkip));
 
 	std::move(
-		events.currentAccountActivations
+		events.closeRequests
 	) | rpl::start_with_next([=] {
 		closeLayer();
 	}, inner->lifetime());
@@ -718,44 +747,71 @@ void MainMenu::setupMenu() {
 	if (!_controller->session().supportMode()) {
 		addAction(
 			tr::lng_create_group_title(),
-			{ &st::settingsIconGroup, kIconLightBlue }
+			{ &st::menuIconGroups }
 		)->setClickedCallback([=] {
 			controller->showNewGroup();
 		});
 		addAction(
 			tr::lng_create_channel_title(),
-			{ &st::settingsIconChannel, kIconLightOrange }
+			{ &st::menuIconChannel }
 		)->setClickedCallback([=] {
 			controller->showNewChannel();
 		});
+
+		const auto wrap = _menu->add(
+			object_ptr<Ui::SlideWrap<Ui::SettingsButton>>(
+				_menu,
+				CreateButton(
+					_menu,
+					tr::lng_menu_my_stories(),
+					st::mainMenuButton,
+					IconDescriptor{ &st::menuIconStoriesSavedSection })));
+		const auto stories = &controller->session().data().stories();
+		if (stories->archiveCount() > 0) {
+			wrap->toggle(true, anim::type::instant);
+		} else {
+			wrap->toggle(false, anim::type::instant);
+			if (!stories->archiveCountKnown()) {
+				stories->archiveLoadMore();
+				wrap->toggleOn(stories->archiveChanged(
+				) | rpl::map([=] {
+					return stories->archiveCount() > 0;
+				}) | rpl::filter(rpl::mappers::_1) | rpl::take(1));
+			}
+		}
+		wrap->entity()->setClickedCallback([=] {
+			controller->showSection(
+				Info::Stories::Make(controller->session().user()));
+		});
+
 		addAction(
 			tr::lng_menu_contacts(),
-			{ &st::settingsIconUser, kIconRed }
+			{ &st::menuIconProfile }
 		)->setClickedCallback([=] {
 			controller->show(PrepareContactsBox(controller));
 		});
 		addAction(
 			tr::lng_menu_calls(),
-			{ &st::settingsIconCalls, kIconGreen }
+			{ &st::menuIconPhone }
 		)->setClickedCallback([=] {
 			ShowCallsBox(controller);
 		});
 		addAction(
 			tr::lng_saved_messages(),
-			{ &st::settingsIconSavedMessages, kIconLightBlue }
+			{ &st::menuIconSavedMessages }
 		)->setClickedCallback([=] {
 			controller->showPeerHistory(controller->session().user());
 		});
 	} else {
 		addAction(
 			tr::lng_profile_add_contact(),
-			{ &st::settingsIconUser, kIconRed }
+			{ &st::menuIconProfile }
 		)->setClickedCallback([=] {
 			controller->showAddContact();
 		});
 		addAction(
 			rpl::single(u"Fix chats order"_q),
-			{ &st::settingsIconPin, kIconGreen }
+			{ &st::menuIconPin }
 		)->toggleOn(rpl::single(
 			_controller->session().settings().supportFixChatsOrder()
 		))->toggledChanges(
@@ -765,21 +821,21 @@ void MainMenu::setupMenu() {
 		}, _menu->lifetime());
 		addAction(
 			rpl::single(u"Reload templates"_q),
-			{ &st::settingsIconReload, kIconLightBlue }
+			{ &st::menuIconRestore }
 		)->setClickedCallback([=] {
 			_controller->session().supportTemplates().reload();
 		});
 	}
 	addAction(
 		tr::lng_menu_settings(),
-		{ &st::settingsIconSettings, kIconPurple }
+		{ &st::menuIconSettings }
 	)->setClickedCallback([=] {
 		controller->showSettings();
 	});
 
 	_nightThemeToggle = addAction(
 		tr::lng_menu_night_mode(),
-		{ &st::settingsIconNight, kIconDarkBlue }
+		{ &st::menuIconNightMode }
 	)->toggleOn(_nightThemeSwitches.events_starting_with(
 		Window::Theme::IsNightMode()
 	));
